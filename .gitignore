@@ -1,0 +1,16 @@
+.env
+*.env
+.mobius-setup-complete
+/target
+/data/*.sqlite*
+/data/*.db*
+*.keypair.json
+/data/bench/
+
+# generated locally, not published
+/docs/screenshots/
+/data/runs/
+
+# npm wrapper: downloaded binaries
+/npm/mobius-searcher/vendor/
+node_modules/

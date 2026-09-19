@@ -1,0 +1,119 @@
+{
+  "session_id": "20260918-034520-a157",
+  "mode": "PAPER",
+  "duration_ms": 3899860,
+  "scanned": 1546,
+  "priced": 1485,
+  "positive_gross": 112,
+  "positive_net": 1,
+  "executable": 0,
+  "paper_fills": 0,
+  "gross_expected_pnl_all": -622525298,
+  "net_expected_pnl_all": -1642859578,
+  "gross_expected_pnl_executable": 0,
+  "net_expected_pnl_executable": 0,
+  "paper_net_lamports": 0,
+  "paper_net_usd_micros": 0,
+  "median_gross_edge_bps": -3.62,
+  "median_net_edge_bps": -8.96,
+  "p90_gross_edge_bps": -0.22,
+  "max_gross_edge_bps": 11.5,
+  "lifetime_gross_positive": {
+    "episodes": 79,
+    "median_lower_ms": 0,
+    "median_upper_ms": 13584,
+    "median_sampling_gap_ms": 49641
+  },
+  "simulations": 1463,
+  "sim_failures": 511,
+  "sim_failure_rate": 0.3492822966507177,
+  "sim_failure_classes": [
+    [
+      "program_error",
+      401
+    ],
+    [
+      "slippage_exceeded",
+      109
+    ],
+    [
+      "rpc_error",
+      1
+    ]
+  ],
+  "sim_by_plan": [
+    [
+      "single_tx/exact",
+      1332,
+      449
+    ],
+    [
+      "bundle/per_tx",
+      131,
+      62
+    ]
+  ],
+  "median_sim_latency_ms": 786,
+  "median_cu": 178252,
+  "expected_landing_cost_lamports": 8221,
+  "median_tip_lamports": 2982,
+  "median_sim_minus_model_lamports": 0,
+  "median_quote_latency_ms": 1491,
+  "skip_reasons": [
+    [
+      "EDGE_TOO_SMALL",
+      1485
+    ],
+    [
+      "BUILD_FAILED",
+      61
+    ]
+  ],
+  "strategies": [
+    {
+      "strategy": "cross-dex",
+      "scanned": 928,
+      "priced": 893,
+      "positive_gross": 15,
+      "positive_net": 0,
+      "executable": 0,
+      "median_gross_edge_bps": -3.74,
+      "median_net_edge_bps": -8.73,
+      "best_net_edge_bps": -0.63,
+      "sum_expected_net_lamports": 0,
+      "simulations": 877,
+      "sim_ok": 715
+    },
+    {
+      "strategy": "round-trip",
+      "scanned": 310,
+      "priced": 298,
+      "positive_gross": 93,
+      "positive_net": 1,
+      "executable": 0,
+      "median_gross_edge_bps": -0.31,
+      "median_net_edge_bps": -5.51,
+      "best_net_edge_bps": 4.09,
+      "sum_expected_net_lamports": 0,
+      "simulations": 294,
+      "sim_ok": 168
+    },
+    {
+      "strategy": "triangular",
+      "scanned": 308,
+      "priced": 294,
+      "positive_gross": 4,
+      "positive_net": 0,
+      "executable": 0,
+      "median_gross_edge_bps": -9.1,
+      "median_net_edge_bps": -22.74,
+      "best_net_edge_bps": -3.19,
+      "sum_expected_net_lamports": 0,
+      "simulations": 292,
+      "sim_ok": 69
+    }
+  ],
+  "errors": 61,
+  "rate_limited_429": 2,
+  "dropped_events": 0
+}

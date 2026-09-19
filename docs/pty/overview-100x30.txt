@@ -1,0 +1,31 @@
+[exit 0]
+ ø SEARCHER    PAPER ○    REPLAY    slot 448087413   SOL $105.98                           08:45:35
+ Equity $105.98   Session $0.00 +0.00%   Realized $0.00   Simulated $0.00   Opportunities 982
+────────────────────────────────────────────────────────────────────────────────────────────────────
+ ▸ OPPORTUNITIES ─────────────────────────────────────────────────────── all · 982 shown · f filter
+   ROUTE                                                        GROSS     NET    AGE STATUS
+ ● Whirlpool → Raydium CLMM                                     -.06%   -.20%   2.1s EDGE_TOO_SMALL
+   Raydium CLMM → HumidiFi                                      -.02%   -.07%   9.3s EDGE_TOO_SMALL
+   SOL→USDC→JUP→SOL                                                 —       —  13.8s BUILD_FAILED
+   Raydium CLMM → Meteora DLMM                                  -.04%   -.08%  20.9s EDGE_TOO_SMALL
+   SOL→USDC→SOL                                                     —       —  26.7s BUILD_FAILED
+   Raydium CLMM → Whirlpool                                     -.08%   -.13%  32.7s EDGE_TOO_SMALL
+
+ GRAPH WORKSPACE ───────────────────────────────────────────────────── 5m · live · 1/4 graphs (j/k)
+ Price  Jupiter /swap/v2/build SOL→USDC executable price    last 105.983   min 105.852  max 105.983
+  105.989 ┤────────╮       ╭─╮                                                                    ╭
+          │        ╰───────╯ │                            ╭─────────────────╮                     │
+  105.917 ┤                  ╰─────╮                      │                 ╰──╮                  │
+          │                        ╰──────────────────────╯                    ╰─────────╮        │
+  105.845 ┤                                                                              ╰────────╯
+          └──────────────────────◆─────────────────────────────────────────────────────────────────
+           08:40:35                                08:43:05                                08:45:35
+
+ EVENT STREAM ───────────────────────────────────────────────────────────────────── live · ⏎ detail
+ 08:45:28  skip         EDGE_TOO_SMALL                                                       -0.07%
+
+ 08:45:33  opportunity  Whirlpool → Raydium CLMM                                             -0.11%
+ 08:45:33  build        Jupiter                                                              4782ms
+ 08:45:33  skip         EDGE_TOO_SMALL                                                       -0.11%
+ 08:45:33  simulation   pass                                                                  923ms
+ 1 Ove  2 Mar  3 Opp  4 Gra  5 Tra  6 Ris  7 Sys  8 Log   j/k select  ⏎ inspect  f filter  tab focu

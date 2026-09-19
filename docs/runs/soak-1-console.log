@@ -1,0 +1,312 @@
+loaded from .env: JUPITER_API_KEY
+session 20260918-034520-a157 · mode PAPER · headless · Ctrl-C to stop
+03:45:20  opps     0  executed   0  sims    0 (0 failed)  pnl(sim) $0.00  jupiter idle  429s 0  slot -
+03:45:35  opps     5  executed   0  sims    5 (0 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448019811
+03:45:50  opps    12  executed   0  sims   11 (1 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448019865
+03:46:05  opps    18  executed   0  sims   18 (2 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448019920
+03:46:20  opps    24  executed   0  sims   23 (3 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448019977
+03:46:35  opps    29  executed   0  sims   29 (5 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020033
+03:46:50  opps    35  executed   0  sims   35 (6 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020089
+03:47:05  opps    42  executed   0  sims   41 (7 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020144
+03:47:20  opps    47  executed   0  sims   45 (8 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020200
+03:47:35  opps    53  executed   0  sims   53 (10 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020257
+03:47:50  opps    59  executed   0  sims   57 (11 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020315
+03:48:05  opps    65  executed   0  sims   62 (13 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020372
+03:48:20  opps    71  executed   0  sims   69 (13 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020428
+03:48:35  opps    77  executed   0  sims   74 (13 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020487
+03:48:50  opps    83  executed   0  sims   81 (13 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020544
+03:49:05  opps    88  executed   0  sims   85 (14 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020600
+03:49:20  opps    94  executed   0  sims   92 (16 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020656
+03:49:35  opps   100  executed   0  sims   97 (16 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020711
+03:49:50  opps   106  executed   0  sims  103 (17 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020767
+03:50:05  opps   112  executed   0  sims  110 (18 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020820
+03:50:20  opps   118  executed   0  sims  116 (20 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020877
+03:50:35  opps   124  executed   0  sims  122 (20 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020933
+03:50:50  opps   130  executed   0  sims  127 (21 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448020990
+03:51:05  opps   135  executed   0  sims  131 (21 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021047
+03:51:20  opps   142  executed   0  sims  139 (25 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021101
+03:51:35  opps   148  executed   0  sims  145 (25 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021158
+03:51:50  opps   153  executed   0  sims  151 (26 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021216
+03:52:05  opps   158  executed   0  sims  156 (28 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021267
+03:52:20  opps   165  executed   0  sims  162 (29 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021325
+03:52:35  opps   171  executed   0  sims  168 (30 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021382
+03:52:50  opps   177  executed   0  sims  175 (32 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021439
+03:53:05  opps   183  executed   0  sims  180 (32 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021495
+03:53:20  opps   188  executed   0  sims  186 (32 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021551
+03:53:35  opps   194  executed   0  sims  191 (33 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021608
+03:53:50  opps   200  executed   0  sims  198 (35 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021662
+03:54:05  opps   206  executed   0  sims  204 (36 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021719
+03:54:20  opps   212  executed   0  sims  210 (36 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021774
+03:54:35  opps   218  executed   0  sims  216 (36 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021833
+03:54:50  opps   224  executed   0  sims  222 (38 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021890
+03:55:05  opps   230  executed   0  sims  227 (38 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448021948
+03:55:20  opps   236  executed   0  sims  232 (39 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022004
+03:55:35  opps   242  executed   0  sims  240 (41 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022062
+03:55:50  opps   248  executed   0  sims  245 (43 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022118
+03:56:05  opps   253  executed   0  sims  251 (45 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022175
+03:56:20  opps   259  executed   0  sims  255 (46 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022231
+03:56:35  opps   266  executed   0  sims  262 (48 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022289
+03:56:50  opps   271  executed   0  sims  268 (49 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022344
+03:57:05  opps   278  executed   0  sims  275 (52 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022402
+03:57:20  opps   283  executed   0  sims  280 (54 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022458
+03:57:35  opps   289  executed   0  sims  286 (54 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022514
+03:57:50  opps   295  executed   0  sims  293 (57 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022570
+03:58:05  opps   301  executed   0  sims  298 (59 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022628
+03:58:20  opps   307  executed   0  sims  304 (60 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022685
+03:58:35  opps   313  executed   0  sims  311 (61 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022743
+03:58:50  opps   319  executed   0  sims  315 (62 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022801
+03:59:05  opps   324  executed   0  sims  322 (65 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022858
+03:59:20  opps   331  executed   0  sims  328 (65 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022915
+03:59:35  opps   336  executed   0  sims  334 (65 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448022972
+03:59:50  opps   342  executed   0  sims  338 (67 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023028
+04:00:05  opps   348  executed   0  sims  346 (69 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023087
+04:00:20  opps   354  executed   0  sims  352 (71 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023143
+04:00:35  opps   360  executed   0  sims  358 (71 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023200
+04:00:50  opps   366  executed   0  sims  363 (72 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023257
+04:01:05  opps   372  executed   0  sims  370 (75 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023313
+04:01:20  opps   378  executed   0  sims  375 (76 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023369
+04:01:35  opps   384  executed   0  sims  382 (77 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023427
+04:01:50  opps   390  executed   0  sims  388 (78 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023484
+04:02:05  opps   396  executed   0  sims  392 (80 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023539
+04:02:20  opps   402  executed   0  sims  399 (82 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023597
+04:02:35  opps   407  executed   0  sims  404 (84 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023656
+04:02:50  opps   413  executed   0  sims  411 (85 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023712
+04:03:05  opps   419  executed   0  sims  416 (86 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023770
+04:03:20  opps   425  executed   0  sims  421 (87 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023826
+04:03:35  opps   431  executed   0  sims  426 (88 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023883
+04:03:50  opps   437  executed   0  sims  434 (90 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023941
+04:04:05  opps   443  executed   0  sims  439 (91 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448023995
+04:04:20  opps   448  executed   0  sims  444 (92 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024052
+04:04:35  opps   454  executed   0  sims  451 (93 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024107
+04:04:50  opps   460  executed   0  sims  455 (94 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024165
+04:05:05  opps   467  executed   0  sims  462 (97 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024220
+04:05:20  opps   473  executed   0  sims  470 (97 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024277
+04:05:35  opps   479  executed   0  sims  475 (98 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024333
+04:05:50  opps   485  executed   0  sims  482 (100 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024392
+04:06:05  opps   491  executed   0  sims  488 (101 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024449
+04:06:20  opps   496  executed   0  sims  491 (102 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024507
+04:06:35  opps   502  executed   0  sims  496 (104 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024564
+04:06:50  opps   508  executed   0  sims  501 (107 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024618
+04:07:05  opps   513  executed   0  sims  509 (107 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024673
+04:07:20  opps   519  executed   0  sims  515 (109 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024729
+04:07:35  opps   525  executed   0  sims  521 (114 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024785
+04:07:50  opps   531  executed   0  sims  527 (120 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024841
+04:08:05  opps   537  executed   0  sims  532 (125 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024896
+04:08:20  opps   543  executed   0  sims  539 (132 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448024952
+04:08:35  opps   549  executed   0  sims  544 (135 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025009
+04:08:50  opps   555  executed   0  sims  551 (135 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025064
+04:09:05  opps   561  executed   0  sims  557 (136 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025122
+04:09:20  opps   567  executed   0  sims  562 (137 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025179
+04:09:35  opps   573  executed   0  sims  568 (138 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025235
+04:09:50  opps   578  executed   0  sims  574 (138 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025292
+04:10:05  opps   584  executed   0  sims  580 (140 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025350
+04:10:20  opps   590  executed   0  sims  585 (144 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025408
+04:10:35  opps   596  executed   0  sims  592 (151 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025464
+04:10:50  opps   602  executed   0  sims  598 (156 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025519
+04:11:05  opps   608  executed   0  sims  603 (160 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025576
+04:11:20  opps   614  executed   0  sims  610 (167 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025632
+04:11:35  opps   620  executed   0  sims  615 (172 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025689
+04:11:50  opps   626  executed   0  sims  621 (173 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025745
+04:12:05  opps   632  executed   0  sims  627 (175 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025801
+04:12:20  opps   638  executed   0  sims  634 (176 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025860
+04:12:35  opps   644  executed   0  sims  640 (179 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025916
+04:12:50  opps   650  executed   0  sims  645 (184 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448025974
+04:13:05  opps   656  executed   0  sims  652 (185 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026029
+04:13:20  opps   662  executed   0  sims  658 (186 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026087
+04:13:35  opps   667  executed   0  sims  662 (186 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026145
+04:13:50  opps   673  executed   0  sims  669 (186 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026203
+04:14:05  opps   679  executed   0  sims  674 (187 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026262
+04:14:20  opps   684  executed   0  sims  679 (187 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026322
+04:14:35  opps   690  executed   0  sims  686 (189 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026373
+04:14:50  opps   696  executed   0  sims  690 (191 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026426
+04:15:05  opps   702  executed   0  sims  695 (192 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026484
+04:15:20  opps   708  executed   0  sims  701 (193 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026540
+04:15:35  opps   713  executed   0  sims  706 (194 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026597
+04:15:50  opps   720  executed   0  sims  712 (195 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026652
+04:16:05  opps   725  executed   0  sims  717 (197 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026705
+04:16:20  opps   732  executed   0  sims  723 (200 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026762
+04:16:35  opps   737  executed   0  sims  728 (202 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026817
+04:16:50  opps   743  executed   0  sims  735 (202 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026874
+04:17:05  opps   749  executed   0  sims  740 (203 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026930
+04:17:20  opps   755  executed   0  sims  747 (205 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448026986
+04:17:35  opps   761  executed   0  sims  753 (207 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027043
+04:17:50  opps   767  executed   0  sims  758 (208 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027099
+04:18:05  opps   773  executed   0  sims  765 (209 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027155
+04:18:20  opps   779  executed   0  sims  771 (211 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027214
+04:18:35  opps   784  executed   0  sims  776 (212 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027270
+04:18:50  opps   790  executed   0  sims  781 (213 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027329
+04:19:05  opps   796  executed   0  sims  787 (214 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027384
+04:19:20  opps   803  executed   0  sims  794 (215 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027437
+04:19:35  opps   808  executed   0  sims  800 (217 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027495
+04:19:50  opps   814  executed   0  sims  806 (217 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027552
+04:20:05  opps   820  executed   0  sims  810 (217 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027607
+04:20:20  opps   826  executed   0  sims  816 (220 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027663
+04:20:35  opps   832  executed   0  sims  823 (220 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027719
+04:20:50  opps   838  executed   0  sims  830 (220 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027776
+04:21:05  opps   843  executed   0  sims  835 (221 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027833
+04:21:20  opps   850  executed   0  sims  839 (223 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027892
+04:21:35  opps   855  executed   0  sims  845 (225 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448027947
+04:21:50  opps   862  executed   0  sims  851 (226 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028005
+04:22:05  opps   867  executed   0  sims  856 (226 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028060
+04:22:20  opps   873  executed   0  sims  863 (229 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028117
+04:22:35  opps   879  executed   0  sims  868 (230 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028173
+04:22:50  opps   885  executed   0  sims  875 (232 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028230
+04:23:05  opps   891  executed   0  sims  880 (233 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028287
+04:23:20  opps   897  executed   0  sims  887 (234 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028342
+04:23:35  opps   903  executed   0  sims  893 (236 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028401
+04:23:50  opps   909  executed   0  sims  897 (237 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028459
+04:24:05  opps   914  executed   0  sims  903 (239 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028516
+04:24:20  opps   920  executed   0  sims  908 (241 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028572
+04:24:35  opps   926  executed   0  sims  914 (242 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028630
+04:24:50  opps   932  executed   0  sims  920 (243 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028686
+04:25:05  opps   938  executed   0  sims  927 (245 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028745
+04:25:20  opps   944  executed   0  sims  933 (246 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028800
+04:25:35  opps   950  executed   0  sims  937 (246 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028858
+04:25:50  opps   956  executed   0  sims  942 (248 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028914
+04:26:05  opps   962  executed   0  sims  949 (250 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448028968
+04:26:20  opps   968  executed   0  sims  954 (252 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029023
+04:26:35  opps   974  executed   0  sims  960 (258 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029079
+04:26:50  opps   981  executed   0  sims  967 (265 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029133
+04:27:05  opps   985  executed   0  sims  972 (269 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029189
+04:27:20  opps   991  executed   0  sims  978 (273 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029244
+04:27:35  opps   997  executed   0  sims  984 (279 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029299
+04:27:50  opps  1003  executed   0  sims  990 (280 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029354
+04:28:05  opps  1009  executed   0  sims  995 (285 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029410
+04:28:20  opps  1015  executed   0  sims 1000 (290 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029467
+04:28:35  opps  1021  executed   0  sims 1006 (296 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029525
+04:28:50  opps  1027  executed   0  sims 1012 (302 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029581
+04:29:05  opps  1033  executed   0  sims 1017 (307 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029635
+04:29:20  opps  1040  executed   0  sims 1023 (309 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029693
+04:29:35  opps  1045  executed   0  sims 1029 (315 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029749
+04:29:50  opps  1052  executed   0  sims 1036 (320 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029806
+04:30:05  opps  1056  executed   0  sims 1039 (322 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029856
+04:30:20  opps  1062  executed   0  sims 1046 (324 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029913
+04:30:35  opps  1068  executed   0  sims 1052 (330 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448029970
+04:30:50  opps  1073  executed   0  sims 1057 (335 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030026
+04:31:05  opps  1080  executed   0  sims 1062 (340 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030084
+04:31:20  opps  1086  executed   0  sims 1068 (341 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030140
+04:31:35  opps  1092  executed   0  sims 1076 (342 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030196
+04:31:50  opps  1098  executed   0  sims 1081 (342 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030243
+04:32:05  opps  1104  executed   0  sims 1087 (344 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030298
+04:32:20  opps  1110  executed   0  sims 1093 (347 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030353
+04:32:35  opps  1115  executed   0  sims 1099 (348 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030407
+04:32:50  opps  1122  executed   0  sims 1105 (349 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030466
+04:33:05  opps  1127  executed   0  sims 1110 (349 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030523
+04:33:20  opps  1133  executed   0  sims 1115 (352 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030578
+04:33:35  opps  1139  executed   0  sims 1122 (355 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030635
+04:33:50  opps  1145  executed   0  sims 1127 (357 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030690
+04:34:05  opps  1151  executed   0  sims 1132 (357 failed)  pnl(sim) $0.00  jupiter ok  429s 0  slot 448030749
+04:34:20  opps  1156  executed   0  sims 1137 (357 failed)  pnl(sim) $0.00  jupiter ok  429s 1  slot 448030806
+04:34:35  opps  1162  executed   0  sims 1143 (358 failed)  pnl(sim) $0.00  jupiter ok  429s 1  slot 448030862
+04:34:50  opps  1167  executed   0  sims 1146 (358 failed)  pnl(sim) $0.00  jupiter ok  429s 1  slot 448030919
+04:35:05  opps  1174  executed   0  sims 1148 (358 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448030976
+04:35:20  opps  1182  executed   0  sims 1148 (358 failed)  pnl(sim) $0.00  jupiter down  429s 2  slot 448031033
+04:35:35  opps  1197  executed   0  sims 1148 (358 failed)  pnl(sim) $0.00  jupiter down  429s 2  slot 448031090
+04:35:50  opps  1206  executed   0  sims 1149 (358 failed)  pnl(sim) $0.00  jupiter degraded  429s 2  slot 448031147
+04:36:05  opps  1215  executed   0  sims 1152 (358 failed)  pnl(sim) $0.00  jupiter degraded  429s 2  slot 448031203
+04:36:20  opps  1222  executed   0  sims 1153 (358 failed)  pnl(sim) $0.00  jupiter degraded  429s 2  slot 448031261
+04:36:35  opps  1227  executed   0  sims 1157 (359 failed)  pnl(sim) $0.00  jupiter degraded  429s 2  slot 448031319
+04:36:50  opps  1233  executed   0  sims 1163 (360 failed)  pnl(sim) $0.00  jupiter degraded  429s 2  slot 448031377
+04:37:05  opps  1238  executed   0  sims 1168 (362 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031435
+04:37:20  opps  1241  executed   0  sims 1168 (362 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031494
+04:37:35  opps  1246  executed   0  sims 1171 (364 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031549
+04:37:50  opps  1253  executed   0  sims 1177 (370 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031607
+04:38:05  opps  1257  executed   0  sims 1181 (373 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031662
+04:38:20  opps  1264  executed   0  sims 1186 (374 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031718
+04:38:35  opps  1269  executed   0  sims 1192 (375 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031776
+04:38:50  opps  1276  executed   0  sims 1198 (376 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031833
+04:39:05  opps  1281  executed   0  sims 1204 (377 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031890
+04:39:20  opps  1287  executed   0  sims 1210 (379 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031947
+04:39:35  opps  1291  executed   0  sims 1213 (380 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448031980
+04:39:50  opps  1297  executed   0  sims 1219 (382 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032062
+04:40:05  opps  1304  executed   0  sims 1225 (383 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032118
+04:40:20  opps  1310  executed   0  sims 1232 (383 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032175
+04:40:35  opps  1316  executed   0  sims 1238 (385 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032228
+04:40:50  opps  1322  executed   0  sims 1243 (386 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032286
+04:41:05  opps  1328  executed   0  sims 1250 (389 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032343
+04:41:20  opps  1334  executed   0  sims 1255 (390 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032398
+04:41:35  opps  1341  executed   0  sims 1260 (391 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032455
+04:41:50  opps  1345  executed   0  sims 1266 (393 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032513
+04:42:05  opps  1351  executed   0  sims 1270 (394 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032571
+04:42:20  opps  1356  executed   0  sims 1276 (396 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032623
+04:42:35  opps  1363  executed   0  sims 1282 (398 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032678
+04:42:50  opps  1369  executed   0  sims 1289 (400 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032735
+04:43:05  opps  1375  executed   0  sims 1293 (401 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032792
+04:43:20  opps  1381  executed   0  sims 1301 (403 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032849
+04:43:35  opps  1387  executed   0  sims 1306 (404 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032906
+04:43:50  opps  1393  executed   0  sims 1312 (407 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448032963
+04:44:05  opps  1400  executed   0  sims 1317 (412 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033019
+04:44:20  opps  1406  executed   0  sims 1324 (419 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033074
+04:44:35  opps  1410  executed   0  sims 1327 (422 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033132
+04:44:50  opps  1416  executed   0  sims 1333 (425 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033188
+04:45:05  opps  1421  executed   0  sims 1339 (426 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033245
+04:45:20  opps  1427  executed   0  sims 1345 (428 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033302
+04:45:35  opps  1434  executed   0  sims 1351 (429 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033356
+04:45:50  opps  1440  executed   0  sims 1358 (432 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033414
+04:46:05  opps  1445  executed   0  sims 1362 (434 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033471
+04:46:20  opps  1451  executed   0  sims 1369 (436 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033526
+04:46:35  opps  1457  executed   0  sims 1374 (439 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033581
+04:46:50  opps  1463  executed   0  sims 1380 (445 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033637
+04:47:05  opps  1468  executed   0  sims 1386 (451 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033695
+04:47:20  opps  1475  executed   0  sims 1392 (457 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033752
+04:47:35  opps  1481  executed   0  sims 1398 (461 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033810
+04:47:50  opps  1486  executed   0  sims 1403 (463 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033867
+04:48:05  opps  1492  executed   0  sims 1409 (464 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033923
+04:48:20  opps  1498  executed   0  sims 1414 (466 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448033979
+04:48:35  opps  1504  executed   0  sims 1421 (471 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448034037
+04:48:50  opps  1510  executed   0  sims 1425 (475 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448034093
+04:49:05  opps  1516  executed   0  sims 1432 (482 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448034150
+04:49:20  opps  1522  executed   0  sims 1439 (487 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448034205
+04:49:35  opps  1528  executed   0  sims 1445 (493 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448034261
+04:49:50  opps  1535  executed   0  sims 1452 (500 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448034318
+04:50:05  opps  1540  executed   0  sims 1456 (504 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448034376
+04:50:20  opps  1546  executed   0  sims 1463 (511 failed)  pnl(sim) $0.00  jupiter ok  429s 2  slot 448034432
+session 20260918-034520-a157 recorded: 44047 events in 6847 batches (0 write errors) → data/searcher.sqlite
+
+SESSION 20260918-034520-a157  ·  PAPER  ·  1h 04m
+
+OPPORTUNITIES
+  scanned (all evaluations)          1546
+  priced (full route quoted)         1485
+  gross-positive                     112 (7.5%)
+  net-positive (after all costs)     1 (0.1%)
+  executable (sim + risk passed)     0
+  median gross edge                  -3.62 bp
+  p90 / max gross edge               -0.22 bp / +11.50 bp
+  median net edge                    -8.96 bp
+  gross-positive episodes            79  lifetime median 0 µs–13.6 s (sampling gap 49.6 s)
+  median quote latency (all legs)    1.5 s
+
+PNL (lamports; paper = simulated, no landing risk applied)
+  gross expected, all priced         -0.622525 SOL
+  net expected, all priced           -1.642859 SOL
+  gross expected, executable         0.000000 SOL
+  net expected, executable           0.000000 SOL
+  paper fills / net                  0 / 0.000000 SOL
+
+SIMULATION
+  simulations                        1463
+  failure rate                       34.9% (511 failed)
+    · program_error                  401
+    · slippage_exceeded              109
+    · rpc_error                      1
+  median sim latency                 786 ms
+  median CU consumed                 178252
+  median sim − model net             +0 lamports
+  expected landing cost (median)     8221 lamports (base+priority+tip)
+  median Jito tip (policy)           2982 lamports
+
+SKIP REASONS
+  EDGE_TOO_SMALL                     1485
+  BUILD_FAILED                       61
+
+STRATEGIES
+  strategy     scanned  priced gross+   net+  exec   med gross     med net    best net    sim ok
+  cross-dex        928     893     15      0     0    -3.74 bp    -8.73 bp    -0.63 bp   715/877
+  round-trip       310     298     93      1     0    -0.31 bp    -5.51 bp    +4.09 bp   168/294
+  triangular       308     294      4      0     0    -9.10 bp   -22.74 bp    -3.19 bp    69/292
+
+SYSTEM
+  errors                             61
+  429 / rate-limited events          2
+  dropped storage events             0

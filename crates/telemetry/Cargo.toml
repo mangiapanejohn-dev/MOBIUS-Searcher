@@ -1,0 +1,16 @@
+[package]
+name = "searcher-telemetry"
+description = "Service health, latency tracking and rate-limit scheduling (token bucket + 429 backoff)."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+searcher-core.workspace = true
+tokio.workspace = true
+parking_lot.workspace = true
+rand.workspace = true
+serde.workspace = true
+tracing.workspace = true

@@ -1,0 +1,14 @@
+[package]
+name = "searcher-strategy"
+description = "Strategy trait, RoundTrip/CrossDex/Triangular candidates, scheduling and opportunity pricing."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+searcher-core.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

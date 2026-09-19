@@ -1,0 +1,92 @@
+[workspace]
+resolver = "3"
+members = [
+    "crates/core",
+    "crates/telemetry",
+    "crates/market",
+    "crates/jupiter",
+    "crates/jito",
+    "crates/strategy",
+    "crates/execution",
+    "crates/risk",
+    "crates/storage",
+    "crates/tui",
+    "apps/mobius-searcher",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2024"
+rust-version = "1.91"
+license = "MIT OR Apache-2.0"
+publish = false
+
+[workspace.dependencies]
+# internal
+searcher-core = { path = "crates/core" }
+searcher-telemetry = { path = "crates/telemetry" }
+searcher-market = { path = "crates/market" }
+searcher-jupiter = { path = "crates/jupiter" }
+searcher-jito = { path = "crates/jito" }
+searcher-strategy = { path = "crates/strategy" }
+searcher-execution = { path = "crates/execution" }
+searcher-risk = { path = "crates/risk" }
+searcher-storage = { path = "crates/storage" }
+searcher-tui = { path = "crates/tui" }
+
+# async / net
+tokio = { version = "1.53", features = ["rt-multi-thread", "macros", "sync", "time", "signal"] }
+reqwest = { version = "0.13", default-features = false, features = ["rustls", "json", "query", "http2", "system-proxy", "gzip"] }
+tokio-tungstenite = { version = "0.30", default-features = false, features = ["connect", "rustls-tls-webpki-roots"] }
+futures-util = { version = "0.3", default-features = false, features = ["sink", "std"] }
+
+# data
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+toml = "1.1"
+base64 = "0.22"
+bs58 = "0.5"
+rusqlite = { version = "0.40", features = ["bundled"] }
+# compressed event-log blocks (pure-Rust backend)
+flate2 = "1.1"
+
+# solana (component crates, no RPC client — we speak JSON-RPC ourselves)
+solana-pubkey = { version = "4.3", features = ["serde"] }
+solana-hash = { version = "4.6", features = ["serde"] }
+solana-instruction = { version = "4.0", features = ["std"] }
+solana-message = { version = "5.0", features = ["serde", "wincode"] }
+solana-transaction = { version = "5.0", features = ["serde", "wincode"] }
+solana-signature = { version = "3.5", features = ["serde"] }
+solana-keypair = "4.0"
+solana-signer = "4"
+wincode = { version = "0.6", features = ["alloc"] }
+
+# ui
+ratatui = "0.30"
+crossterm = "0.29"
+unicode-width = "0.2"
+# real logo image on kitty / iTerm2 / sixel terminals; no libchafa, PNG only
+ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
+image = { version = "0.25", default-features = false, features = ["png"] }
+
+# misc
+thiserror = "2.0"
+anyhow = "1.0"
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "fmt"] }
+tracing-appender = "0.2"
+clap = { version = "4.6", features = ["derive"] }
+rand = "0.9"
+parking_lot = "0.12"
+chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
+
+# test
+proptest = "1.11"
+
+[profile.release]
+debug = 1
+lto = "thin"
+codegen-units = 4
+
+[profile.dev.package."*"]
+opt-level = 2

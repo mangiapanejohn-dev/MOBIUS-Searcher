@@ -1,0 +1,40 @@
+session 20260918-045128-2dfd: 563 priced cycles, 317 simulations
+
+CROSS-DEX BY ORDERED PAIR (median gross / median net / best gross, bp; n)
+  Raydium CLMM → HumidiFi          -3.76    -8.88    +1.34   n=28
+  HumidiFi → Raydium CLMM          -3.12    -8.04    -0.36   n=28
+  Meteora DLMM → HumidiFi          -3.29    -8.16    -0.56   n=28
+  HumidiFi → Whirlpool             -6.92   -11.79    -0.78   n=28
+  HumidiFi → Meteora DLMM          -7.70   -12.57    -0.80   n=28
+  Whirlpool → HumidiFi             -8.92   -14.73    -0.99   n=28
+  Whirlpool → Raydium CLMM         -8.10   -12.98    -1.62   n=28
+  Whirlpool → Meteora DLMM        -10.01   -14.89    -2.27   n=28
+  Raydium CLMM → Meteora DLMM      -4.56    -9.45    -2.38   n=29
+  Meteora DLMM → Raydium CLMM      -5.64   -10.52    -2.46   n=28
+  Meteora DLMM → Whirlpool         -7.63   -12.50    -2.62   n=27
+  Raydium CLMM → Whirlpool         -7.18   -12.12    -3.55   n=29
+
+GROSS-POSITIVE QUOTES: 21 of 563 (3.7%)
+  involving a prop AMM (HumidiFi/SolFi/TesseraV/Quantum/Scorch/…): 21
+  simulated: 20 · simulation passed: 13
+  net-positive after costs AND simulation: 0
+    #257   round-trip  Quantum+Quay → AlphaQ+Scorch               gross   +490000 net     +1620 simnet      None  sim FAIL program_error
+    #202   round-trip  TesseraV → AlphaQ+Scorch                   gross   +140000 net   -348249 simnet      None  no sim
+    #165   cross-dex   Raydium CLMM → HumidiFi                    gross   +134340 net   -352252 simnet   -432248  sim ok
+    #212   round-trip  Scorch+Byreal → SolFi V2+Scorch            gross   +120000 net   -388791 simnet      None  sim ok
+    #157   round-trip  Quantum → Quantum                          gross   +106483 net   -382892 simnet      None  sim FAIL slippage_exceeded
+    #162   round-trip  Quantum → Scorch                           gross   +100000 net   -387126 simnet      None  sim FAIL slippage_exceeded
+    #292   round-trip  PancakeSwap → TesseraV                     gross    +87536 net   -400187 simnet   -575303  sim ok
+    #317   round-trip  Quantum → TesseraV                         gross    +80668 net   -406269 simnet   -425523  sim ok
+    #197   round-trip  Quantum+Manifest → AlphaQ+Scorch           gross    +60000 net   -428192 simnet      None  sim FAIL slippage_exceeded
+    #52    round-trip  Quantum → Quantum                          gross    +56802 net   -658368 simnet  -2693568  sim ok
+
+SIMULATION FAILURES BY CAUSE
+     32  SlippageToleranceExceeded (quote moved before sim)
+     29  Jupiter 6024 at route start (intermediate leg under-delivered → input short)
+     10  per-tx sim artifact: bundle tx needs prior tx output
+      1  other: program_error: {"InstructionError":[5,{"Custom":14}]} · Program JUP6LkbZbjS1jKKwapdHN
+      1  other: rpc_error: timeout
+
+SIM − MODEL NET (exact single-tx sims with balance deltas): n=229  median +0  identical 100 (44%)  worse 95  better 34
+  worst three: [-2672676, -2671853, -2380562]

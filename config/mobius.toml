@@ -1,0 +1,148 @@
+# MØBIUS: shared defaults for the whole bot (checked in; works for anyone as is).
+#
+# Do not put personal settings here. Layers, later wins:
+#   1. built-in defaults (crates/core/src/config.rs)
+#   2. this file
+#   3. your file: ~/.config/mobius/config.toml  (or --config PATH / $MOBIUS_CONFIG)
+#      Holds only what you change; the setup wizard (--setup) writes it.
+#   4. command-line flags (--mode, --scheduler, …)
+# Tables merge key by key (a [venues.okx] block in your file changes only the
+# keys it names); arrays ([[strategies.*]], feeds.pools, markets …) replace as
+# a whole.
+#
+# Markets are venues: [venues.<name>] with a connector `kind`, endpoints,
+# credential variable NAMES and instruments. Add one in your file to use
+# another host or account. The Solana stack (sections [jupiter] … [scheduler]
+# below) is still top-level and moves under [venues.solana] later.
+#
+# Secrets never go in any config file, only their variable NAMES. Values come
+# from the process environment, then ~/.config/mobius/.env, then ./.env
+# (KEY=VALUE, chmod 600; the first one that sets a name wins).
+#
+#   mobius-searcher --print-config   every effective value and its layer
+#   mobius-searcher --doctor         checks secrets (names only) and every endpoint
+#
+# Out of the box: PAPER mode, public keyless endpoints, no wallet, no exchange
+# keys. Nothing here can send a transaction or place an order.
+
+[general]
+mode = "paper"   # paper | confirm | live  (confirm/live also need [execution] live_enabled)
+# Database and reports. "" = per-user data directory: $MOBIUS_HOME/data, else
+# $XDG_DATA_HOME/mobius, else ~/.local/share/mobius. Relative paths are
+# relative to where you start the program.
+data_dir = ""
+
+# ════ Venue: OKX ════════════════════════════════════════════════════════════
+[venues.okx]
+kind = "okx"
+enabled = true
+rest_url = "https://www.okx.com"     # regional hosts (e.g. my.okx.com) work too
+markets = ["SOL-USDT", "SOL-USDC", "SOL-USD"]
+watchlist = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "JUP-USDT", "USDC-USDT"]
+# Only needed once OKX trading lands; public market data needs no key.
+api_key_env = "OKX_API_KEY"
+secret_env = "OKX_API_SECRET"
+passphrase_env = "OKX_API_PASSPHRASE"
+trading = false                       # market data only (no order connector yet)
+
+# ════ Venue: Solana (DEX via Jupiter; bundles via Jito) ══════════════════════
+
+# ── Jupiter (quotes and swap instructions) ──────────────────────────────────
+[jupiter]
+base_url = "https://api.jup.ag"
+# Optional. Without a key Jupiter allows ~5 requests per 10 s; a free key
+# (portal.jup.ag) gives ~10. The scheduler learns the real limit from the
+# x-ratelimit-* headers, so nothing else needs changing.
+api_key_env = "JUPITER_API_KEY"
+
+# ── Solana RPC ──────────────────────────────────────────────────────────────
+# Keyless official endpoint (≈100 requests / 10 s per IP; rps below stays far
+# under it). Chosen by measurement: its WebSocket delivers pool updates 0–2
+# slots behind the chain head; solana-rpc.publicnode.com ran ~30 slots
+# (~12 s) behind. `--doctor` shows what your endpoint does.
+# For your own provider (Helius, Triton, QuickNode…) put the full URL, key
+# included, in the environment, not here:
+#   SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=…
+#   SOLANA_WS_URL=wss://mainnet.helius-rpc.com/?api-key=…
+[rpc]
+url = "https://api.mainnet-beta.solana.com"
+ws_url = "wss://api.mainnet-beta.solana.com"
+url_env = "SOLANA_RPC_URL"
+ws_url_env = "SOLANA_WS_URL"
+rps = 3.0          # requests/s to the HTTP endpoint (raise for a paid plan)
+burst = 3
+simulate_rps = 0.5
+
+# ── Jito (tips, bundles) ────────────────────────────────────────────────────
+[jito]
+block_engine_url = "https://mainnet.block-engine.jito.wtf"
+tip_floor_url = "https://bundles.jito.wtf/api/v1/bundles/tip_floor"
+uuid_env = "JITO_UUID"   # optional
+
+# ── Real-time feeds (do not spend the Jupiter limit) ────────────────────────
+[feeds]
+enabled = true
+# Jito tip stream; "" = poll the REST tip floor only.
+tip_stream_url = "wss://bundles.jito.wtf/api/v1/bundles/tip_stream"
+# Oracle delivery: "onchain" (Pyth price accounts over the RPC WebSocket,
+# keyless) or "hermes" (Pyth Hermes stream; needs the key below, otherwise
+# falls back to onchain).
+oracle_source = "onchain"
+hermes_url = "https://hermes.pyth.network"
+pyth_api_key_env = "PYTH_API_KEY"
+# Pools and oracles watched on chain: see [[feeds.pools]] / [[feeds.oracles]]
+# in `--print-config`; set them in your file to replace the list.
+
+# ── Jupiter request scheduler (docs/LATENCY.md) ─────────────────────────────
+[scheduler]
+kind = "event"   # event | round_robin (the old scanner, kept for A/B runs)
+# Values below are for a 10-request window; with a smaller learned window
+# (keyless: 5) safety and reserve shrink in proportion.
+window_capacity = 10
+window_ms = 10000
+window_safety = 2
+reserve = 3
+
+# ════ Whole bot ══════════════════════════════════════════════════════════════
+
+# ── Network ─────────────────────────────────────────────────────────────────
+[network]
+# "auto": HTTPS_PROXY / ALL_PROXY from the environment, else the OS proxy
+# settings (macOS); "none": always direct; or "http://host:port".
+proxy = "auto"
+
+# ── Recording database (<data dir>/mobius.sqlite) ────────────────────────────
+[storage]
+retention_days = 7        # sessions idle longer than this are deleted
+keep_trading_days = 90    # sessions with trades or executions
+max_db_mb = 1024          # above this the oldest sessions go first
+prune_interval_min = 30   # while recording (also once at startup); --prune runs it now
+
+# ── Execution gate ──────────────────────────────────────────────────────────
+[execution]
+# Required for CONFIRM and LIVE, together with [wallet] keypair_path in YOUR
+# file. A key in the environment never enables sending on its own.
+live_enabled = false
+
+# ── Your file, for example (~/.config/mobius/config.toml) ───────────────────
+# [wallet]
+# pubkey = "<bot hot wallet public key>"        # enough for PAPER simulation
+# keypair_path = "/path/to/bot-hot-wallet.json" # CONFIRM/LIVE only, chmod 600
+#
+# [risk]
+# max_trade_lamports = 10000000                 # 0.01 SOL
+#
+# [venues.okx]
+# markets = ["BTC-USDT", "ETH-USDT"]            # only this key changes
+#
+# [venues.okx_eu]                               # a second OKX host/account
+# kind = "okx"
+# rest_url = "https://my.okx.com"
+# markets = ["ETH-EUR"]
+# api_key_env = "OKX_EU_API_KEY"
+#
+# [[strategies.cross_dex]]
+# base = "SOL"
+# quote = "USDC"
+# amount_lamports = 10000000
+# dexes = ["Raydium CLMM", "Whirlpool", "Meteora DLMM", "HumidiFi"]

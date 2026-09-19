@@ -1,0 +1,8 @@
+{
+ "address": "7UVimffxr9ow1uXYxsr4LHAcV58mLzhmwaeKvJ1pjLiE",
+ "owner": "rec5EKMGg6MxZYaMdyBfgwp4d5rB9T1VQH5pJv5LtFJ",
+ "slot": 448355014,
+ "data_base64": "IvEjY51+9M1gMUcENA3t3zcf1CRyFI8kjp0abRpesqw6zYt/1dayQwHvDYtv2izrpB2hXUCV0do5Kg0vjtDGx7wPTPrIwoC1baqcHp0CAAAA4HUdAAAAAAD4////D0muagAAAAAOSa5qAAAAAORIK5sCAAAAY8gWAAAAAAAiWrkaAAAAAAA=",
+ "expected_price": 112.2596369,
+ "note": "mainnet snapshot; expected_price from an independent Python decoder"
+}

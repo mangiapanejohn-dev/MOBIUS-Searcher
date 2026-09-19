@@ -1,0 +1,50 @@
+SESSION 20260918-045128-2dfd  ·  PAPER  ·  22m 11s
+
+OPPORTUNITIES
+  scanned (all evaluations)          563
+  priced (full route quoted)         322
+  gross-positive                     21 (6.5%)
+  net-positive (after all costs)     1 (0.3%)
+  executable (sim + risk passed)     0
+  median gross edge                  -3.64 bp
+  p90 / max gross edge               -0.31 bp / +4.90 bp
+  median net edge                    -8.83 bp
+  gross-positive episodes            14  lifetime median 0 µs–25.4 s (sampling gap 49.9 s)
+  median quote latency (all legs)    1.3 s
+
+PNL (lamports; paper = simulated, no landing risk applied)
+  gross expected, all priced         -0.137423 SOL
+  net expected, all priced           -0.356655 SOL
+  gross expected, executable         0.000000 SOL
+  net expected, executable           0.000000 SOL
+  paper fills / net                  0 / 0.000000 SOL
+
+SIMULATION
+  simulations                        317
+  failure rate                       23.0% (73 failed)
+    · slippage_exceeded              32
+    · program_error                  30
+    · depends_on_prior_tx            10
+    · rpc_error                      1
+    single_tx/exact                  291 sims · 62 failed (21.3%)
+    bundle/per_tx                    26 sims · 11 failed (42.3%)
+  median sim latency                 698 ms
+  median CU consumed                 195048
+  median sim − model net             +0 lamports
+  expected landing cost (median)     7994 lamports (base+priority+tip)
+  median Jito tip (policy)           2529 lamports
+
+SKIP REASONS
+  EDGE_TOO_SMALL                     322
+  BUILD_FAILED                       241
+
+STRATEGIES
+  strategy     scanned  priced gross+   net+  exec   med gross     med net    best net    sim ok
+  cross-dex        337     193      1      0     0    -3.68 bp    -8.61 bp    -3.53 bp   189/189
+  round-trip       113      64     20      1     0    -0.31 bp    -5.34 bp    +0.01 bp     41/63
+  triangular       113      65      0      0     0    -8.90 bp   -22.63 bp   -14.25 bp     14/65
+
+SYSTEM
+  errors                             241
+  429 / rate-limited events          1
+  dropped storage events             0

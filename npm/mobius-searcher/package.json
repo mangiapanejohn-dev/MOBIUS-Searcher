@@ -1,0 +1,26 @@
+{
+  "name": "mobius-searcher",
+  "version": "0.1.0",
+  "description": "MØBIUS: multi-venue quant trading bot (Solana/Jupiter arbitrage, OKX market data) with a terminal UI. PAPER by default.",
+  "license": "MIT OR Apache-2.0",
+  "homepage": "https://github.com/mangiapanejohn-dev/MOBIUS-Searcher",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/mangiapanejohn-dev/MOBIUS-Searcher.git",
+    "directory": "npm/mobius-searcher"
+  },
+  "bugs": "https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/issues",
+  "keywords": ["solana", "jupiter", "okx", "quant", "trading-bot", "arbitrage", "tui"],
+  "bin": {
+    "mobius-searcher": "bin/mobius-searcher.js"
+  },
+  "scripts": {
+    "postinstall": "node install.js"
+  },
+  "files": ["bin/", "install.js", "README.md"],
+  "engines": {
+    "node": ">=18"
+  },
+  "os": ["darwin", "linux", "win32"],
+  "cpu": ["x64", "arm64"]
+}

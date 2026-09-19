@@ -1,0 +1,43 @@
+session 20260918-052001-34c5: 982 priced cycles, 553 simulations
+
+CROSS-DEX BY ORDERED PAIR (median gross / median net / best gross, bp; n)
+  Raydium CLMM → HumidiFi          -2.76    -7.65    +4.39   n=50
+  HumidiFi → Raydium CLMM          -3.09    -8.01    +3.72   n=49
+  Meteora DLMM → HumidiFi          -2.54    -7.50    +1.46   n=49
+  Whirlpool → HumidiFi             -6.21   -11.71    -0.02   n=49
+  HumidiFi → Meteora DLMM          -2.32    -7.22    -0.39   n=49
+  HumidiFi → Whirlpool             -6.84   -11.74    -1.06   n=48
+  Meteora DLMM → Raydium CLMM      -4.12    -9.04    -1.68   n=49
+  Raydium CLMM → Meteora DLMM      -4.28    -9.19    -1.72   n=50
+  Whirlpool → Meteora DLMM         -6.65   -11.55    -1.90   n=49
+  Whirlpool → Raydium CLMM         -7.51   -12.39    -2.06   n=49
+  Meteora DLMM → Whirlpool         -7.83   -12.72    -2.10   n=48
+  Raydium CLMM → Whirlpool         -7.32   -12.21    -2.99   n=50
+
+GROSS-POSITIVE QUOTES: 45 of 982 (4.6%)
+  involving a prop AMM (HumidiFi/SolFi/TesseraV/Quantum/Scorch/…): 45
+  simulated: 43 · simulation passed: 29
+  net-positive after costs AND simulation: 0
+    #687   round-trip  Quantum → TesseraV                         gross   +486818 net     -6016 simnet      None  sim FAIL slippage_exceeded
+    #885   cross-dex   Raydium CLMM → HumidiFi                    gross   +439167 net    -52277 simnet      None  sim ok
+    #576   cross-dex   HumidiFi → Raydium CLMM                    gross   +372121 net   -119329 simnet      None  sim ok
+    #597   round-trip  Quantum → Quantum                          gross   +291225 net   -197779 simnet      None  sim FAIL slippage_exceeded
+    #887   round-trip  ZeroFi → TesseraV                          gross   +198849 net   -289090 simnet   -715442  sim ok
+    #785   cross-dex   Raydium CLMM → HumidiFi                    gross   +192964 net   -293844 simnet  -1211229  sim ok
+    #737   round-trip  PancakeSwap+Manifest → TesseraV            gross   +187166 net   -299716 simnet   -273154  sim ok
+    #602   round-trip  Quantum → Quantum                          gross   +179496 net   -709567 simnet      None  sim FAIL program_error
+    #742   round-trip  Scorch+AlphaQ → Quantum                    gross   +161194 net   -327917 simnet      None  no sim
+    #122   round-trip  Quantum → Quantum                          gross   +155744 net   -806813 simnet  -1909612  sim ok
+
+SIMULATION FAILURES BY CAUSE
+     58  SlippageToleranceExceeded (quote moved before sim)
+     41  Jupiter 6024 at route start (intermediate leg under-delivered → input short)
+     11  per-tx sim artifact: bundle tx needs prior tx output
+      8  other: rpc_error: timeout
+      2  other: program_error: {"InstructionError":[5,{"Custom":14}]} · Program JUP6LkbZbjS1jKKwapdHN
+      2  other: rpc_error: transport: error sending request for url <url>
+      2  other: rpc_error: transport: error decoding response body for url <url>
+      1  other: program_error: {"InstructionError":[8,{"Custom":14}]} · Program JUP6LkbZbjS1jKKwapdHN
+
+SIM − MODEL NET (exact single-tx sims with balance deltas): n=390  median +0  identical 158 (41%)  worse 183  better 49
+  worst three: [-2964355, -2863364, -2820017]

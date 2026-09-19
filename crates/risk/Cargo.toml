@@ -1,0 +1,15 @@
+[package]
+name = "searcher-risk"
+description = "Risk engine and kill switch."
+version.workspace = true
+edition.workspace = true
+rust-version.workspace = true
+license.workspace = true
+publish.workspace = true
+
+[dependencies]
+searcher-core.workspace = true
+parking_lot.workspace = true
+
+[dev-dependencies]
+proptest.workspace = true

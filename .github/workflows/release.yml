@@ -1,0 +1,125 @@
+name: Release
+
+# Push a tag like v0.1.0: builds the binaries, publishes a GitHub release with
+# SHA256SUMS, then publishes the npm wrapper (only if the NPM_TOKEN secret exists).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to (re)build, e.g. v0.1.0"
+        required: true
+
+permissions:
+  contents: read
+
+env:
+  CARGO_TERM_COLOR: always
+  TAG: ${{ github.event.inputs.tag || github.ref_name }}
+
+jobs:
+  build:
+    name: build ${{ matrix.target }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - { target: aarch64-apple-darwin, os: macos-14 }
+          - { target: x86_64-apple-darwin, os: macos-14 }
+          - { target: x86_64-unknown-linux-gnu, os: ubuntu-22.04 }
+          - { target: aarch64-unknown-linux-gnu, os: ubuntu-22.04-arm }
+          - { target: x86_64-pc-windows-msvc, os: windows-latest }
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+      - uses: Swatinem/rust-cache@v2
+        with:
+          key: ${{ matrix.target }}
+      - name: Build
+        run: cargo build --release --locked -p mobius-searcher --target ${{ matrix.target }}
+      - name: Package (unix)
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          name=mobius-searcher-${{ matrix.target }}
+          mkdir -p dist/$name/config
+          cp target/${{ matrix.target }}/release/mobius-searcher dist/$name/
+          cp README.md CHANGELOG.md LICENSE-* dist/$name/ 2>/dev/null || true
+          cp config/mobius.toml dist/$name/config/
+          tar -C dist -czf dist/$name.tar.gz $name
+          rm -rf dist/$name
+      - name: Package (windows)
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          $name = "mobius-searcher-${{ matrix.target }}"
+          New-Item -ItemType Directory -Force -Path "dist/$name/config" | Out-Null
+          Copy-Item "target/${{ matrix.target }}/release/mobius-searcher.exe" "dist/$name/"
+          Copy-Item README.md, CHANGELOG.md "dist/$name/"
+          Get-ChildItem LICENSE-* -ErrorAction SilentlyContinue | Copy-Item -Destination "dist/$name/"
+          Copy-Item config/mobius.toml "dist/$name/config/"
+          Compress-Archive -Path "dist/$name" -DestinationPath "dist/$name.zip"
+          Remove-Item -Recurse -Force "dist/$name"
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.target }}
+          path: dist/*
+
+  release:
+    needs: build
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+      - name: Checksums
+        run: cd dist && sha256sum mobius-searcher-* > SHA256SUMS && cat SHA256SUMS
+      - name: Release notes from CHANGELOG.md
+        run: |
+          v="${TAG#v}"
+          awk -v v="$v" '$0 ~ "^## "v"( |$)" {on=1; next} /^## / && on {exit} on' CHANGELOG.md > notes.md
+          test -s notes.md || echo "See CHANGELOG.md" > notes.md
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.TAG }}
+          name: MØBIUS ${{ env.TAG }}
+          body_path: notes.md
+          files: dist/*
+
+  npm:
+    needs: release
+    runs-on: ubuntu-22.04
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          registry-url: https://registry.npmjs.org
+      - name: Publish mobius-searcher to npm
+        if: env.NODE_AUTH_TOKEN != ''
+        working-directory: npm/mobius-searcher
+        run: |
+          npm version "${TAG#v}" --no-git-tag-version --allow-same-version
+          npm publish --access public --provenance
+      - name: Skipped (no NPM_TOKEN secret)
+        if: env.NODE_AUTH_TOKEN == ''
+        run: echo "NPM_TOKEN is not set; npm publish skipped. The GitHub release is complete."
