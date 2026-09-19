@@ -1,0 +1,48 @@
+name: Benchmark / reproduction
+description: Submit a measurement, reproduce a published result, or report a conflicting result.
+title: "[benchmark] "
+labels: ["documentation"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Measurements that disagree with the current results are welcome. Include enough context to compare them fairly.
+  - type: input
+    id: commit
+    attributes:
+      label: Commit SHA
+    validations:
+      required: true
+  - type: input
+    id: duration
+    attributes:
+      label: Run duration / sample count
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS/arch, rough region, RPC provider, Jupiter tier, scheduler mode.
+    validations:
+      required: true
+  - type: textarea
+    id: command
+    attributes:
+      label: Command / configuration
+      description: Remove secrets.
+      render: shell
+    validations:
+      required: true
+  - type: textarea
+    id: results
+    attributes:
+      label: Results
+      description: Include p50/p95/p99, rate limits, evaluation/simulation counts, or other relevant measurements.
+    validations:
+      required: true
+  - type: textarea
+    id: comparison
+    attributes:
+      label: Comparison with published results
+      description: What reproduced, failed to reproduce, or changed?
