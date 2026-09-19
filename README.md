@@ -4,6 +4,8 @@
 
 <p align="center">
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.1.0-d97757?style=for-the-badge" alt="Version 0.1.0"></a>
+  <a href="https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/stargazers"><img src="https://img.shields.io/github/stars/mangiapanejohn-dev/MOBIUS-Searcher?style=for-the-badge&color=d97757" alt="GitHub stars"></a>
+  <a href="https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/issues"><img src="https://img.shields.io/github/issues/mangiapanejohn-dev/MOBIUS-Searcher?style=for-the-badge&color=3a3a3a" alt="Open issues"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-2024-000000?style=for-the-badge&logo=rust&logoColor=white" alt="Rust"></a>
   <a href="https://ratatui.rs"><img src="https://img.shields.io/badge/Built_With-Ratatui-000000?style=for-the-badge&logo=ratatui&logoColor=white" alt="Built with Ratatui"></a>
   <a href="#license"><img src="https://img.shields.io/badge/license-MIT_OR_Apache--2.0-3a3a3a?style=for-the-badge" alt="License: MIT OR Apache-2.0"></a>
@@ -268,6 +270,8 @@ Every section, venues and secrets: [docs/CONFIGURATION.md](docs/CONFIGURATION.md
 | [RESEARCH](docs/RESEARCH.md) | API research behind the design |
 | [LIVE_CHECKLIST](docs/LIVE_CHECKLIST.md) | everything that must be true before LIVE |
 | [SECURITY](SECURITY.md) | secrets, keys, execution gates, reporting |
+| [ROADMAP](ROADMAP.md) | current engineering priorities and research questions |
+| [CONTRIBUTING](CONTRIBUTING.md) | development setup, benchmark format, PR expectations |
 
 ## Development
 
