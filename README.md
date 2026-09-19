@@ -273,6 +273,7 @@ Every section, venues and secrets: [docs/CONFIGURATION.md](docs/CONFIGURATION.md
 | [SECURITY](SECURITY.md) | secrets, keys, execution gates, reporting |
 | [ROADMAP](ROADMAP.md) | current engineering priorities and research questions |
 | [CONTRIBUTING](CONTRIBUTING.md) | development setup, benchmark format, PR expectations |
+| [CITATION](CITATION.cff) | citation metadata for research and benchmark use |
 
 ## Development
 
