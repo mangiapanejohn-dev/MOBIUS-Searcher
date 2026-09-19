@@ -18,6 +18,8 @@
   <a href="#how-it-works">How it works</a> ·
   <a href="docs/CONFIGURATION.md">Configuration</a> ·
   <a href="#documentation">Docs</a> ·
+  <a href="ROADMAP.md">Roadmap</a> ·
+  <a href="CONTRIBUTING.md">Contributing</a> ·
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
@@ -76,6 +78,21 @@ claim.
 | **Data freshness** | pool updates arrive 0–2 slots behind the chain head on the default RPC |
 | **CONFIRM / LIVE** | implemented and unit-tested, locked by default, **no transaction ever sent** |
 | **Venues** | Solana: execution. OKX: market data only (no order connector yet) |
+
+## Get involved
+
+MØBIUS-Searcher is most useful when its claims can be reproduced outside the
+machine they were measured on. If you want to contribute, the highest-value
+work right now is **benchmark reproduction, execution correctness, terminal
+compatibility, tests, and failure attribution**.
+
+- [Roadmap](ROADMAP.md) — current engineering and research questions
+- [Contributing](CONTRIBUTING.md) — development setup and benchmark format
+- [Issues](https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/issues) — bugs, proposals and benchmark reproductions
+- [Security](SECURITY.md) — private reporting for anything that could put keys or funds at risk
+
+Negative results are welcome. A failed reproduction is useful evidence when the
+environment and method are documented.
 
 ## Install
 

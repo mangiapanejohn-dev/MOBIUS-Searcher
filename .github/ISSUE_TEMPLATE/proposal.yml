@@ -1,0 +1,30 @@
+name: Feature / research proposal
+description: Propose a focused capability, experiment, or research question.
+title: "[proposal] "
+labels: ["enhancement"]
+body:
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem or uncertainty
+      description: What cannot the project currently measure, explain, or do?
+    validations:
+      required: true
+  - type: textarea
+    id: proposal
+    attributes:
+      label: Proposed change
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Why this is worth adding
+      description: Prefer a concrete failure mode, measurement gap, or reproducible use case.
+  - type: textarea
+    id: safety
+    attributes:
+      label: Execution / safety impact
+      description: Could this affect PAPER, CONFIRM, LIVE, key handling, or transaction submission?
+    validations:
+      required: true
