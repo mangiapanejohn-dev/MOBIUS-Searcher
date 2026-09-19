@@ -272,7 +272,7 @@ fn main() -> Result<()> {
     }
     if cli.doctor {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
-        let ok = rt.block_on(doctor::run(&layered, &env_files));
+        let ok = rt.block_on(doctor::run(&layered, &env_files, cli.json));
         std::process::exit(if ok { 0 } else { 1 });
     }
     let db_path = cli.db.clone().unwrap_or_else(|| cfg.data_dir().join("mobius.sqlite"));

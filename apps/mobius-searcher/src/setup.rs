@@ -3,6 +3,7 @@
 //! exposes every value. Nothing is written before the final review, and a
 //! newly generated bot key stays in memory until then.
 
+use crate::doctor::Check;
 use crate::setup_ui::{self, MenuItem, TextPrompt, Validator};
 use anyhow::{Context, Result, bail};
 use searcher_core::config::{
@@ -606,6 +607,7 @@ fn edit_sections(
                 configure_wallet(cfg, pending_wallet, signer, current.as_ref(), ctx)?;
             }
             1 => {
+                let proxy = proxy_summary(cfg);
                 let update = menu(
                     "Network & API keys",
                     &[
@@ -615,6 +617,8 @@ fn edit_sections(
                             "Hidden input; Enter keeps each stored value, '-' clears it.",
                             None,
                         ),
+                        ("Change the proxy", &proxy, None),
+                        ("Test the connection", "Solana RPC, WebSocket, Jupiter, Jito and venues, from here.", None),
                     ],
                     0,
                 )?;
@@ -630,6 +634,12 @@ fn edit_sections(
                     keep(answers.ws_url, &mut env.ws_url);
                     keep(answers.jito_uuid, &mut env.jito_uuid);
                     keep(answers.pyth_key, &mut env.pyth_key);
+                }
+                if update == 2 {
+                    choose_proxy(cfg)?;
+                }
+                if update > 0 {
+                    network_check(cfg, env, present)?;
                 }
             }
             2 => edit_venues(cfg)?,
@@ -804,6 +814,7 @@ fn configure_guided(
     } else if present.jupiter || present.rpc {
         info("Credentials already in .env stay in use.")?;
     }
+    network_check(cfg, env, present)?;
 
     path.step(3, &["Route sizes come from the safety policy in the next step."]);
     let scope = menu(
@@ -1001,6 +1012,191 @@ fn apply_safety_policy(cfg: &mut Config, policy: usize) {
     apply_trade_size(cfg, amount.max(1_000_000));
 }
 
+fn proxy_summary(cfg: &Config) -> String {
+    match cfg.network.proxy.trim() {
+        "" | "auto" => format!("Automatic · {}", auto_proxy_now()),
+        "none" | "direct" => "No proxy · always connect directly".into(),
+        url => format!("HTTP proxy {url}"),
+    }
+}
+
+/// What `auto` resolves to on this machine right now.
+fn auto_proxy_now() -> String {
+    let env = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+        .into_iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()).map(|v| (k, v)));
+    match (env, searcher_telemetry::proxy::system_proxy(true)) {
+        (Some((k, v)), _) => format!("${k} {}", config::display_url(&v)),
+        (None, Some((host, port))) => format!("system proxy {host}:{port}"),
+        (None, None) => "no proxy found, connects directly".into(),
+    }
+}
+
+fn choose_proxy(cfg: &mut Config) -> Result<()> {
+    let now = match cfg.network.proxy.trim() {
+        "" | "auto" => 0,
+        "none" | "direct" => 1,
+        _ => 2,
+    };
+    let badge = |i: usize| (i == now).then_some("current");
+    let auto = format!("Environment variables, else the system settings. Now: {}.", auto_proxy_now());
+    let pick = menu(
+        "How should MØBIUS connect to the internet?",
+        &[
+            ("Detect the proxy automatically", &auto, badge(0)),
+            ("Connect directly", "Ignore every proxy setting.", badge(1)),
+            ("Use this HTTP proxy", "An http://host:port proxy for every connection.", badge(2)),
+        ],
+        now,
+    )?;
+    cfg.network.proxy = match pick {
+        0 => "auto".into(),
+        1 => "none".into(),
+        _ => {
+            let current = if now == 2 { cfg.network.proxy.clone() } else { String::new() };
+            let check = |v: &str| -> std::result::Result<(), String> {
+                if v.is_empty() && !current.is_empty() {
+                    return Ok(());
+                }
+                if !v.starts_with("http://") {
+                    return Err("Enter it as http://host:port".into());
+                }
+                searcher_telemetry::proxy::ProxySetting::parse(v).map(|_| ())
+            };
+            let placeholder = if current.is_empty() { "http://127.0.0.1:7890".to_string() } else { current.clone() };
+            let value = ask(&TextPrompt {
+                label: "HTTP proxy",
+                placeholder: &placeholder,
+                empty_answer: &current,
+                hidden: false,
+                validate: Some(&check),
+            })?;
+            if value.trim().is_empty() { current } else { value.trim().trim_end_matches('/').to_string() }
+        }
+    };
+    Ok(())
+}
+
+/// Tests the settings as they would be saved, then offers to fix what failed.
+/// A failure never blocks saving: the user may simply be offline right now.
+fn network_check(cfg: &mut Config, env: &mut EnvAnswers, present: Present) -> Result<()> {
+    loop {
+        let checks = setup_ui::with_spinner("Testing connections from this machine…", || probe(cfg, env))?;
+        for c in &checks {
+            check_line(c.ok, c.optional, &c.name, &format!("{} · {}", c.target, c.detail))?;
+        }
+        let failed: Vec<&str> = checks.iter().filter(|c| !c.ok && !c.optional).map(|c| c.name.as_str()).collect();
+        if failed.is_empty() {
+            return Ok(());
+        }
+        let proxy = proxy_summary(cfg);
+        let pick = menu(
+            &format!("{} did not answer. What now?", failed.join(", ")),
+            &[
+                ("Try another proxy setting", &proxy, None),
+                ("Re-enter keys and endpoints", "Hidden input; Enter keeps each stored value.", None),
+                ("Test again", "After fixing something outside MØBIUS.", None),
+                ("Continue anyway", "Save as is; `mobius-searcher --doctor` tests it again later.", None),
+            ],
+            0,
+        )?;
+        match pick {
+            0 => choose_proxy(cfg)?,
+            1 => {
+                let answers = configure_credentials(present, false)?;
+                for (new, old) in [
+                    (answers.jupiter_key, &mut env.jupiter_key),
+                    (answers.rpc_url, &mut env.rpc_url),
+                    (answers.ws_url, &mut env.ws_url),
+                ] {
+                    if new.is_some() {
+                        *old = new;
+                    }
+                }
+            }
+            2 => {}
+            _ => return warn("Saved without a working connection; `mobius-searcher --doctor` tests it again."),
+        }
+    }
+}
+
+/// Runs `mobius-searcher --doctor --json` as a child process on a temporary
+/// copy of the settings. The child gets the just-typed secrets in its own
+/// environment only (nothing is written) and a fresh proxy setting, which a
+/// running process cannot change.
+fn probe(cfg: &Config, env: &EnvAnswers) -> Result<Vec<Check>> {
+    #[cfg(test)]
+    if let Some(checks) = script::probe() {
+        return checks;
+    }
+    use std::process::{Command, Stdio};
+    let mut settings = cfg.clone();
+    // streams take seconds to deliver a first message; the RPC, WebSocket,
+    // Jupiter, Jito and venue checks cover what setup can fix
+    settings.feeds.enabled = false;
+    settings.scheduler.kind = SchedulerKind::RoundRobin;
+    settings.general.mode = Mode::Paper;
+    let dir = std::env::temp_dir().join(format!(
+        "mobius-setup-probe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
+    ));
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("config.toml");
+    let result = (|| -> Result<Vec<Check>> {
+        fs::write(&file, toml::to_string(&settings).context("serializing the probe settings")?)?;
+        let mut command = Command::new(std::env::current_exe().context("locating mobius-searcher")?);
+        command.args(["--doctor", "--json", "--config"]).arg(&file);
+        for (name, change) in [
+            (&cfg.jupiter.api_key_env, &env.jupiter_key),
+            (&cfg.rpc.url_env, &env.rpc_url),
+            (&cfg.rpc.ws_url_env, &env.ws_url),
+            (&cfg.jito.uuid_env, &env.jito_uuid),
+            (&cfg.feeds.pyth_api_key_env, &env.pyth_key),
+        ] {
+            match change {
+                Some(Some(value)) => {
+                    command.env(name, value);
+                }
+                // cleared: an empty value hides the stored one from the child
+                Some(None) => {
+                    command.env(name, "");
+                }
+                None => {}
+            }
+        }
+        let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+        let mut stdout = child.stdout.take().context("child stdout")?;
+        let reader = std::thread::spawn(move || {
+            let mut out = String::new();
+            let _ = io::Read::read_to_string(&mut stdout, &mut out);
+            out
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        while child.try_wait()?.is_none() {
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("the connection test did not finish within 45 s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let out = reader.join().unwrap_or_default();
+        let report: serde_json::Value = out
+            .lines()
+            .rev()
+            .find_map(|line| serde_json::from_str(line).ok())
+            .context("the connection test printed no report")?;
+        report
+            .get("checks")
+            .and_then(|c| c.as_array())
+            .map(|checks| checks.iter().filter_map(Check::from_json).collect())
+            .context("the connection test report has no checks")
+    })();
+    let _ = fs::remove_dir_all(&dir);
+    result
+}
+
 fn configure_credentials(present: Present, include_optional: bool) -> Result<EnvAnswers> {
     let keep = |there: bool, otherwise: &'static str| if there { "enter keeps the current value" } else { otherwise };
     let jupiter = secret("Jupiter API key (optional)", keep(present.jupiter, "enter = keyless access"), None)?;
@@ -1103,6 +1299,7 @@ fn configure_advanced(
     if customize("Adjust API endpoints and rate limits?")? {
         configure_network(cfg)?;
     }
+    network_check(cfg, env, present)?;
 
     path.step(4, &["Each strategy can be switched on or off; amounts are in SOL."]);
     configure_strategies(cfg)?;
@@ -1475,6 +1672,37 @@ fn outline(title: &str, rows: &[(&str, String)]) -> Result<()> {
         return setup_ui::outline(title, rows);
     }
     note(title, rows)
+}
+
+fn check_line(ok: bool, optional: bool, name: &str, detail: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!(
+            "check {} {name} {detail}",
+            if ok {
+                "ok"
+            } else if optional {
+                "warn"
+            } else {
+                "FAIL"
+            }
+        ));
+        return Ok(());
+    }
+    if setup_ui::active() {
+        return setup_ui::check_line(ok, optional, name, detail);
+    }
+    println!(
+        "  {} {name:<17} {detail}",
+        if ok {
+            "ok  "
+        } else if optional {
+            "warn"
+        } else {
+            "FAIL"
+        }
+    );
+    Ok(())
 }
 
 fn success(message: &str) -> Result<()> {
@@ -1935,6 +2163,8 @@ mod script {
         No,
         /// Type this and press Enter ("" = keep the shown value).
         Text(&'static str),
+        /// What the next connection test reports.
+        Checks(Vec<Check>),
         Esc,
     }
 
@@ -2011,6 +2241,19 @@ mod script {
         };
         log(format!("confirm {prompt} -> {yes}"));
         Some(Ok(yes))
+    }
+
+    pub fn probe() -> Option<Result<Vec<Check>>> {
+        if !active() {
+            return None;
+        }
+        match next("connection test") {
+            A::Checks(checks) => {
+                log(format!("probe {} checks", checks.len()));
+                Some(Ok(checks))
+            }
+            other => panic!("a connection test runs here, the script has {other:?}"),
+        }
     }
 
     pub fn text(spec: &TextPrompt<'_>) -> Option<Result<String>> {
@@ -2140,6 +2383,21 @@ mod tests {
     // ---------------------------------------------------------- whole flows
 
     use super::script::A::{self, *};
+    use crate::doctor::Check;
+
+    fn check(name: &str, ok: bool) -> Check {
+        Check { ok, optional: false, name: name.into(), target: "https://x".into(), detail: "d".into() }
+    }
+
+    /// A connection test where everything answers.
+    fn ok() -> A {
+        Checks(vec![check("Solana RPC", true), check("Solana WebSocket", true), check("Jupiter", true)])
+    }
+
+    /// A connection test where Jupiter does not answer.
+    fn jupiter_down() -> A {
+        Checks(vec![check("Solana RPC", true), check("Solana WebSocket", true), check("Jupiter", false)])
+    }
 
     /// A throwaway user directory: config, secrets, marker and wallets all
     /// live here, never in the real ~/.config.
@@ -2221,7 +2479,7 @@ mod tests {
     fn research_first_use_creates_a_wallet_and_saves_only_a_delta() {
         let sb = Sandbox::new("research");
         let (outcome, log) =
-            sb.run(vec![Pick("Research"), Pick("Create"), Pick("Public"), Pick("Core"), Pick("Guarded"), Yes]);
+            sb.run(vec![Pick("Research"), Pick("Create"), Pick("Public"), ok(), Pick("Core"), Pick("Guarded"), Yes]);
         assert!(!outcome.unwrap().start_now, "--setup never starts the engine");
         let cfg = sb.effective();
         assert_eq!(cfg.general.mode, Mode::Paper);
@@ -2245,8 +2503,17 @@ mod tests {
         for answers in [
             vec![Esc],
             vec![Pick("Research"), Esc],
-            vec![Pick("Research"), Pick("Create"), Pick("Public"), Pick("Core"), Esc],
-            vec![Pick("Assisted"), Pick("Create"), Pick("Public"), Pick("Core"), Pick("Guarded"), Pick("Unlock"), Esc],
+            vec![Pick("Research"), Pick("Create"), Pick("Public"), ok(), Pick("Core"), Esc],
+            vec![
+                Pick("Assisted"),
+                Pick("Create"),
+                Pick("Public"),
+                ok(),
+                Pick("Core"),
+                Pick("Guarded"),
+                Pick("Unlock"),
+                Esc,
+            ],
         ] {
             let sb = Sandbox::new("cancel");
             let (outcome, _) = sb.run(answers.clone());
@@ -2255,7 +2522,7 @@ mod tests {
         }
         let sb = Sandbox::new("decline");
         let (outcome, log) =
-            sb.run(vec![Pick("Research"), Pick("Create"), Pick("Public"), Pick("Core"), Pick("Guarded"), No]);
+            sb.run(vec![Pick("Research"), Pick("Create"), Pick("Public"), ok(), Pick("Core"), Pick("Guarded"), No]);
         assert!(!outcome.unwrap().start_now);
         assert!(sb.files().is_empty(), "declined save wrote {:?}", sb.files());
         assert!(log.iter().any(|l| l == "info Nothing was written."), "{log:#?}");
@@ -2268,6 +2535,7 @@ mod tests {
             Pick("Assisted"),
             Pick("Create"),
             Pick("Public"),
+            ok(),
             Pick("Core"),
             Pick("Guarded"),
             Pick("Unlock"),
@@ -2286,8 +2554,16 @@ mod tests {
     #[test]
     fn assisted_can_stay_in_paper_and_keep_the_new_wallet() {
         let sb = Sandbox::new("assisted-paper");
-        let answers =
-            vec![Pick("Assisted"), Pick("Create"), Pick("Public"), Pick("Core"), Pick("Guarded"), Pick("Stay"), Yes];
+        let answers = vec![
+            Pick("Assisted"),
+            Pick("Create"),
+            Pick("Public"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Pick("Stay"),
+            Yes,
+        ];
         sb.run(answers).0.unwrap();
         let cfg = sb.effective();
         assert_eq!(cfg.general.mode, Mode::Paper);
@@ -2308,6 +2584,7 @@ mod tests {
             Text("/no/such/keypair.json"),
             Text(leaked),
             Pick("Public"),
+            ok(),
             Pick("Core"),
             Pick("Guarded"),
             Yes,
@@ -2326,6 +2603,7 @@ mod tests {
             Text("not-an-address"),
             Text(address),
             Pick("Public"),
+            ok(),
             Pick("Core"),
             Pick("Guarded"),
             Yes,
@@ -2343,7 +2621,7 @@ mod tests {
         let sb = Sandbox::new("advanced");
         let mut answers = vec![Pick("Advanced"), Pick("PAPER"), Pick("No wallet"), Text("2.5")];
         answers.extend([Default, Default, Default, Default, Default]); // five optional secrets
-        answers.push(Pick("Keep")); // network limits
+        answers.extend([Pick("Keep"), ok()]); // network limits, then the connection test
         answers.extend([Default, Default, Default, Default]); // round-trip: on, quote, amount, weight
         answers.extend([Default, Default, Default, Default, Default]); // cross-DEX: on, quote, amount, dexes, weight
         answers.push(Default); // triangular stays off
@@ -2421,6 +2699,7 @@ mod tests {
             Pick("Research"),
             Pick("Keep"),
             Pick("Public"),
+            ok(),
             Pick("Core"),
             Pick("Guarded"),
             Yes,
@@ -2445,6 +2724,7 @@ mod tests {
             Text("ftp://rpc.example"),
             Text("https://rpc.example/rpc-secret-789"),
             Default,
+            ok(),
             Pick("Core"),
             Pick("Guarded"),
             Yes,
@@ -2546,5 +2826,73 @@ mod tests {
         let sb = Sandbox::new("yes-bad-watch");
         assert!(sb.unattended(&["--wallet", "watch:nope"]).0.is_err());
         assert!(sb.files().is_empty());
+    }
+
+    // ------------------------------------------------ connection test (phase 3)
+
+    #[test]
+    fn a_failed_connection_offers_another_proxy_and_tests_again() {
+        let sb = Sandbox::new("proxy");
+        let (outcome, log) = sb.run(vec![
+            Pick("Research"),
+            Pick("Create"),
+            Pick("Public"),
+            jupiter_down(),
+            Pick("Try another proxy"),
+            Pick("Use this HTTP proxy"),
+            Text("socks5://127.0.0.1:7897"),
+            Text("http://127.0.0.1:7897"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l == "check FAIL Jupiter https://x · d"), "{log:#?}");
+        assert!(log.iter().any(|l| l.starts_with("menu Jupiter did not answer")), "{log:#?}");
+        assert!(log.iter().any(|l| l.starts_with("rejected HTTP proxy")), "{log:#?}");
+        assert_eq!(sb.effective().network.proxy, "http://127.0.0.1:7897");
+    }
+
+    #[test]
+    fn continuing_without_a_connection_still_saves_and_says_so() {
+        let sb = Sandbox::new("offline");
+        let answers = vec![
+            Pick("Research"),
+            Pick("No wallet"),
+            Pick("Public"),
+            jupiter_down(),
+            Pick("Continue"),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ];
+        let (outcome, log) = sb.run(answers);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("warn Saved without a working connection")), "{log:#?}");
+        assert!(sb.config().exists());
+    }
+
+    #[test]
+    fn the_hub_can_test_the_connection_without_changing_anything() {
+        let sb = Sandbox::new("hub-test").with_config(EXISTING);
+        let answers = vec![Pick("Change"), Pick("Network"), Pick("Test"), ok(), Pick("Nothing")];
+        let (outcome, log) = sb.run(answers);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l == "probe 3 checks"), "{log:#?}");
+        assert_eq!(fs::read_to_string(sb.config()).unwrap(), EXISTING);
+    }
+
+    #[test]
+    fn doctor_checks_survive_the_json_round_trip() {
+        let c = Check {
+            ok: false,
+            optional: true,
+            name: "Jito tip stream".into(),
+            target: "wss://…".into(),
+            detail: "x".into(),
+        };
+        assert_eq!(Check::from_json(&c.to_json()), Some(c));
+        assert_eq!(Check::from_json(&serde_json::json!({"ok": true})), None);
     }
 }

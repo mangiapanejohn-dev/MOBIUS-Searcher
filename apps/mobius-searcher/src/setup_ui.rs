@@ -172,6 +172,52 @@ pub fn info(message: &str) -> Result<()> {
     rail_message(" ", message, Some(MUTED))
 }
 
+/// One connection-test result: ✓ ok, ✗ failed, ! failed but optional.
+pub fn check_line(ok: bool, optional: bool, name: &str, detail: &str) -> Result<()> {
+    let mark = match (ok, optional) {
+        (true, _) => paint(GREEN, "✓"),
+        (false, false) => paint(RED, "✗"),
+        (false, true) => paint(AMBER, "!"),
+    };
+    let name_width = 17;
+    let text_width = content_width().saturating_sub(5 + name_width + 1).max(12);
+    let mut lines = with_step_only();
+    for (i, part) in wrap(detail, text_width).iter().enumerate() {
+        let (lead, label) =
+            if i == 0 { (mark.clone(), format!("{name:<name_width$}")) } else { (" ".into(), " ".repeat(name_width)) };
+        lines.push(format!("{}  {lead} {} {}", paint(FAINT, "│"), label, paint(MUTED, part)));
+    }
+    print_lines(&lines)
+}
+
+/// Runs `work` while a spinner line turns on the rail; the line is erased
+/// afterwards. Plain output (no terminal) just runs `work`.
+pub fn with_spinner<T>(label: &str, work: impl FnOnce() -> T) -> T {
+    if !active() {
+        return work();
+    }
+    let _ = print_lines(&block_start());
+    let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let label = label.to_string();
+    let spinner = {
+        let stop = stop.clone();
+        std::thread::spawn(move || {
+            const FRAMES: [&str; 10] = ["⠋", "⠙", "⠹", "⠸", "⠼", "⠴", "⠦", "⠧", "⠇", "⠏"];
+            let mut i = 0;
+            while !stop.load(std::sync::atomic::Ordering::Relaxed) {
+                let _ = emit(&format!("\r{}  {} {}", paint(FAINT, "│"), paint(ACCENT, FRAMES[i % 10]), label));
+                i += 1;
+                std::thread::sleep(std::time::Duration::from_millis(90));
+            }
+            let _ = emit("\r\x1b[2K");
+        })
+    };
+    let out = work();
+    stop.store(true, std::sync::atomic::Ordering::Relaxed);
+    let _ = spinner.join();
+    out
+}
+
 /// A warning on the rail itself (`▲`).
 pub fn warn(message: &str) -> Result<()> {
     let mut lines = block_start();

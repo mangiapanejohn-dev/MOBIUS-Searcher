@@ -68,13 +68,16 @@ fn proxy_line() -> String {
     }
 }
 
-struct Check {
-    ok: bool,
+/// One probe result. `target` never contains a secret (URLs pass through
+/// `display_url`); `detail` is what the endpoint answered or the error.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Check {
+    pub ok: bool,
     /// Has a fallback or only feeds display: a failure does not stop PAPER.
-    optional: bool,
-    name: String,
-    target: String,
-    detail: String,
+    pub optional: bool,
+    pub name: String,
+    pub target: String,
+    pub detail: String,
 }
 
 impl Check {
@@ -85,6 +88,28 @@ impl Check {
     fn optional(mut self) -> Self {
         self.optional = true;
         self
+    }
+
+    pub fn to_json(&self) -> serde_json::Value {
+        serde_json::json!({
+            "ok": self.ok,
+            "optional": self.optional,
+            "name": self.name,
+            "target": self.target,
+            "detail": self.detail,
+        })
+    }
+
+    /// The inverse of `to_json`; `None` for anything else.
+    pub fn from_json(v: &serde_json::Value) -> Option<Self> {
+        let text = |k: &str| v.get(k)?.as_str().map(str::to_string);
+        Some(Self {
+            ok: v.get("ok")?.as_bool()?,
+            optional: v.get("optional")?.as_bool()?,
+            name: text("name")?,
+            target: text("target")?,
+            detail: text("detail")?,
+        })
     }
 }
 
@@ -142,8 +167,239 @@ async fn check_venue(name: &str, v: &VenueConfig) -> Check {
     }
 }
 
-pub async fn run(l: &Layered, env_files: &[(PathBuf, Vec<String>)]) -> bool {
+/// `--doctor --json`: one line, `{"proxy", "checks", "ok"}`; `ok` counts only
+/// required checks. Used by setup to test settings in a fresh process.
+async fn report_json(cfg: &Config) -> bool {
+    let mut checks = endpoint_checks(cfg).await;
+    if cfg.general.mode.sends_transactions() {
+        checks.extend(wallet_checks(cfg).await);
+    }
+    let ok = checks.iter().filter(|c| !c.optional).all(|c| c.ok);
+    let checks: Vec<serde_json::Value> = checks.iter().map(Check::to_json).collect();
+    println!("{}", serde_json::json!({ "proxy": proxy_line(), "checks": checks, "ok": ok }));
+    ok
+}
+
+fn from_env(env: &str) -> String {
+    if std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) { format!(" (${env})") } else { String::new() }
+}
+
+fn rpc_client(cfg: &Config, telemetry: &Arc<Telemetry>) -> Result<RpcClient, String> {
+    RpcClient::new(
+        &cfg.rpc.resolved_url(),
+        LimiterConfig::new(cfg.rpc.rps, cfg.rpc.burst),
+        cfg.rpc.simulate_rps,
+        Duration::from_millis(cfg.rpc.timeout_ms),
+        telemetry.clone(),
+    )
+    .map_err(|e| e.to_string())
+}
+
+/// Every configured endpoint and venue, in a fixed order.
+pub async fn endpoint_checks(cfg: &Config) -> Vec<Check> {
+    let mut checks = check_rpc(cfg).await;
+    checks.push(check_ws(cfg).await);
+    checks.push(check_jupiter(cfg).await);
+    checks.extend(check_jito(cfg).await);
+    checks.extend(check_hermes(cfg));
+    checks.extend(check_venues(cfg).await);
+    checks
+}
+
+/// Solana RPC HTTP: slot, then the configured pool / oracle accounts.
+pub async fn check_rpc(cfg: &Config) -> Vec<Check> {
+    let telemetry = Arc::new(Telemetry::new());
+    let rpc_url = cfg.rpc.resolved_url();
+    let mut checks = Vec::new();
+    match rpc_client(cfg, &telemetry) {
+        Ok(rpc) => {
+            let t = Instant::now();
+            let slot = rpc.get_slot().await;
+            let detail = match &slot {
+                Ok(s) => format!("getSlot {s} in {}", ms(t.elapsed())),
+                Err(e) => e.to_string(),
+            };
+            let target = format!("{}{}", display_url(&rpc_url), from_env(&cfg.rpc.url_env));
+            checks.push(Check::new(slot.is_ok(), "Solana RPC", target, detail));
+            let feeds: Vec<(&str, Option<Address>)> = cfg
+                .feeds
+                .pools
+                .iter()
+                .map(|p| (p.dex.as_str(), p.address.parse().ok()))
+                .chain(cfg.feeds.oracles.iter().map(|o| (o.symbol.as_str(), o.address.parse().ok())))
+                .collect();
+            let addrs: Vec<Address> = feeds.iter().filter_map(|(_, a)| *a).collect();
+            if cfg.feeds.enabled && !addrs.is_empty() {
+                let target = format!("{} pools, {} oracles", cfg.feeds.pools.len(), cfg.feeds.oracles.len());
+                checks.push(match rpc.get_account_datas(&addrs).await {
+                    Ok((_, found)) => {
+                        let missing: Vec<&str> =
+                            feeds.iter().zip(&found).filter(|(_, f)| f.is_none()).map(|((n, _), _)| *n).collect();
+                        let detail = if missing.is_empty() {
+                            "all exist on mainnet".to_string()
+                        } else {
+                            format!("missing: {}", missing.join(", "))
+                        };
+                        Check::new(missing.is_empty(), "Solana accounts", target, detail)
+                    }
+                    Err(e) => Check::new(false, "Solana accounts", target, e.to_string()),
+                });
+            }
+        }
+        Err(e) => checks.push(Check::new(false, "Solana RPC", display_url(&rpc_url), e)),
+    }
+    checks
+}
+
+/// Solana RPC WebSocket: first slot notification (the event scheduler depends on it).
+pub async fn check_ws(cfg: &Config) -> Check {
+    let ws_url = cfg.rpc.resolved_ws_url();
+    let sub = r#"{"jsonrpc":"2.0","id":1,"method":"slotSubscribe"}"#;
+    let ws = feed::probe_ws(&ws_url, Some(sub), Duration::from_secs(8)).await;
+    let target = format!("{}{}", display_url(&ws_url), from_env(&cfg.rpc.ws_url_env));
+    match ws {
+        Ok((c, first)) => {
+            Check::new(true, "Solana WebSocket", target, format!("connected {} · first slot {}", ms(c), ms(first)))
+        }
+        Err(e) => Check::new(false, "Solana WebSocket", target, e),
+    }
+}
+
+/// Jupiter: one request; its x-ratelimit headers tell the tier.
+pub async fn check_jupiter(cfg: &Config) -> Check {
+    let telemetry = Arc::new(Telemetry::new());
+    let key = std::env::var(&cfg.jupiter.api_key_env).ok().and_then(ApiKey::new);
+    let tier = if key.is_some() { "API key" } else { "keyless" };
+    let target = format!("{} ({tier})", display_url(&cfg.jupiter.base_url));
+    let jup = match JupiterClient::new(
+        &cfg.jupiter.base_url,
+        key,
+        LimiterConfig::new(1.0, 1),
+        Duration::from_millis(cfg.jupiter.timeout_ms),
+        telemetry,
+    ) {
+        Ok(jup) => jup,
+        Err(e) => return Check::new(false, "Jupiter", target, e.to_string()),
+    };
+    let t = Instant::now();
+    let labels = jup.dex_labels().await;
+    let took = t.elapsed();
+    let window = jup
+        .server_window()
+        .map(|w| format!(" · gateway window {} requests", w.current + w.remaining))
+        .unwrap_or_default();
+    match labels {
+        Ok(labels) => {
+            let known: std::collections::BTreeSet<&str> = labels.values().map(String::as_str).collect();
+            let unknown: Vec<&str> = cfg
+                .strategies
+                .cross_dex
+                .iter()
+                .filter(|s| s.enabled)
+                .flat_map(|s| s.dexes.iter().map(String::as_str))
+                .filter(|d| !known.contains(d))
+                .collect();
+            let detail = if unknown.is_empty() {
+                format!("{} DEX labels in {}{window}", labels.len(), ms(took))
+            } else {
+                format!("unknown DEX labels in strategies.cross_dex: {}", unknown.join(", "))
+            };
+            Check::new(unknown.is_empty(), "Jupiter", target, detail)
+        }
+        Err(e) => Check::new(false, "Jupiter", target, e.to_string()),
+    }
+}
+
+/// Jito: tip floor (REST) and, with feeds on, the tip stream.
+pub async fn check_jito(cfg: &Config) -> Vec<Check> {
+    let telemetry = Arc::new(Telemetry::new());
+    let mut checks = Vec::new();
+    let target = display_url(&cfg.jito.tip_floor_url);
+    match JitoClient::new(&cfg.jito.block_engine_url, &cfg.jito.tip_floor_url, None, cfg.jito.rps, telemetry) {
+        Ok(jito) => {
+            let t = Instant::now();
+            checks.push(match jito.tip_floor().await {
+                Ok(_) => Check::new(true, "Jito tip floor", target, format!("answered in {}", ms(t.elapsed()))),
+                Err(e) => Check::new(false, "Jito tip floor", target, e.to_string()),
+            });
+        }
+        Err(e) => checks.push(Check::new(false, "Jito tip floor", target, e.to_string())),
+    }
+    if cfg.feeds.enabled && !cfg.feeds.tip_stream_url.is_empty() {
+        let target = display_url(&cfg.feeds.tip_stream_url);
+        checks.push(
+            match feed::probe_ws(&cfg.feeds.tip_stream_url, None, Duration::from_secs(10)).await {
+                Ok((c, first)) => Check::new(
+                    true,
+                    "Jito tip stream",
+                    target,
+                    format!("connected {} · first tip {}", ms(c), ms(first)),
+                ),
+                Err(e) => Check::new(false, "Jito tip stream", target, format!("{e} (REST tip floor is used instead)")),
+            }
+            .optional(),
+        );
+    }
+    checks
+}
+
+/// Hermes needs a key since 2026-08-26; without one the on-chain oracle is used.
+pub fn check_hermes(cfg: &Config) -> Option<Check> {
+    if cfg.feeds.oracle_source != OracleSourceKind::Hermes {
+        return None;
+    }
+    let has = std::env::var(&cfg.feeds.pyth_api_key_env).is_ok_and(|v| !v.trim().is_empty());
+    let detail = if has {
+        "key present".to_string()
+    } else {
+        format!("${} not set: falls back to on-chain Pyth", cfg.feeds.pyth_api_key_env)
+    };
+    Some(Check::new(has, "Pyth Hermes", display_url(&cfg.feeds.hermes_url), detail).optional())
+}
+
+pub async fn check_venues(cfg: &Config) -> Vec<Check> {
+    let mut checks = Vec::new();
+    for (name, v) in cfg.venues.iter().filter(|(_, v)| v.enabled) {
+        checks.push(check_venue(name, v).await);
+    }
+    checks
+}
+
+/// CONFIRM / LIVE: the signer must load, match `wallet.pubkey`, and afford fees.
+pub async fn wallet_checks(cfg: &Config) -> Vec<Check> {
+    let mut checks = Vec::new();
+    let expected = cfg.wallet.pubkey.as_deref().and_then(|p| p.parse::<Address>().ok());
+    let path = cfg.wallet.keypair_path.clone().unwrap_or_default();
+    match Wallet::load(std::path::Path::new(&path), expected.as_ref()) {
+        Ok(w) => {
+            let pk = w.pubkey();
+            checks.push(Check::new(true, "wallet keypair", pk.short(), "loads; matches wallet.pubkey"));
+            let min = cfg.risk.min_wallet_sol_for_fees_lamports;
+            let sol = |l: u64| format!("{:.4} SOL", l as f64 / 1e9);
+            checks.push(match rpc_client(cfg, &Arc::new(Telemetry::new())) {
+                Ok(rpc) => match rpc.get_balance(&pk).await {
+                    Ok(b) => Check::new(
+                        b >= min,
+                        "wallet balance",
+                        pk.short(),
+                        format!("{} (fee reserve {} = risk.min_wallet_sol_for_fees_lamports)", sol(b), sol(min)),
+                    ),
+                    Err(e) => Check::new(false, "wallet balance", pk.short(), e.to_string()),
+                },
+                Err(e) => Check::new(false, "wallet balance", pk.short(), e),
+            });
+        }
+        // the error names the problem, never the key material
+        Err(e) => checks.push(Check::new(false, "wallet keypair", "wallet.keypair_path", e.to_string())),
+    }
+    checks
+}
+
+pub async fn run(l: &Layered, env_files: &[(PathBuf, Vec<String>)], json: bool) -> bool {
     let cfg = &l.config;
+    if json {
+        return report_json(cfg).await;
+    }
     println!("MØBIUS doctor\n");
     println!("config layers (later wins)");
     println!("  default  built-in");
@@ -178,185 +434,11 @@ pub async fn run(l: &Layered, env_files: &[(PathBuf, Vec<String>)]) -> bool {
     }
     println!("\nproxy  {}", proxy_line());
 
-    println!("\nendpoints");
-    let telemetry = Arc::new(Telemetry::new());
-    let mut checks = Vec::new();
-    let rpc_url = cfg.rpc.resolved_url();
-    let ws_url = cfg.rpc.resolved_ws_url();
-    let from_env = |env: &str| {
-        if std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) { format!(" (${env})") } else { String::new() }
-    };
-
-    // Solana RPC HTTP: slot, then the configured pool / oracle accounts
-    let mut rpc_client = None;
-    match RpcClient::new(
-        &rpc_url,
-        LimiterConfig::new(cfg.rpc.rps, cfg.rpc.burst),
-        cfg.rpc.simulate_rps,
-        Duration::from_millis(cfg.rpc.timeout_ms),
-        telemetry.clone(),
-    ) {
-        Ok(rpc) => {
-            let t = Instant::now();
-            let slot = rpc.get_slot().await;
-            let detail = match &slot {
-                Ok(s) => format!("getSlot {s} in {}", ms(t.elapsed())),
-                Err(e) => e.to_string(),
-            };
-            let target = format!("{}{}", display_url(&rpc_url), from_env(&cfg.rpc.url_env));
-            checks.push(Check::new(slot.is_ok(), "Solana RPC", target, detail));
-            let feeds: Vec<(&str, Option<Address>)> = cfg
-                .feeds
-                .pools
-                .iter()
-                .map(|p| (p.dex.as_str(), p.address.parse().ok()))
-                .chain(cfg.feeds.oracles.iter().map(|o| (o.symbol.as_str(), o.address.parse().ok())))
-                .collect();
-            let addrs: Vec<Address> = feeds.iter().filter_map(|(_, a)| *a).collect();
-            if cfg.feeds.enabled && !addrs.is_empty() {
-                let target = format!("{} pools, {} oracles", cfg.feeds.pools.len(), cfg.feeds.oracles.len());
-                checks.push(match rpc.get_account_datas(&addrs).await {
-                    Ok((_, found)) => {
-                        let missing: Vec<&str> =
-                            feeds.iter().zip(&found).filter(|(_, f)| f.is_none()).map(|((n, _), _)| *n).collect();
-                        let detail = if missing.is_empty() {
-                            "all exist on mainnet".to_string()
-                        } else {
-                            format!("missing: {}", missing.join(", "))
-                        };
-                        Check::new(missing.is_empty(), "Solana accounts", target, detail)
-                    }
-                    Err(e) => Check::new(false, "Solana accounts", target, e.to_string()),
-                });
-            }
-            rpc_client = Some(rpc);
-        }
-        Err(e) => checks.push(Check::new(false, "Solana RPC", display_url(&rpc_url), e.to_string())),
-    }
-
-    // Solana RPC WebSocket: first slot notification (the event scheduler depends on it)
-    let sub = r#"{"jsonrpc":"2.0","id":1,"method":"slotSubscribe"}"#;
-    let ws = feed::probe_ws(&ws_url, Some(sub), Duration::from_secs(8)).await;
-    let target = format!("{}{}", display_url(&ws_url), from_env(&cfg.rpc.ws_url_env));
-    checks.push(match ws {
-        Ok((c, first)) => {
-            Check::new(true, "Solana WebSocket", target, format!("connected {} · first slot {}", ms(c), ms(first)))
-        }
-        Err(e) => Check::new(false, "Solana WebSocket", target, e),
-    });
-
-    // Jupiter: one request; its x-ratelimit headers tell the tier
-    let key = std::env::var(&cfg.jupiter.api_key_env).ok().and_then(ApiKey::new);
-    let tier = if key.is_some() { "API key" } else { "keyless" };
-    let target = format!("{} ({tier})", display_url(&cfg.jupiter.base_url));
-    match JupiterClient::new(
-        &cfg.jupiter.base_url,
-        key,
-        LimiterConfig::new(1.0, 1),
-        Duration::from_millis(cfg.jupiter.timeout_ms),
-        telemetry.clone(),
-    ) {
-        Ok(jup) => {
-            let t = Instant::now();
-            let labels = jup.dex_labels().await;
-            let took = t.elapsed();
-            let window = jup
-                .server_window()
-                .map(|w| format!(" · gateway window {} requests", w.current + w.remaining))
-                .unwrap_or_default();
-            checks.push(match labels {
-                Ok(labels) => {
-                    let known: std::collections::BTreeSet<&str> = labels.values().map(String::as_str).collect();
-                    let unknown: Vec<&str> = cfg
-                        .strategies
-                        .cross_dex
-                        .iter()
-                        .filter(|s| s.enabled)
-                        .flat_map(|s| s.dexes.iter().map(String::as_str))
-                        .filter(|d| !known.contains(d))
-                        .collect();
-                    let detail = if unknown.is_empty() {
-                        format!("{} DEX labels in {}{window}", labels.len(), ms(took))
-                    } else {
-                        format!("unknown DEX labels in strategies.cross_dex: {}", unknown.join(", "))
-                    };
-                    Check::new(unknown.is_empty(), "Jupiter", target, detail)
-                }
-                Err(e) => Check::new(false, "Jupiter", target, e.to_string()),
-            });
-        }
-        Err(e) => checks.push(Check::new(false, "Jupiter", target, e.to_string())),
-    }
-
-    // Jito: tip floor (REST) and the tip stream
-    let target = display_url(&cfg.jito.tip_floor_url);
-    match JitoClient::new(&cfg.jito.block_engine_url, &cfg.jito.tip_floor_url, None, cfg.jito.rps, telemetry.clone()) {
-        Ok(jito) => {
-            let t = Instant::now();
-            checks.push(match jito.tip_floor().await {
-                Ok(_) => Check::new(true, "Jito tip floor", target, format!("answered in {}", ms(t.elapsed()))),
-                Err(e) => Check::new(false, "Jito tip floor", target, e.to_string()),
-            });
-        }
-        Err(e) => checks.push(Check::new(false, "Jito tip floor", target, e.to_string())),
-    }
-    if cfg.feeds.enabled && !cfg.feeds.tip_stream_url.is_empty() {
-        let target = display_url(&cfg.feeds.tip_stream_url);
-        checks.push(
-            match feed::probe_ws(&cfg.feeds.tip_stream_url, None, Duration::from_secs(10)).await {
-                Ok((c, first)) => Check::new(
-                    true,
-                    "Jito tip stream",
-                    target,
-                    format!("connected {} · first tip {}", ms(c), ms(first)),
-                ),
-                Err(e) => Check::new(false, "Jito tip stream", target, format!("{e} (REST tip floor is used instead)")),
-            }
-            .optional(),
-        );
-    }
-    if cfg.feeds.oracle_source == OracleSourceKind::Hermes {
-        let has = secrets.iter().any(|s| s.name == cfg.feeds.pyth_api_key_env && s.source.is_some());
-        let detail = if has {
-            "key present".to_string()
-        } else {
-            format!("${} not set: falls back to on-chain Pyth", cfg.feeds.pyth_api_key_env)
-        };
-        checks.push(Check::new(has, "Pyth Hermes", display_url(&cfg.feeds.hermes_url), detail).optional());
-    }
-
-    for (name, v) in cfg.venues.iter().filter(|(_, v)| v.enabled) {
-        checks.push(check_venue(name, v).await);
-    }
-
-    // CONFIRM / LIVE: the signer must load, match, and afford fees
+    let mut checks = endpoint_checks(cfg).await;
     if cfg.general.mode.sends_transactions() {
-        let expected = cfg.wallet.pubkey.as_deref().and_then(|p| p.parse::<Address>().ok());
-        let path = cfg.wallet.keypair_path.clone().unwrap_or_default();
-        match Wallet::load(std::path::Path::new(&path), expected.as_ref()) {
-            Ok(w) => {
-                let pk = w.pubkey();
-                checks.push(Check::new(true, "wallet keypair", pk.short(), "loads; matches wallet.pubkey"));
-                let min = cfg.risk.min_wallet_sol_for_fees_lamports;
-                let sol = |l: u64| format!("{:.4} SOL", l as f64 / 1e9);
-                checks.push(match &rpc_client {
-                    Some(rpc) => match rpc.get_balance(&pk).await {
-                        Ok(b) => Check::new(
-                            b >= min,
-                            "wallet balance",
-                            pk.short(),
-                            format!("{} (fee reserve {} = risk.min_wallet_sol_for_fees_lamports)", sol(b), sol(min)),
-                        ),
-                        Err(e) => Check::new(false, "wallet balance", pk.short(), e.to_string()),
-                    },
-                    None => Check::new(false, "wallet balance", pk.short(), "no RPC"),
-                });
-            }
-            // the error names the problem, never the key material
-            Err(e) => checks.push(Check::new(false, "wallet keypair", "wallet.keypair_path", e.to_string())),
-        }
+        checks.extend(wallet_checks(cfg).await);
     }
-
+    println!("\nendpoints");
     for c in &checks {
         let status = match (c.ok, c.optional) {
             (true, _) => "ok",
