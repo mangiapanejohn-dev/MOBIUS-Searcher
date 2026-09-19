@@ -104,8 +104,8 @@ page; every installer verifies `SHA256SUMS`. Details, paths and uninstalling:
 [docs/INSTALL.md](docs/INSTALL.md).
 
 > [!TIP]
-> Use a GPU terminal with an image protocol: [Ghostty](https://ghostty.org/)
-> on macOS and Linux, [Warp](https://www.warp.dev/) on Windows. The logo then
+> Use a GPU terminal with an image protocol:
+> on macOS and Linux [Ghostty](https://ghostty.org/) , [Warp](https://www.warp.dev/) on Windows. The logo then
 > renders as a real image; everything else works in any modern terminal.
 
 ## Quick start
