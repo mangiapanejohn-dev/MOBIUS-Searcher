@@ -128,7 +128,8 @@ RPC。可选的 `JUPITER_API_KEY` 放在 `~/.config/mobius/.env`。更多见
 发送之前：模拟必须显示扣除所有成本后仍然赚钱；最后一步兑换带有链上最低输出，价格
 变动时交易会回滚而不是亏钱；风控检查金额、占资金比例、当日亏损、手续费预留和数据
 新鲜度；**任何页面按 `K` 都能立刻停止发送新交易。** 私钥是仓库之外、权限为
-`chmod 600` 的文件，绝不放在环境变量里。见 [SECURITY.md](SECURITY.md) 和
+`chmod 600` 的文件（别人可读的私钥文件会被拒绝；Windows 上程序无法检查文件权限，请把私钥放在
+你的用户目录下，例如 `%USERPROFILE%\.config\mobius\wallets\`，这样只有你的账户能读），绝不放在环境变量里。见 [SECURITY.md](SECURITY.md) 和
 [docs/LIVE_CHECKLIST.md](docs/LIVE_CHECKLIST.md)。
 
 ## 终端界面

@@ -15,7 +15,10 @@ that could put someone's keys or funds at risk.
   `~/.config/mobius/config.toml`; `.env`, databases and `*.keypair.json` are
   git-ignored.
 - **The private key is a file**, `wallet.keypair_path`, which must be
-  `chmod 600`. A key in the environment never enables sending.
+  `chmod 600` — MØBIUS refuses a key file that others can read. On Windows it
+  cannot check the file's permissions (NTFS ACLs apply): keep the key in your
+  user profile, e.g. `%USERPROFILE%\.config\mobius\wallets\`, where only your
+  account can read it. A key in the environment never enables sending.
 - **PAPER never reads a private key.** It needs at most a public key.
 - API keys and RPC URLs (which can embed keys) are redacted in debug output
   (`ApiKey(***)`, `RpcClient(url=<redacted>)`). `--doctor` and

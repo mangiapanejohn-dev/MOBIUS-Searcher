@@ -154,8 +154,12 @@ mod tests {
     fn loads_only_private_files_and_never_prints_secret() {
         let dir = std::env::temp_dir().join(format!("searcher-wallet-test-{}", std::process::id()));
         std::fs::create_dir_all(&dir).unwrap();
-        let open = write_key(&dir, 0o644);
-        assert!(matches!(Wallet::load(&open, None), Err(WalletError::Permissions(_))));
+        // mode bits exist only on unix; Windows has ACLs and no such check
+        #[cfg(unix)]
+        {
+            let open = write_key(&dir, 0o644);
+            assert!(matches!(Wallet::load(&open, None), Err(WalletError::Permissions(_))));
+        }
         let ok = write_key(&dir, 0o600);
         let w = Wallet::load(&ok, None).unwrap();
         let dbg = format!("{w:?}");

@@ -133,7 +133,9 @@ Before anything is sent: simulation must show a profit after all costs; the
 final swap carries an on-chain minimum output so a price move reverts instead
 of losing; the risk engine checks size, equity share, daily loss, fee reserve
 and staleness; **`K` stops new submissions from any page.** The private key is
-a `chmod 600` file outside the repository, never an environment variable.
+a `chmod 600` file outside the repository (MØBIUS refuses one others can read;
+on Windows keep it in your user profile, where only your account can read it),
+never an environment variable.
 See [SECURITY.md](SECURITY.md) and [docs/LIVE_CHECKLIST.md](docs/LIVE_CHECKLIST.md).
 
 ## Terminal UI

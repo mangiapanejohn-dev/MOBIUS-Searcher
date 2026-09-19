@@ -26,7 +26,8 @@ jobs:
       - name: Build
         run: cargo build --locked --workspace
       - name: Test
-        run: cargo test --locked --workspace
+        # run every crate even after a failure, so one run shows all platform problems
+        run: cargo test --locked --workspace --no-fail-fast
 
   lint:
     runs-on: ubuntu-22.04
