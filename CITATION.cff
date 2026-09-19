@@ -1,0 +1,18 @@
+cff-version: 1.2.0
+message: "If you use MØBIUS-Searcher in research, benchmarks, or technical writing, please cite this repository and the exact version or commit used."
+title: "MØBIUS-Searcher"
+type: software
+version: 0.1.0
+date-released: 2026-09-19
+url: "https://github.com/mangiapanejohn-dev/MOBIUS-Searcher"
+repository-code: "https://github.com/mangiapanejohn-dev/MOBIUS-Searcher"
+authors:
+  - name: "MØBIUS-Searcher contributors"
+keywords:
+  - Solana
+  - arbitrage
+  - MEV
+  - execution
+  - Jupiter
+  - Ratatui
+  - quantitative research
