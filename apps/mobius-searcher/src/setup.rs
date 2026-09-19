@@ -2569,9 +2569,15 @@ mod tests {
         }
     }
 
-    fn mode_bits(path: &Path) -> u32 {
-        use std::os::unix::fs::PermissionsExt;
-        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    /// Owner/group/other bits on Unix; Windows has no such mode.
+    fn assert_private(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600, "{}", path.display());
+        }
+        #[cfg(not(unix))]
+        assert!(path.exists());
     }
 
     #[test]
@@ -2585,7 +2591,7 @@ mod tests {
         assert!(!cfg.execution.live_enabled);
         let keypair = PathBuf::from(cfg.wallet.keypair_path.clone().unwrap());
         assert_eq!(keypair, sb.dir.join("wallets/bot-keypair.json"), "wallets live next to the config");
-        assert_eq!(mode_bits(&keypair), 0o600);
+        assert_private(&keypair);
         let wallet = Wallet::load(&keypair, None).unwrap();
         assert_eq!(cfg.wallet.pubkey.as_deref(), Some(wallet.pubkey().to_string().as_str()));
         assert_eq!(cfg.risk.max_trade_lamports, 10_000_000);
@@ -2836,7 +2842,7 @@ mod tests {
         let env = fs::read_to_string(sb.env()).unwrap();
         assert!(env.contains(&format!("{}='jup-secret-123456'", cfg.jupiter.api_key_env)), "{env}");
         assert!(env.contains("rpc-secret-789"));
-        assert_eq!(mode_bits(&sb.env()), 0o600);
+        assert_private(&sb.env());
         let config_text = fs::read_to_string(sb.config()).unwrap();
         assert!(
             !config_text.contains("jup-secret") && !config_text.contains("rpc-secret"),
@@ -2884,7 +2890,7 @@ mod tests {
         sb.unattended(&["--wallet", "new", "--strategies", "all"]).0.unwrap();
         let cfg = sb.effective();
         let keypair = PathBuf::from(cfg.wallet.keypair_path.unwrap());
-        assert_eq!(mode_bits(&keypair), 0o600);
+        assert_private(&keypair);
         assert!(cfg.strategies.triangular[0].enabled);
     }
 
