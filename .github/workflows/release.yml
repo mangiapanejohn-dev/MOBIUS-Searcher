@@ -105,7 +105,9 @@ jobs:
       contents: read
       id-token: write
     env:
-      NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
+      # checked by name: setup-node exports a placeholder NODE_AUTH_TOKEN
+      # ("XXXXX-…") whenever registry-url is set, so that one is never empty
+      NPM_TOKEN: ${{ secrets.NPM_TOKEN }}
     steps:
       - uses: actions/checkout@v4
         with:
@@ -115,11 +117,13 @@ jobs:
           node-version: 22
           registry-url: https://registry.npmjs.org
       - name: Publish mobius-searcher to npm
-        if: env.NODE_AUTH_TOKEN != ''
+        if: env.NPM_TOKEN != ''
         working-directory: npm/mobius-searcher
+        env:
+          NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
           npm version "${TAG#v}" --no-git-tag-version --allow-same-version
           npm publish --access public --provenance
       - name: Skipped (no NPM_TOKEN secret)
-        if: env.NODE_AUTH_TOKEN == ''
+        if: env.NPM_TOKEN == ''
         run: echo "NPM_TOKEN is not set; npm publish skipped. The GitHub release is complete."
