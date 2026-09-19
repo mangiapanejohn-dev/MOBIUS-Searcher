@@ -4,6 +4,8 @@
 
 <p align="center">
   <a href="CHANGELOG.md"><img src="https://img.shields.io/badge/version-0.1.0-d97757?style=for-the-badge" alt="版本 0.1.0"></a>
+  <a href="https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/stargazers"><img src="https://img.shields.io/github/stars/mangiapanejohn-dev/MOBIUS-Searcher?style=for-the-badge&color=d97757" alt="GitHub stars"></a>
+  <a href="https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/issues"><img src="https://img.shields.io/github/issues/mangiapanejohn-dev/MOBIUS-Searcher?style=for-the-badge&color=3a3a3a" alt="Open issues"></a>
   <a href="https://www.rust-lang.org"><img src="https://img.shields.io/badge/Rust-2024-000000?style=for-the-badge&logo=rust&logoColor=white" alt="Rust"></a>
   <a href="https://ratatui.rs"><img src="https://img.shields.io/badge/Built_With-Ratatui-000000?style=for-the-badge&logo=ratatui&logoColor=white" alt="Built with Ratatui"></a>
   <a href="#许可证"><img src="https://img.shields.io/badge/license-MIT_OR_Apache--2.0-3a3a3a?style=for-the-badge" alt="许可证 MIT OR Apache-2.0"></a>
@@ -18,6 +20,8 @@
   <a href="#工作原理">工作原理</a> ·
   <a href="docs/CONFIGURATION.md">配置</a> ·
   <a href="#文档">文档</a> ·
+  <a href="ROADMAP.md">Roadmap</a> ·
+  <a href="CONTRIBUTING.md">参与贡献</a> ·
   <a href="CHANGELOG.md">更新日志</a>
 </p>
 
@@ -73,6 +77,27 @@ execution / MEV 研究工具，而不是收益承诺。
 | **数据新鲜度** | 默认 RPC 下，池子更新比链上最新区块慢 0–2 个 slot |
 | **CONFIRM / LIVE** | 已实现并有单元测试，默认锁住，**从未发出过交易** |
 | **交易所** | Solana：执行。OKX：仅行情数据（还没有下单连接器） |
+
+## 参与研究与贡献
+
+MØBIUS-Searcher 最有价值的外部贡献不是“再加一个看起来很赚钱的策略”，而是让现有结论更容易被**复现、验证、推翻或解释**。
+
+目前最需要的方向：
+
+- 在不同 RPC / 地区复现数据新鲜度和延迟结果；
+- 复现 Jupiter 调度 A/B 测试；
+- 验证 Windows / Linux / 不同终端兼容性；
+- 补充执行、成本模型和异常路径的回归测试；
+- 改进某一类“为什么被跳过”的解释和报告。
+
+入口：
+
+- [Roadmap](ROADMAP.md)
+- [贡献指南](CONTRIBUTING.md)
+- [公开 Issues](https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/issues)
+- [安全问题私密报告](SECURITY.md)
+
+复现失败、与现有结果冲突的实验同样欢迎——只要方法和环境写清楚。
 
 ## 安装
 
