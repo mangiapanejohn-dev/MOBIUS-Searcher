@@ -4,6 +4,7 @@
 //! newly generated bot key stays in memory until then.
 
 use crate::doctor::Check;
+use crate::i18n::{self, Lang, tr};
 use crate::setup_ui::{self, MenuItem, TextPrompt, Validator};
 use anyhow::{Context, Result, bail};
 use searcher_core::config::{
@@ -122,6 +123,9 @@ pub struct SetupOpts {
     /// Starting risk policy (default: guarded on first use, keep otherwise).
     #[arg(long, value_enum, requires = "yes")]
     pub safety: Option<SafetyArg>,
+    /// Setup language (default: MOBIUS_LANG, else the system locale).
+    #[arg(long, value_enum)]
+    pub lang: Option<Lang>,
 }
 
 #[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
@@ -178,6 +182,7 @@ pub fn run(
     explicit: bool,
     opts: &SetupOpts,
 ) -> Result<Outcome> {
+    i18n::set(i18n::detect(opts.lang));
     if opts.yes {
         return run_unattended(config_path, env_path, marker_path, opts);
     }
@@ -431,7 +436,8 @@ fn first_use(
         _ => SetupPath::Advanced,
     };
     let steps = path.steps();
-    let keys: Vec<String> = steps.iter().enumerate().map(|(i, (title, _))| format!("{:>2}  {title}", i + 1)).collect();
+    let keys: Vec<String> =
+        steps.iter().enumerate().map(|(i, (title, _))| format!("{:>2}  {}", i + 1, tr(title))).collect();
     let plan: Vec<(&str, String)> =
         keys.iter().zip(steps).map(|(key, (_, what))| (key.as_str(), (*what).to_string())).collect();
     outline(&format!("{} · {} steps", path.label(), steps.len()), &plan)?;
@@ -525,7 +531,11 @@ fn strategies_summary(cfg: &Config) -> String {
     if cfg.strategies.triangular.iter().any(|s| s.enabled) {
         on.push("triangular");
     }
-    if on.is_empty() { "none enabled".into() } else { on.join(", ") }
+    if on.is_empty() {
+        return "none enabled".into();
+    }
+    let separator = if i18n::current() == Lang::Zh { "、" } else { ", " };
+    on.iter().map(|name| tr(name).into_owned()).collect::<Vec<_>>().join(separator)
 }
 
 fn route_summary(cfg: &Config) -> String {
@@ -1678,15 +1688,16 @@ fn configure_ui_and_execution(cfg: &mut Config) -> Result<()> {
 fn step(current: usize, total: usize, title: &str, details: &[&str]) {
     #[cfg(test)]
     if script::active() {
-        return script::log(format!("step {current}/{total} {title}"));
+        let details: Vec<String> = details.iter().map(|d| tr(d).into_owned()).collect();
+        return script::log(format!("step {current}/{total} {} :: {}", tr(title), details.join(" / ")));
     }
     if setup_ui::active() {
         setup_ui::step(current, total, title, details);
     } else {
-        let heading = format!("{current}/{total}  {title}");
+        let heading = format!("{current}/{total}  {}", tr(title));
         println!("\n{heading}\n{}", "─".repeat(heading.chars().count()));
         for detail in details {
-            println!("{detail}");
+            println!("{}", tr(detail));
         }
     }
 }
@@ -1694,20 +1705,22 @@ fn step(current: usize, total: usize, title: &str, details: &[&str]) {
 fn note(title: &str, rows: &[(&str, String)]) -> Result<()> {
     #[cfg(test)]
     if script::active() {
-        let body: Vec<String> = rows.iter().map(|(k, v)| format!("{k}={v}")).collect();
-        script::log(format!("note {title}: {}", body.join(" | ")));
+        let body: Vec<String> = rows.iter().map(|(k, v)| format!("{}={}", tr(k), tr(v))).collect();
+        script::log(format!("note {}: {}", tr(title), body.join(" | ")));
         return Ok(());
     }
     if setup_ui::active() {
         return setup_ui::note(title, rows);
     }
-    println!("\n{title}");
-    let width = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
-    for (key, value) in rows {
+    println!("\n{}", tr(title));
+    let rows: Vec<(String, String)> = rows.iter().map(|(k, v)| (tr(k).into_owned(), tr(v).into_owned())).collect();
+    let width = rows.iter().map(|(k, _)| unicode_width::UnicodeWidthStr::width(k.as_str())).max().unwrap_or(0);
+    for (key, value) in &rows {
         if key.is_empty() {
             println!("  {value}");
         } else {
-            println!("  {key:<width$}  {value}");
+            let pad = width - unicode_width::UnicodeWidthStr::width(key.as_str());
+            println!("  {key}{}  {value}", " ".repeat(pad));
         }
     }
     Ok(())
@@ -1733,7 +1746,7 @@ fn qr(data: &str, address: &str, caption: &str) -> Result<()> {
     if setup_ui::active() {
         return setup_ui::qr(data, address, caption);
     }
-    println!("  {caption}\n  {address}");
+    println!("  {}\n  {address}", tr(caption));
     Ok(())
 }
 
@@ -1771,52 +1784,52 @@ fn check_line(ok: bool, optional: bool, name: &str, detail: &str) -> Result<()> 
 fn success(message: &str) -> Result<()> {
     #[cfg(test)]
     if script::active() {
-        script::log(format!("success {message}"));
+        script::log(format!("success {}", tr(message)));
         return Ok(());
     }
     if setup_ui::active() {
         return setup_ui::success(message);
     }
-    println!("✓ {message}");
+    println!("✓ {}", tr(message));
     Ok(())
 }
 
 fn info(message: &str) -> Result<()> {
     #[cfg(test)]
     if script::active() {
-        script::log(format!("info {message}"));
+        script::log(format!("info {}", tr(message)));
         return Ok(());
     }
     if setup_ui::active() {
         return setup_ui::info(message);
     }
-    println!("  {message}");
+    println!("  {}", tr(message));
     Ok(())
 }
 
 fn warn(message: &str) -> Result<()> {
     #[cfg(test)]
     if script::active() {
-        script::log(format!("warn {message}"));
+        script::log(format!("warn {}", tr(message)));
         return Ok(());
     }
     if setup_ui::active() {
         return setup_ui::warn(message);
     }
-    println!("! {message}");
+    println!("! {}", tr(message));
     Ok(())
 }
 
 fn finish(title: &str, hint: &str) -> Result<()> {
     #[cfg(test)]
     if script::active() {
-        script::log(format!("finish {title}"));
+        script::log(format!("finish {} :: {}", tr(title), tr(hint)));
         return Ok(());
     }
     if setup_ui::active() {
         return setup_ui::finish(title, hint);
     }
-    println!("\n{title} · {hint}");
+    println!("\n{} · {}", tr(title), tr(hint));
     Ok(())
 }
 
@@ -1834,12 +1847,12 @@ fn menu_items(prompt: &str, items: &[MenuItem<'_>], default: usize) -> Result<us
     if let Some(value) = setup_ui::prompt_menu(prompt, items, default)? {
         return Ok(value);
     }
-    println!("\n{prompt}");
+    println!("\n{}", tr(prompt));
     for (index, item) in items.iter().enumerate() {
-        let badge = item.badge.map_or(String::new(), |value| format!(" ({value})"));
-        println!("  {}. {}{badge}", index + 1, item.title);
+        let badge = item.badge.map_or(String::new(), |value| format!(" ({})", tr(value)));
+        println!("  {}. {}{badge}", index + 1, tr(item.title));
         if !item.description.is_empty() {
-            println!("     {}", item.description);
+            println!("     {}", tr(item.description));
         }
     }
     loop {
@@ -1871,7 +1884,7 @@ fn confirm(prompt: &str, default: bool) -> Result<bool> {
     }
     loop {
         let hint = if default { "Y/n" } else { "y/N" };
-        let value = read_plain(&format!("{prompt} [{hint}]: "), false)?;
+        let value = read_plain(&format!("{} [{hint}]: ", tr(prompt)), false)?;
         match value.trim().to_ascii_lowercase().as_str() {
             "" => return Ok(default),
             "y" | "yes" => return Ok(true),
@@ -1890,12 +1903,12 @@ fn ask(spec: &TextPrompt<'_>) -> Result<String> {
     if let Some(value) = setup_ui::prompt_text(spec)? {
         return Ok(value);
     }
-    let hint = if spec.placeholder.is_empty() { String::new() } else { format!(" [{}]", spec.placeholder) };
+    let hint = if spec.placeholder.is_empty() { String::new() } else { format!(" [{}]", tr(spec.placeholder)) };
     loop {
-        let value = read_plain(&format!("{}{hint}: ", spec.label), spec.hidden)?;
+        let value = read_plain(&format!("{}{hint}: ", tr(spec.label)), spec.hidden)?;
         match spec.validate.map_or(Ok(()), |validate| validate(value.trim())) {
             Ok(()) => return Ok(value),
-            Err(reason) => println!("{reason}"),
+            Err(reason) => println!("{}", tr(&reason)),
         }
     }
 }
@@ -2297,7 +2310,11 @@ mod script {
             }),
             other => panic!("{prompt:?} is a menu, the script has {other:?}"),
         };
-        log(format!("menu {prompt} -> {}", items[pick].title));
+        let shown: Vec<String> = items
+            .iter()
+            .map(|i| format!("{} {} {}", tr(i.title), tr(i.description), i.badge.map(tr).unwrap_or_default()))
+            .collect();
+        log(format!("menu {} -> {} [{}]", tr(prompt), tr(items[pick].title), shown.join(" | ")));
         Some(Ok(pick))
     }
 
@@ -2312,7 +2329,7 @@ mod script {
             A::No => false,
             other => panic!("{prompt:?} is yes/no, the script has {other:?}"),
         };
-        log(format!("confirm {prompt} -> {yes}"));
+        log(format!("confirm {} -> {yes}", tr(prompt)));
         Some(Ok(yes))
     }
 
@@ -2343,10 +2360,10 @@ mod script {
             match spec.validate.map_or(Ok(()), |validate| validate(value.trim())) {
                 Ok(()) => {
                     let shown = if spec.hidden && !value.is_empty() { "<hidden>" } else { value };
-                    log(format!("text {} -> {shown}", spec.label));
+                    log(format!("text {} [{}] -> {shown}", tr(spec.label), tr(spec.placeholder)));
                     return Some(Ok(value.to_string()));
                 }
-                Err(reason) => log(format!("rejected {} -> {reason}", spec.label)),
+                Err(reason) => log(format!("rejected {} -> {}", tr(spec.label), tr(&reason))),
             }
         }
     }
@@ -2476,6 +2493,7 @@ mod tests {
     /// live here, never in the real ~/.config.
     struct Sandbox {
         dir: PathBuf,
+        lang: Lang,
     }
 
     impl Sandbox {
@@ -2483,7 +2501,11 @@ mod tests {
             let dir = std::env::temp_dir().join(format!("mobius-flow-{name}-{}", std::process::id()));
             let _ = fs::remove_dir_all(&dir);
             fs::create_dir_all(&dir).unwrap();
-            Self { dir }
+            Self { dir, lang: Lang::En }
+        }
+        fn chinese(mut self) -> Self {
+            self.lang = Lang::Zh;
+            self
         }
         fn config(&self) -> PathBuf {
             self.dir.join("config.toml")
@@ -2500,7 +2522,9 @@ mod tests {
         }
         fn run(&self, answers: Vec<A>) -> (Result<Outcome>, Vec<String>) {
             script::install(answers);
-            let outcome = run(&self.config(), &self.env(), &self.marker(), true, &SetupOpts::default());
+            let opts = SetupOpts { lang: Some(self.lang), ..SetupOpts::default() };
+            let outcome = run(&self.config(), &self.env(), &self.marker(), true, &opts);
+            i18n::set(Lang::En);
             (outcome, script::take())
         }
         fn unattended(&self, args: &[&str]) -> (Result<Outcome>, Vec<String>) {
@@ -2512,9 +2536,11 @@ mod tests {
                 #[command(flatten)]
                 opts: SetupOpts,
             }
-            let cli = Cli::try_parse_from(["mobius-searcher", "--setup", "--yes"].iter().chain(args)).unwrap();
+            let mut cli = Cli::try_parse_from(["mobius-searcher", "--setup", "--yes"].iter().chain(args)).unwrap();
+            cli.opts.lang.get_or_insert(self.lang);
             script::install(Vec::new());
             let outcome = run(&self.config(), &self.env(), &self.marker(), true, &cli.opts);
+            i18n::set(Lang::En);
             (outcome, script::take())
         }
         fn effective(&self) -> Config {
@@ -3025,5 +3051,111 @@ mod tests {
         assert!(log.iter().any(|l| l == "info Balance 0.000001 SOL"), "{log:#?}");
         assert!(log.iter().any(|l| l == "qr solana:So11111111111111111111111111111111111111112"), "{log:#?}");
         assert_eq!(fs::read_to_string(sb.config()).unwrap(), live, "looking at the wallet changes nothing");
+    }
+
+    // ------------------------------------------------------ 中文 (phase 5)
+
+    /// English left in a Chinese log line: two English words in a row that
+    /// are not names, units or commands. Paths, URLs, numbers and the log's
+    /// own prefix are ignored.
+    fn untranslated(line: &str) -> Option<String> {
+        const KEEP: &[&str] = &[
+            "mobius", "searcher", "setup", "doctor", "mode", "lang", "confirm", "live", "paper", "env", "rtse", "bps",
+            "sol", "micro", "lamports", "bundle", "slot", "base", "dont", "front", "block", "engine", "tip", "floor",
+            "ctrl", "esc", "key", "okx", "true", "false", "enable", "http", "https",
+        ];
+        let words: Vec<&str> = line
+            .split_whitespace()
+            .skip(1) // menu / note / text / step …
+            .filter(|w| !w.contains(['/', '.', '$', ':', '=', '-', '_']) && !w.chars().any(|c| c.is_ascii_digit()))
+            .collect();
+        // capitalised words are names (Solana RPC, Jupiter API, Solana CLI)
+        let english: Vec<&str> = words.iter().flat_map(|w| w.split(|c: char| !c.is_ascii_alphabetic())).collect();
+        english
+            .windows(2)
+            .find(|pair| {
+                pair.iter().all(|w| w.len() >= 3 && w.chars().all(|c| c.is_ascii_lowercase()) && !KEEP.contains(w))
+            })
+            .map(|pair| pair.join(" "))
+    }
+
+    fn assert_all_chinese(log: &[String]) {
+        let left: Vec<String> = log.iter().filter_map(|l| untranslated(l).map(|w| format!("{w:?} in {l}"))).collect();
+        assert!(left.is_empty(), "untranslated text:\n{}", left.join("\n"));
+    }
+
+    #[test]
+    fn the_untranslated_check_itself_works() {
+        assert!(untranslated("note 核对: 模式=PAPER · 只模拟，发送锁定").is_none());
+        assert_eq!(untranslated("info Nothing was written here").as_deref(), Some("was written"));
+        assert!(untranslated("text 私钥文件 [/private/var/folders/x.json] -> /tmp/a").is_none());
+    }
+
+    #[test]
+    fn a_chinese_first_use_is_fully_translated() {
+        for answers in [
+            vec![Pick("Research"), Pick("Create"), Pick("Public"), ok(), Pick("Core"), Pick("Guarded"), Yes],
+            vec![
+                Pick("Assisted"),
+                Pick("Create"),
+                Pick("My own"),
+                Text("jup-secret-123456"),
+                Default,
+                Default,
+                jupiter_down(),
+                Pick("Try another proxy"),
+                Pick("Use this HTTP proxy"),
+                Text("socks5://127.0.0.1:1"),
+                Text("http://127.0.0.1:7897"),
+                ok(),
+                Pick("Everything"),
+                Pick("Balanced"),
+                Pick("Unlock"),
+                Text("enable"),
+                Text("ENABLE CONFIRM"),
+                Yes,
+            ],
+        ] {
+            let sb = Sandbox::new("zh").chinese();
+            let (outcome, log) = sb.run(answers);
+            outcome.unwrap();
+            assert_all_chinese(&log);
+            assert!(log.iter().any(|l| l.starts_with("finish 设置完成")), "{log:#?}");
+        }
+    }
+
+    #[test]
+    fn a_chinese_edit_of_an_existing_setup_is_fully_translated() {
+        let sb = Sandbox::new("zh-hub").with_config(EXISTING).chinese();
+        let (outcome, log) = sb.run(vec![
+            Pick("Change"),
+            Pick("Network"),
+            Pick("Test"),
+            ok(),
+            Pick("Markets"),
+            Pick("okx"),
+            No,
+            Pick("Safety"),
+            Pick("Guarded"),
+            Pick("Mode"),
+            Pick("PAPER"),
+            Pick("Review"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert_all_chinese(&log);
+        // the unlock phrase and product names stay as typed
+        assert!(log.iter().any(|l| l.contains("当前设置")), "{log:#?}");
+    }
+
+    #[test]
+    fn chinese_unattended_output_is_translated_and_english_stays_english() {
+        let sb = Sandbox::new("zh-yes").chinese();
+        let (outcome, log) = sb.unattended(&["--wallet", "new"]);
+        outcome.unwrap();
+        assert_all_chinese(&log);
+        let sb = Sandbox::new("en-yes");
+        let (_, log) = sb.unattended(&[]);
+        assert!(log.iter().any(|l| l.starts_with("success Settings saved to")), "{log:#?}");
     }
 }

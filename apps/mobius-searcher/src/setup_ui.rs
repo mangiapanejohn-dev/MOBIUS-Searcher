@@ -3,6 +3,7 @@
 //! screen). Every line is word-wrapped before it is printed, so the redraw of
 //! the active prompt always knows exactly how many rows to erase.
 
+use crate::i18n::tr;
 use anyhow::Result;
 use ratatui::crossterm::cursor::{MoveToColumn, MoveUp};
 use ratatui::crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifiers};
@@ -89,6 +90,8 @@ impl Session {
         } else {
             ("First-run setup", "about 2 minutes · nothing is written until you save")
         };
+        let (title, hint) = (tr(title).into_owned(), tr(hint).into_owned());
+        let (title, hint) = (title.as_str(), hint.as_str());
         out.push_str(&format!("{}  {}", paint(ACCENT, "┌"), paint(BOLD, title)));
         if 3 + title.width() + 2 + hint.width() <= content_width() {
             out.push_str(&format!("  {}\r\n", paint(FAINT, hint)));
@@ -119,12 +122,12 @@ impl Drop for Session {
                 && !ui.finished
             {
                 let text =
-                    if ui.saved { "Setup saved · not started" } else { "Setup cancelled · nothing was written" };
+                    tr(if ui.saved { "Setup saved · not started" } else { "Setup cancelled · nothing was written" });
                 let gap = if ui.spaced { String::new() } else { format!("{}\r\n", paint(FAINT, "│")) };
                 let _ = emit(&format!(
                     "{gap}{}  {}\r\n\r\n",
                     paint(FAINT, "└"),
-                    paint(if ui.saved { MUTED } else { RED }, text)
+                    paint(if ui.saved { MUTED } else { RED }, &text)
                 ));
             }
         });
@@ -141,8 +144,8 @@ pub fn step(current: usize, total: usize, title: &str, details: &[&str]) {
         ui.step = Some(Step {
             current,
             total,
-            title: title.to_string(),
-            details: details.iter().map(|d| (*d).to_string()).collect(),
+            title: tr(title).into_owned(),
+            details: details.iter().map(|d| tr(d).into_owned()).collect(),
         });
     });
 }
@@ -155,21 +158,29 @@ pub fn mark_saved() {
 /// A boxed block attached to the rail. Rows are `(key, value)`; an empty key
 /// makes a plain line and `("", "")` a blank one.
 pub fn note(title: &str, rows: &[(&str, String)]) -> Result<()> {
-    print_lines(&note_lines(title, rows, content_width(), (MUTED, "")))
+    let rows = translated_rows(rows);
+    let rows: Vec<(&str, String)> = rows.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    print_lines(&note_lines(&tr(title), &rows, content_width(), (MUTED, "")))
+}
+
+fn translated_rows(rows: &[(&str, String)]) -> Vec<(String, String)> {
+    rows.iter().map(|(k, v)| (tr(k).into_owned(), tr(v).into_owned())).collect()
 }
 
 /// Like `note`, but the keys lead (default colour) and the values are muted:
 /// an outline of steps rather than a table of settings.
 pub fn outline(title: &str, rows: &[(&str, String)]) -> Result<()> {
-    print_lines(&note_lines(title, rows, content_width(), ("", MUTED)))
+    let rows = translated_rows(rows);
+    let rows: Vec<(&str, String)> = rows.iter().map(|(k, v)| (k.as_str(), v.clone())).collect();
+    print_lines(&note_lines(&tr(title), &rows, content_width(), ("", MUTED)))
 }
 
 pub fn success(message: &str) -> Result<()> {
-    rail_message(&paint(GREEN, "✓"), message, None)
+    rail_message(&paint(GREEN, "✓"), &tr(message), None)
 }
 
 pub fn info(message: &str) -> Result<()> {
-    rail_message(" ", message, Some(MUTED))
+    rail_message(" ", &tr(message), Some(MUTED))
 }
 
 /// One connection-test result: ✓ ok, ✗ failed, ! failed but optional.
@@ -198,7 +209,7 @@ pub fn with_spinner<T>(label: &str, work: impl FnOnce() -> T) -> T {
     }
     let _ = print_lines(&block_start());
     let stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
-    let label = label.to_string();
+    let label = tr(label).into_owned();
     let spinner = {
         let stop = stop.clone();
         std::thread::spawn(move || {
@@ -273,7 +284,7 @@ fn qr_rows(matrix: &[Vec<bool>], colour: bool) -> Vec<String> {
 /// narrow for it.
 pub fn qr(data: &str, label: &str, caption: &str) -> Result<()> {
     let mut lines = with_step_only();
-    for part in wrap(caption, content_width().saturating_sub(5)) {
+    for part in wrap(&tr(caption), content_width().saturating_sub(5)) {
         lines.push(format!("{}    {}", paint(FAINT, "│"), paint(MUTED, &part)));
     }
     if let Some(matrix) = qr_matrix(data)
@@ -290,7 +301,7 @@ pub fn qr(data: &str, label: &str, caption: &str) -> Result<()> {
 /// A warning on the rail itself (`▲`).
 pub fn warn(message: &str) -> Result<()> {
     let mut lines = block_start();
-    let wrapped = wrap(message, content_width().saturating_sub(3));
+    let wrapped = wrap(&tr(message), content_width().saturating_sub(3));
     for (i, part) in wrapped.iter().enumerate() {
         let lead = if i == 0 { paint(AMBER, "▲") } else { paint(FAINT, "│") };
         lines.push(format!("{lead}  {}", paint(AMBER, part)));
@@ -302,7 +313,7 @@ pub fn warn(message: &str) -> Result<()> {
 /// Closes the rail.
 pub fn finish(title: &str, hint: &str) -> Result<()> {
     let mut lines = block_start();
-    lines.push(format!("{}  {}  {}", paint(FAINT, "└"), paint(GREEN, title), paint(FAINT, hint)));
+    lines.push(format!("{}  {}  {}", paint(FAINT, "└"), paint(GREEN, &tr(title)), paint(FAINT, &tr(hint))));
     lines.push(String::new());
     print_lines(&lines)?;
     with_ui(|ui| ui.finished = true);
@@ -331,10 +342,20 @@ pub fn prompt_menu(prompt: &str, items: &[MenuItem<'_>], default: usize) -> Resu
     if !active() {
         return Ok(None);
     }
+    let prompt = tr(prompt);
+    let owned: Vec<(String, String, Option<String>)> = items
+        .iter()
+        .map(|i| (tr(i.title).into_owned(), tr(i.description).into_owned(), i.badge.map(|b| tr(b).into_owned())))
+        .collect();
+    let items: Vec<MenuItem<'_>> = owned
+        .iter()
+        .map(|(title, description, badge)| MenuItem { title, description, badge: badge.as_deref() })
+        .collect();
+    let items = items.as_slice();
     let mut selected = default.min(items.len().saturating_sub(1));
     interact(
         &mut selected,
-        |selected| menu_frame(prompt, items, *selected),
+        |selected| menu_frame(&prompt, items, *selected),
         |selected, key| match key.code {
             KeyCode::Enter => Key::Done(items[*selected].title.to_string()),
             KeyCode::Up | KeyCode::Left | KeyCode::BackTab | KeyCode::Char('k') => {
@@ -354,7 +375,7 @@ pub fn prompt_menu(prompt: &str, items: &[MenuItem<'_>], default: usize) -> Resu
             },
             _ => Key::Ignore,
         },
-        prompt,
+        &prompt,
     )?;
     Ok(Some(selected))
 }
@@ -363,27 +384,29 @@ pub fn prompt_bool(prompt: &str, default: bool) -> Result<Option<bool>> {
     if !active() {
         return Ok(None);
     }
+    let prompt = tr(prompt);
+    let answer = |yes: bool| tr(if yes { "Yes" } else { "No" }).into_owned();
     let mut yes = default;
     interact(
         &mut yes,
-        |yes| confirm_frame(prompt, *yes),
+        |yes| confirm_frame(&prompt, *yes),
         |yes, key| match key.code {
-            KeyCode::Enter => Key::Done(if *yes { "Yes" } else { "No" }.into()),
+            KeyCode::Enter => Key::Done(answer(*yes)),
             KeyCode::Left | KeyCode::Right | KeyCode::Up | KeyCode::Down | KeyCode::Tab | KeyCode::BackTab => {
                 *yes = !*yes;
                 Key::Redraw
             }
             KeyCode::Char('y' | 'Y') => {
                 *yes = true;
-                Key::Done("Yes".into())
+                Key::Done(answer(true))
             }
             KeyCode::Char('n' | 'N') => {
                 *yes = false;
-                Key::Done("No".into())
+                Key::Done(answer(false))
             }
             _ => Key::Ignore,
         },
-        prompt,
+        &prompt,
     )?;
     Ok(Some(yes))
 }
@@ -410,6 +433,14 @@ pub fn prompt_text(spec: &TextPrompt<'_>) -> Result<Option<String>> {
     if !active() {
         return Ok(None);
     }
+    let (label, placeholder, empty) = (tr(spec.label), tr(spec.placeholder), tr(spec.empty_answer));
+    let spec = &TextPrompt {
+        label: &label,
+        placeholder: &placeholder,
+        empty_answer: &empty,
+        hidden: spec.hidden,
+        validate: spec.validate,
+    };
     let mut input = Input { value: String::new(), error: None };
     interact(
         &mut input,
@@ -422,13 +453,13 @@ pub fn prompt_text(spec: &TextPrompt<'_>) -> Result<Option<String>> {
                     if let Some(validate) = spec.validate
                         && let Err(reason) = validate(value)
                     {
-                        input.error = Some(reason);
+                        input.error = Some(tr(&reason).into_owned());
                         return Key::Redraw;
                     }
                     Key::Done(if value.is_empty() {
                         spec.empty_answer.into()
                     } else if spec.hidden {
-                        "saved (hidden)".into()
+                        tr("saved (hidden)").into_owned()
                     } else {
                         value.to_string()
                     })
@@ -528,7 +559,7 @@ fn prompt_head(prompt: &str, width: usize) -> Vec<String> {
 }
 
 fn hint_lines(text: &str) -> Vec<String> {
-    wrap(text, content_width().saturating_sub(3))
+    wrap(&tr(text), content_width().saturating_sub(3))
         .iter()
         .enumerate()
         .map(|(i, part)| format!("{}  {}", paint(FAINT, if i == 0 { "└" } else { " " }), paint(FAINT, part)))
@@ -572,7 +603,8 @@ fn confirm_frame(prompt: &str, yes: bool) -> Vec<String> {
             format!("{} {}", paint(FAINT, "○"), paint(MUTED, label))
         }
     };
-    lines.push(format!("{}  {} {} {}", paint(FAINT, "│"), option("Yes", yes), paint(FAINT, "/"), option("No", !yes)));
+    let (y, n) = (tr("Yes"), tr("No"));
+    lines.push(format!("{}  {} {} {}", paint(FAINT, "│"), option(&y, yes), paint(FAINT, "/"), option(&n, !yes)));
     lines.extend(hint_lines("←→ switch · y / n · enter select · esc cancel"));
     lines
 }
@@ -615,15 +647,19 @@ fn header(logo: Option<&InlineLogo>, width: usize) -> String {
     let version = env!("CARGO_PKG_VERSION");
     let mut text: Vec<String> = vec![
         format!("{}{}{}{}", paint(BOLD, "M"), paint(&format!("{BOLD}{ACCENT}"), "Ø"), paint(BOLD, "BIUS"), "-Searcher"),
-        paint(MUTED, "Solana · Jupiter arbitrage searcher"),
-        paint(FAINT, &format!("v{version} · research first")),
+        paint(MUTED, &tr("Solana · Jupiter arbitrage searcher")),
+        paint(FAINT, &tr(&format!("v{version} · research first"))),
         String::new(),
     ];
-    let promise = "Nothing can sign or send a transaction until you explicitly unlock it.";
+    let promise = tr("Nothing can sign or send a transaction until you explicitly unlock it.");
     let (cols, rows) = logo.map_or((0, 0), |l| (l.cols as usize, l.rows as usize));
     let side = logo.is_some() && width >= 2 + cols + 3 + 34;
     let text_width = if side { (width - 2 - cols - 3 - 1).min(46) } else { width.saturating_sub(3).min(60) };
-    text.extend(wrap(promise, text_width).iter().map(|l| paint(MUTED, l)));
+    text.extend(wrap(&promise, text_width).iter().map(|l| paint(MUTED, l)));
+    // the other language, one line, so nobody has to know the flag exists
+    text.push(String::new());
+    let other = tr("中文界面：mobius-searcher --setup --lang zh");
+    text.extend(wrap(&other, text_width).iter().map(|l| paint(FAINT, l)));
 
     let mut out = String::from("\r\n");
     let Some(logo) = logo else {
@@ -721,7 +757,12 @@ fn note_lines(title: &str, rows: &[(&str, String)], width: usize, style: (&str, 
             continue;
         }
         for (i, part) in wrap(value, inner - key_width - 2).iter().enumerate() {
-            let key_cell = if i == 0 { format!("{key:<key_width$}") } else { " ".repeat(key_width) };
+            // pad by display width: a CJK character takes two columns
+            let key_cell = if i == 0 {
+                format!("{key}{}", " ".repeat(key_width.saturating_sub(key.width())))
+            } else {
+                " ".repeat(key_width)
+            };
             let content = format!("{}  {}", styled(&key_cell, style.0), styled(part, style.1));
             lines.push(pad(&content, key_width + 2 + part.width()));
         }
@@ -1011,5 +1052,19 @@ mod tests {
         let coloured = qr_rows(&matrix, true);
         assert_eq!(coloured.len(), rows.len());
         assert!(coloured.iter().all(|r| r.matches('▀').count() == width));
+    }
+
+    #[test]
+    fn boxes_stay_aligned_with_wide_characters() {
+        let rows = [
+            ("模式", "PAPER · 只模拟，发送锁定，没有任何交易会被发出".to_string()),
+            ("单笔规模", "0.01 SOL · 最多占权益 1%".to_string()),
+            ("Mode", "x".into()),
+        ];
+        let lines: Vec<String> = note_lines("核对", &rows, 80, (MUTED, "")).iter().map(|l| plain(l)).collect();
+        let widths: Vec<usize> = lines[..lines.len() - 1].iter().map(|l| l.width()).collect();
+        assert!(widths.windows(2).all(|w| w[0] == w[1]), "{lines:#?}");
+        let value_at = |l: &str| l.find("PAPER").or_else(|| l.find("0.01")).map(|i| l[..i].width());
+        assert_eq!(value_at(&lines[2]), value_at(&lines[3]), "values start in one column: {lines:#?}");
     }
 }
