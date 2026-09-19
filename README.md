@@ -21,20 +21,34 @@
   <a href="CHANGELOG.md">Changelog</a>
 </p>
 
-**MØBIUS-Searcher is a research-first quant bot that lives in your terminal.** It
-watches Solana DEXes in real time, prices every arbitrage route with real
-Jupiter quotes, builds the actual transaction and simulates it on mainnet — and
-then tells you, with numbers, why it would or would not trade. Venues are
-configured side by side: Solana executes today, OKX supplies market data, more
-venues come next.
+## Live Solana arbitrage research in your terminal
+
+**Real DEX quotes. Real transaction construction. Real mainnet simulation. PAPER by default.**
+
+MØBIUS-Searcher watches Solana DEXes in real time, prices routes with Jupiter,
+builds the actual v0 transaction, simulates it on mainnet, and explains — with
+numbers — why a route would or would not trade.
+
+| **3,091** | **2,333** | **0** |
+|:---:|:---:|:---:|
+| real evaluations | mainnet simulations | executable opportunities at the default configuration |
+
+Most trading-bot demos start with a winning screenshot. MØBIUS-Searcher starts
+with a harder question: **after fees, slippage, Jito tips, ATA rent, stale
+quotes, transaction construction and mainnet simulation, is the edge still
+real?**
+
+So far, at the default configuration, the answer is **no**. That result is the
+point — the searcher records the losing routes too, making the system useful as
+a reproducible Solana execution and MEV research tool rather than a profit
+claim.
 
 > [!WARNING]
-> **Not a money printer.** In 3,091 real evaluations and 2,333 mainnet
-> simulations it found **0** executable opportunities at its default
-> configuration ([results](docs/PAPER_RUN.md)). It runs in **PAPER** by default
-> — real data, real simulations, nothing signed or sent. CONFIRM and LIVE are
-> locked behind explicit gates and have never sent a transaction. Nothing here
-> is financial advice.
+> **Not a money printer.** The current PAPER results contain 3,091 real
+> evaluations and 2,333 mainnet simulations with **0 executable opportunities**
+> ([full results](docs/PAPER_RUN.md)). PAPER uses real market data and real
+> simulation but signs and sends nothing. CONFIRM and LIVE are explicit opt-in
+> modes and have never sent a transaction. Nothing here is financial advice.
 
 <p align="center">
   <img src="docs/images/markets.png" alt="The Markets page: price chart with VWMA and live price tag, DEX quote book, bots, ticker strip" width="100%">
