@@ -3,6 +3,30 @@
 All notable changes to MØBIUS. Versions follow [Semantic Versioning](https://semver.org/);
 before 1.0 a minor version may change configuration or behaviour.
 
+## Unreleased
+
+### Added
+- **OKX connector** (`searcher-venues`): signed v5 REST (HMAC-SHA256, clock
+  offset from `/public/time`), instrument rules (lot, tick, minimum size),
+  place / query / cancel orders, balances, and paper fills walking the live
+  order book with the configured taker fee. `demo = true` (default) sends
+  orders to OKX demo trading. An order needs a `TradePermit`: a real-account
+  permit also requires CONFIRM/LIVE and `execution.live_enabled`. Not yet
+  used by any strategy; `trading = true` is still refused at startup.
+- **EVM connector**: JSON-RPC, Uniswap v3 pool state (`slot0`, `liquidity`,
+  tokens and decimals read on chain) and exact quotes from QuoterV2.
+  Built-in venues `ethereum`, `base`, `arbitrum` (WETH/USDC 0.05 %, official
+  QuoterV2 / SwapRouter02 addresses checked on chain), off by default.
+- **EVM signing and swaps**: Keccak-256, RLP, EIP-55, EIP-1559 transactions
+  signed with secp256k1 (reproduces the EIP-155 worked example byte for byte
+  and re-encodes a real Base type-2 transaction exactly). `EvmTrader`
+  approves and swaps through SwapRouter02; every swap is simulated from our
+  address first and refused below `min_out`. Our swap calldata, simulated on
+  the real routers, returns exactly QuoterV2's output on all three chains.
+  Needs a real-account permit (no demo on chains). No strategy sends yet.
+- `--doctor` checks enabled EVM venues (chain id, pool price, block) and,
+  when OKX credentials are set, a signed read-only balance request.
+
 ## 0.1.0 — 2026-09-19
 
 First public release. MØBIUS is built as a multi-venue quant trading bot; in

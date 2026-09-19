@@ -68,7 +68,42 @@ impl Default for Config {
             scheduler: Default::default(),
             network: Default::default(),
             storage: Default::default(),
-            venues: BTreeMap::from([("okx".to_string(), VenueConfig::okx())]),
+            venues: BTreeMap::from([
+                ("okx".to_string(), VenueConfig::okx()),
+                (
+                    "ethereum".to_string(),
+                    VenueConfig::evm(
+                        1,
+                        "https://ethereum-rpc.publicnode.com",
+                        "ETHEREUM_RPC_URL",
+                        "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+                        "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+                        "0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640",
+                    ),
+                ),
+                (
+                    "base".to_string(),
+                    VenueConfig::evm(
+                        8453,
+                        "https://base-rpc.publicnode.com",
+                        "BASE_RPC_URL",
+                        "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a",
+                        "0x2626664c2603336E57B271c5C0b26F421741e481",
+                        "0xd0b53D9277642d899DF5C87A3966A349A798F224",
+                    ),
+                ),
+                (
+                    "arbitrum".to_string(),
+                    VenueConfig::evm(
+                        42161,
+                        "https://arbitrum-one-rpc.publicnode.com",
+                        "ARBITRUM_RPC_URL",
+                        "0x61fFE014bA17989E743c5F6cB21bF9697530B21e",
+                        "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45",
+                        "0xC6962004f452bE9203591991D15f6b388e09E8D0",
+                    ),
+                ),
+            ]),
         }
     }
 }
@@ -80,6 +115,9 @@ impl Default for Config {
 pub enum VenueKind {
     /// OKX v5 API. Public market data today (Markets page); trading next.
     Okx,
+    /// An EVM chain over JSON-RPC (`rest_url`): Uniswap v3 pool state and
+    /// exact quotes from its QuoterV2. Read-only for now.
+    Evm,
 }
 
 /// One market venue. Credentials are variable *names*; values come from the
@@ -107,6 +145,34 @@ pub struct VenueConfig {
     /// Place orders here. Refused until the venue's trading connector exists.
     #[serde(default)]
     pub trading: bool,
+    /// Orders go to the venue's demo environment (simulated funds; OKX: demo
+    /// API key + `x-simulated-trading: 1`). A real-account order needs
+    /// `demo = false`, `trading = true`, a sending mode and
+    /// `execution.live_enabled = true`.
+    #[serde(default = "yes")]
+    pub demo: bool,
+    /// Taker fee assumed for paper fills and cost estimates, bps.
+    #[serde(default = "default_taker_fee_bps")]
+    pub taker_fee_bps: u32,
+    /// EVM: chain id the RPC must report (1 Ethereum, 8453 Base, 42161 Arbitrum).
+    #[serde(default)]
+    pub chain_id: Option<u64>,
+    /// EVM: env var that overrides `rest_url` (keyed RPC URLs belong in the environment).
+    #[serde(default)]
+    pub rpc_url_env: String,
+    /// EVM: Uniswap v3 QuoterV2 address.
+    #[serde(default)]
+    pub quoter: String,
+    /// EVM: Uniswap v3 pool addresses; tokens, decimals and fee are read on chain.
+    #[serde(default)]
+    pub pools: Vec<String>,
+    /// EVM: Uniswap SwapRouter02 address (swaps are sent here).
+    #[serde(default)]
+    pub router: String,
+}
+
+fn default_taker_fee_bps() -> u32 {
+    10
 }
 
 fn yes() -> bool {
@@ -126,7 +192,43 @@ impl VenueConfig {
             secret_env: "OKX_API_SECRET".into(),
             passphrase_env: "OKX_API_PASSPHRASE".into(),
             trading: false,
+            demo: true,
+            taker_fee_bps: default_taker_fee_bps(),
+            chain_id: None,
+            rpc_url_env: String::new(),
+            quoter: String::new(),
+            pools: Vec::new(),
+            router: String::new(),
         }
+    }
+
+    /// Uniswap v3 WETH/USDC 0.05 % on an EVM chain (addresses checked on
+    /// chain 2026-09-19 against the official deployments). Disabled by default.
+    pub fn evm(chain_id: u64, rpc: &str, rpc_env: &str, quoter: &str, router: &str, pool: &str) -> Self {
+        Self {
+            kind: VenueKind::Evm,
+            enabled: false,
+            rest_url: rpc.into(),
+            markets: Vec::new(),
+            watchlist: Vec::new(),
+            api_key_env: String::new(),
+            secret_env: String::new(),
+            passphrase_env: String::new(),
+            trading: false,
+            demo: true,
+            // Uniswap's pool fee is inside the quote
+            taker_fee_bps: 0,
+            chain_id: Some(chain_id),
+            rpc_url_env: rpc_env.into(),
+            quoter: quoter.into(),
+            pools: vec![pool.into()],
+            router: router.into(),
+        }
+    }
+
+    /// The JSON-RPC / REST URL after the `rpc_url_env` override.
+    pub fn resolved_url(&self) -> String {
+        if self.rpc_url_env.is_empty() { self.rest_url.clone() } else { env_or(&self.rpc_url_env, &self.rest_url) }
     }
 
     /// Credential variable names that are configured (non-empty).
@@ -910,8 +1012,34 @@ impl Config {
             if !v.rest_url.starts_with("https://") && !v.rest_url.starts_with("http://") {
                 return bad(format!("venues.{name}.rest_url must be an http(s) URL"));
             }
-            if v.enabled && v.markets.is_empty() {
-                return bad(format!("venues.{name}.markets: list at least one instrument"));
+            let evm_addr =
+                |a: &str| a.len() == 42 && a.starts_with("0x") && a[2..].chars().all(|c| c.is_ascii_hexdigit());
+            match v.kind {
+                VenueKind::Okx => {
+                    if v.enabled && v.markets.is_empty() {
+                        return bad(format!("venues.{name}.markets: list at least one instrument"));
+                    }
+                }
+                VenueKind::Evm => {
+                    if v.chain_id.is_none() {
+                        return bad(format!("venues.{name}.chain_id is required for kind = \"evm\""));
+                    }
+                    if !evm_addr(&v.quoter) {
+                        return bad(format!("venues.{name}.quoter must be a 0x… address"));
+                    }
+                    if v.enabled && v.pools.is_empty() {
+                        return bad(format!("venues.{name}.pools: list at least one pool address"));
+                    }
+                    if !v.router.is_empty() && !evm_addr(&v.router) {
+                        return bad(format!("venues.{name}.router must be a 0x… address"));
+                    }
+                    if let Some(p) = v.pools.iter().find(|p| !evm_addr(p)) {
+                        return bad(format!("venues.{name}.pools: `{p}` is not a 0x… address"));
+                    }
+                }
+            }
+            if v.taker_fee_bps > 1_000 {
+                return bad(format!("venues.{name}.taker_fee_bps must be ≤ 1000"));
             }
             if v.trading {
                 return bad(format!(

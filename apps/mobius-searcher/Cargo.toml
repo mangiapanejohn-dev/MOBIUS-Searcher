@@ -24,6 +24,7 @@ searcher-strategy.workspace = true
 searcher-execution.workspace = true
 searcher-risk.workspace = true
 searcher-storage.workspace = true
+searcher-venues.workspace = true
 searcher-tui.workspace = true
 tokio.workspace = true
 clap.workspace = true

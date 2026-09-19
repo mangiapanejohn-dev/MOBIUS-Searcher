@@ -44,6 +44,46 @@ api_key_env = "OKX_API_KEY"
 secret_env = "OKX_API_SECRET"
 passphrase_env = "OKX_API_PASSPHRASE"
 trading = false                       # market data only (no order connector yet)
+demo = true                           # orders go to OKX demo trading (simulated funds)
+taker_fee_bps = 10                    # assumed taker fee for paper fills
+
+# ════ Venues: EVM chains (Uniswap v3, read-only for now) ════════════════════
+# Pool state and exact quotes (QuoterV2) over JSON-RPC. Off by default; turn
+# one on in your file with e.g. `[venues.base] enabled = true`. Addresses are
+# Uniswap's official deployments, checked on chain. A keyed RPC URL goes in
+# the environment variable named by rpc_url_env.
+[venues.ethereum]
+kind = "evm"
+enabled = false
+chain_id = 1
+rest_url = "https://ethereum-rpc.publicnode.com"
+rpc_url_env = "ETHEREUM_RPC_URL"
+quoter = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+router = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"   # SwapRouter02
+pools = ["0x88e6A0c2dDD26FEEb64F039a2c41296FcB3f5640"]   # WETH/USDC 0.05 %
+taker_fee_bps = 0                                          # the pool fee is in the quote
+
+[venues.base]
+kind = "evm"
+enabled = false
+chain_id = 8453
+rest_url = "https://base-rpc.publicnode.com"   # mainnet.base.org answered 429 after a few calls
+rpc_url_env = "BASE_RPC_URL"
+quoter = "0x3d4e44Eb1374240CE5F1B871ab261CD16335B76a"
+router = "0x2626664c2603336E57B271c5C0b26F421741e481"   # SwapRouter02
+pools = ["0xd0b53D9277642d899DF5C87A3966A349A798F224"]   # WETH/USDC 0.05 %
+taker_fee_bps = 0
+
+[venues.arbitrum]
+kind = "evm"
+enabled = false
+chain_id = 42161
+rest_url = "https://arbitrum-one-rpc.publicnode.com"
+rpc_url_env = "ARBITRUM_RPC_URL"
+quoter = "0x61fFE014bA17989E743c5F6cB21bF9697530B21e"
+router = "0x68b3465833fb72A70ecDF485E0e4C7bD8665Fc45"   # SwapRouter02
+pools = ["0xC6962004f452bE9203591991D15f6b388e09E8D0"]   # WETH/USDC 0.05 %
+taker_fee_bps = 0
 
 # ════ Venue: Solana (DEX via Jupiter; bundles via Jito) ══════════════════════
 
