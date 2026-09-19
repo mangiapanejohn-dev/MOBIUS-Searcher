@@ -29,9 +29,11 @@ use std::time::Duration;
     about = "MØBIUS-Searcher — Solana/Jupiter arbitrage searcher (PAPER by default)"
 )]
 struct Cli {
-    /// Open the full-screen first-use configuration wizard and exit.
+    /// Run the setup wizard (first use, or review and change settings) and exit.
     #[arg(long, alias = "init")]
     setup: bool,
+    #[command(flatten)]
+    setup_opts: setup::SetupOpts,
     /// Skip the automatic first-use wizard for this launch.
     #[arg(long)]
     skip_setup: bool,
@@ -247,7 +249,7 @@ fn main() -> Result<()> {
         && cli.snapshot.is_none();
     let auto_setup = !cli.skip_setup && setup::should_auto_run(&marker_path, &config_path, ordinary_tui_run);
     if cli.setup || auto_setup {
-        let outcome = match setup::run(&config_path, &env_path, &marker_path, cli.setup) {
+        let outcome = match setup::run(&config_path, &env_path, &marker_path, cli.setup, &cli.setup_opts) {
             Ok(outcome) => outcome,
             Err(error) if setup::is_cancelled(&error) => return Ok(()),
             Err(error) => return Err(error),

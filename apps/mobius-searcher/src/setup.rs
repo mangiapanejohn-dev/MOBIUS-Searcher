@@ -102,6 +102,46 @@ pub struct Outcome {
     pub start_now: bool,
 }
 
+/// Answers for `--setup --yes`: nothing is asked, for servers, containers and
+/// scripts. Secrets are deliberately not flags (they would end up in shell
+/// history); pass them as environment variables when MØBIUS runs.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct SetupOpts {
+    /// With --setup: take every answer from the flags below, ask nothing.
+    /// A first use becomes a PAPER research setup; an existing setup keeps
+    /// everything no flag changes.
+    #[arg(long, requires = "setup")]
+    pub yes: bool,
+    /// Bot wallet: new | keep | none | watch:<ADDRESS> | <keypair file>.
+    #[arg(long, value_name = "WALLET", requires = "yes")]
+    pub wallet: Option<String>,
+    /// Which opportunities to scan (default: core on first use, keep otherwise).
+    #[arg(long, value_enum, requires = "yes")]
+    pub strategies: Option<ScopeArg>,
+    /// Starting risk policy (default: guarded on first use, keep otherwise).
+    #[arg(long, value_enum, requires = "yes")]
+    pub safety: Option<SafetyArg>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopeArg {
+    Keep,
+    /// Round-trips and cross-DEX price gaps.
+    Core,
+    /// Also triangular cycles.
+    All,
+    RoundTrip,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SafetyArg {
+    Keep,
+    /// Routes up to 1% of equity, pause after 3 failures, $2 daily stop.
+    Guarded,
+    /// Routes up to 2.5% of equity, pause after 5 failures, $5 daily stop.
+    Balanced,
+}
+
 pub fn is_cancelled(error: &anyhow::Error) -> bool {
     setup_ui::is_cancelled(error)
 }
@@ -130,12 +170,19 @@ struct Ctx {
     wallet_dir: PathBuf,
 }
 
-pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bool) -> Result<Outcome> {
+pub fn run(
+    config_path: &Path,
+    env_path: &Path,
+    marker_path: &Path,
+    explicit: bool,
+    opts: &SetupOpts,
+) -> Result<Outcome> {
+    if opts.yes {
+        return run_unattended(config_path, env_path, marker_path, opts);
+    }
     // The effective settings come first: a file that does not load must be
     // fixed by hand, never silently replaced.
-    let layered = config::load_layered(Path::new(config::REPO_CONFIG_PATH), config_path)
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .context("reading the current settings (fix the file, or move it away to start fresh)")?;
+    let layered = load_current(config_path)?;
     let existing = config_path.exists();
     let session = setup_ui::Session::start(existing)?;
     if !session.visual() {
@@ -153,19 +200,8 @@ pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bo
     let ws_env = cfg.rpc.ws_url_env.clone();
     let jito_env = cfg.jito.uuid_env.clone();
     let pyth_env = cfg.feeds.pyth_api_key_env.clone();
-    let env_texts: Vec<String> = std::iter::once(env_path.to_path_buf())
-        .chain(crate::envfile::sources())
-        .map(|p| fs::read_to_string(p).unwrap_or_default())
-        .collect();
-    let has = |key: &str| std::env::var_os(key).is_some() || env_texts.iter().any(|text| env_has(text, key));
-    let present = Present {
-        jupiter: has(&jupiter_env),
-        rpc: has(&rpc_env),
-        ws: has(&ws_env),
-        jito: has(&jito_env),
-        pyth: has(&pyth_env),
-    };
-    let wallet_dir = config_path.parent().unwrap_or(Path::new(".")).join("wallets");
+    let present = detect_present(&cfg, env_path);
+    let wallet_dir = wallet_dir(config_path);
     let ctx = Ctx { present, current_wallet, wallet_dir };
 
     let mut env_answers = EnvAnswers::default();
@@ -253,6 +289,120 @@ pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bo
         if start_now { "starting…" } else { "start: mobius-searcher · change later: mobius-searcher --setup" };
     finish("Setup complete", hint)?;
     Ok(Outcome { start_now })
+}
+
+fn load_current(config_path: &Path) -> Result<config::Layered> {
+    config::load_layered(Path::new(config::REPO_CONFIG_PATH), config_path)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("reading the current settings (fix the file, or move it away to start fresh)")
+}
+
+/// New bot keypairs go to `wallets/` next to the user's config file.
+fn wallet_dir(config_path: &Path) -> PathBuf {
+    config_path.parent().unwrap_or(Path::new(".")).join("wallets")
+}
+
+/// Which credentials are already stored: the setup's own .env, the files the
+/// runtime reads, or the process environment.
+fn detect_present(cfg: &Config, env_path: &Path) -> Present {
+    let env_texts: Vec<String> = std::iter::once(env_path.to_path_buf())
+        .chain(crate::envfile::sources())
+        .map(|p| fs::read_to_string(p).unwrap_or_default())
+        .collect();
+    let has = |key: &str| std::env::var_os(key).is_some() || env_texts.iter().any(|text| env_has(text, key));
+    Present {
+        jupiter: has(&cfg.jupiter.api_key_env),
+        rpc: has(&cfg.rpc.url_env),
+        ws: has(&cfg.rpc.ws_url_env),
+        jito: has(&cfg.jito.uuid_env),
+        pyth: has(&cfg.feeds.pyth_api_key_env),
+    }
+}
+
+/// `--setup --yes`: the same building blocks as the wizard, driven by flags.
+/// Errors leave every file as it was.
+fn run_unattended(config_path: &Path, env_path: &Path, marker_path: &Path, opts: &SetupOpts) -> Result<Outcome> {
+    let layered = load_current(config_path)?;
+    let existing = config_path.exists();
+    let below = layered.below_user;
+    let mut cfg = layered.config;
+    let start = snapshot(&cfg);
+    if !existing {
+        // a first use without questions is always a research (PAPER) setup
+        cfg.general.mode = Mode::Paper;
+        cfg.execution.live_enabled = false;
+    }
+    let sends = cfg.general.mode.sends_transactions();
+    let mut pending = None;
+    match opts.wallet.as_deref().map(str::trim) {
+        None | Some("keep") => {}
+        Some("new") => {
+            let path = next_wallet_path(&wallet_dir(config_path));
+            let wallet = GeneratedWallet::new();
+            cfg.wallet.pubkey = Some(wallet.pubkey().to_string());
+            cfg.wallet.keypair_path = Some(path.display().to_string());
+            pending = Some(PendingWallet { path, wallet });
+        }
+        Some("none") => {
+            if sends {
+                bail!("--wallet none: {} mode needs a signing wallet", cfg.general.mode.label());
+            }
+            cfg.wallet.pubkey = None;
+            cfg.wallet.keypair_path = None;
+        }
+        Some(other) if other.starts_with("watch:") => {
+            if sends {
+                bail!("--wallet {other}: {} mode needs a signing wallet", cfg.general.mode.label());
+            }
+            let address: searcher_core::Address = other["watch:".len()..]
+                .trim()
+                .parse()
+                .map_err(|e| anyhow::anyhow!("--wallet {other}: not a Solana address: {e}"))?;
+            cfg.wallet.pubkey = Some(address.to_string());
+            cfg.wallet.keypair_path = None;
+        }
+        Some(path) => {
+            let path = expand_home_path(path);
+            let wallet = Wallet::load(&path, None).with_context(|| format!("--wallet {}", path.display()))?;
+            cfg.wallet.pubkey = Some(wallet.pubkey().to_string());
+            cfg.wallet.keypair_path = Some(path.display().to_string());
+        }
+    }
+    let scope = opts.strategies.unwrap_or(if existing { ScopeArg::Keep } else { ScopeArg::Core });
+    match scope {
+        ScopeArg::Keep => {}
+        ScopeArg::Core => apply_strategy_scope(&mut cfg, 0),
+        ScopeArg::All => apply_strategy_scope(&mut cfg, 1),
+        ScopeArg::RoundTrip => apply_strategy_scope(&mut cfg, 2),
+    }
+    let safety = opts.safety.unwrap_or(if existing { SafetyArg::Keep } else { SafetyArg::Guarded });
+    match safety {
+        SafetyArg::Keep => {}
+        SafetyArg::Guarded => apply_safety_policy(&mut cfg, 0),
+        SafetyArg::Balanced => apply_safety_policy(&mut cfg, 1),
+    }
+    cfg.validate().map_err(anyhow::Error::msg)?;
+
+    if existing && snapshot(&cfg) == start && pending.is_none() {
+        info(&format!("No changes: {} already has these settings.", display_path(config_path)))?;
+        return Ok(Outcome { start_now: false });
+    }
+    let present = detect_present(&cfg, env_path);
+    note("Setup", &review_rows(&cfg, &EnvAnswers::default(), present, pending.as_ref(), config_path, env_path))?;
+    let created_wallet = persist_pending_wallet(pending.as_ref())?;
+    if let Err(error) = write_config(config_path, &below, &cfg) {
+        if let Some(path) = &created_wallet {
+            let _ = fs::remove_file(path);
+        }
+        return Err(error);
+    }
+    write_marker(marker_path)?;
+    success(&format!("Settings saved to {}", display_path(config_path)))?;
+    if let Some(path) = &created_wallet {
+        success(&format!("Bot wallet saved to {} (0600)", display_path(path)))?;
+        warn("Back up the keypair file before funding it; a lost key cannot be recovered.")?;
+    }
+    Ok(Outcome { start_now: false })
 }
 
 /// The first-use flow: pick a goal, see its steps, walk them.
@@ -2019,7 +2169,21 @@ mod tests {
         }
         fn run(&self, answers: Vec<A>) -> (Result<Outcome>, Vec<String>) {
             script::install(answers);
-            let outcome = run(&self.config(), &self.env(), &self.marker(), true);
+            let outcome = run(&self.config(), &self.env(), &self.marker(), true, &SetupOpts::default());
+            (outcome, script::take())
+        }
+        fn unattended(&self, args: &[&str]) -> (Result<Outcome>, Vec<String>) {
+            use clap::Parser;
+            #[derive(Parser)]
+            struct Cli {
+                #[arg(long)]
+                setup: bool,
+                #[command(flatten)]
+                opts: SetupOpts,
+            }
+            let cli = Cli::try_parse_from(["mobius-searcher", "--setup", "--yes"].iter().chain(args)).unwrap();
+            script::install(Vec::new());
+            let outcome = run(&self.config(), &self.env(), &self.marker(), true, &cli.opts);
             (outcome, script::take())
         }
         fn effective(&self) -> Config {
@@ -2299,5 +2463,88 @@ mod tests {
             !config_text.contains("jup-secret") && !config_text.contains("rpc-secret"),
             "secrets never go into the config: {config_text}"
         );
+    }
+
+    // ------------------------------------------------------ --setup --yes
+
+    #[test]
+    fn yes_flags_parse_only_together_with_setup() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[arg(long)]
+            setup: bool,
+            #[command(flatten)]
+            opts: SetupOpts,
+        }
+        assert!(Cli::try_parse_from(["m", "--yes"]).is_err(), "--yes needs --setup");
+        assert!(Cli::try_parse_from(["m", "--setup", "--wallet", "new"]).is_err(), "--wallet needs --yes");
+        assert!(Cli::try_parse_from(["m", "--setup", "--yes", "--safety", "reckless"]).is_err());
+        let cli = Cli::try_parse_from(["m", "--setup", "--yes", "--strategies", "round-trip", "--safety", "balanced"])
+            .unwrap();
+        assert_eq!((cli.opts.strategies, cli.opts.safety), (Some(ScopeArg::RoundTrip), Some(SafetyArg::Balanced)));
+    }
+
+    #[test]
+    fn unattended_first_use_is_a_research_setup_without_a_wallet() {
+        let sb = Sandbox::new("yes-first");
+        let (outcome, log) = sb.unattended(&[]);
+        assert!(!outcome.unwrap().start_now);
+        let cfg = sb.effective();
+        assert_eq!(cfg.general.mode, Mode::Paper);
+        assert!(cfg.wallet.pubkey.is_none() && cfg.wallet.keypair_path.is_none(), "no wallet unless asked");
+        assert_eq!(cfg.risk.max_trade_pct_of_equity_bps, 100);
+        assert!(cfg.strategies.cross_dex[0].enabled && !cfg.strategies.triangular[0].enabled);
+        assert_eq!(sb.files(), vec!["config.toml".to_string(), "setup-complete".to_string()]);
+        assert!(log.iter().any(|l| l.starts_with("note Setup:")), "{log:#?}");
+    }
+
+    #[test]
+    fn unattended_new_wallet_is_created_private() {
+        let sb = Sandbox::new("yes-wallet");
+        sb.unattended(&["--wallet", "new", "--strategies", "all"]).0.unwrap();
+        let cfg = sb.effective();
+        let keypair = PathBuf::from(cfg.wallet.keypair_path.unwrap());
+        assert_eq!(mode_bits(&keypair), 0o600);
+        assert!(cfg.strategies.triangular[0].enabled);
+    }
+
+    #[test]
+    fn unattended_on_an_existing_setup_changes_only_what_is_asked() {
+        let sb = Sandbox::new("yes-noop").with_config(EXISTING);
+        let (outcome, log) = sb.unattended(&[]);
+        outcome.unwrap();
+        assert_eq!(fs::read_to_string(sb.config()).unwrap(), EXISTING);
+        assert_eq!(sb.files(), vec!["config.toml".to_string()]);
+        assert!(log.iter().any(|l| l.starts_with("info No changes")), "{log:#?}");
+
+        let sb = Sandbox::new("yes-safety").with_config(EXISTING);
+        let before = sb.effective();
+        sb.unattended(&["--safety", "balanced"]).0.unwrap();
+        let after = sb.effective();
+        assert_eq!(after.risk.max_trade_pct_of_equity_bps, 250);
+        assert_eq!(after.wallet.pubkey, before.wallet.pubkey);
+        assert_eq!(after.execution.live_enabled, before.execution.live_enabled);
+        assert_eq!(strategies_summary(&after), strategies_summary(&before), "strategy choice kept");
+        assert_eq!(format!("{:?}", after.venues), format!("{:?}", before.venues));
+    }
+
+    #[test]
+    fn unattended_errors_leave_every_file_alone() {
+        let live = format!("{EXISTING}\n[general]\nmode = \"live\"\n");
+        for args in [
+            vec!["--wallet", "none"],
+            vec!["--wallet", "watch:So11111111111111111111111111111111111111112"],
+            vec!["--wallet", "/no/such/keypair.json"],
+        ] {
+            let sb = Sandbox::new("yes-err").with_config(&live);
+            let (outcome, _) = sb.unattended(&args);
+            assert!(outcome.is_err(), "{args:?} should fail");
+            assert_eq!(fs::read_to_string(sb.config()).unwrap(), live, "{args:?}");
+            assert_eq!(sb.files(), vec!["config.toml".to_string()], "{args:?}");
+        }
+        let sb = Sandbox::new("yes-bad-watch");
+        assert!(sb.unattended(&["--wallet", "watch:nope"]).0.is_err());
+        assert!(sb.files().is_empty());
     }
 }
