@@ -1,0 +1,5 @@
+blank_issues_enabled: false
+contact_links:
+  - name: Private security report
+    url: https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/security/advisories/new
+    about: Use this for vulnerabilities that could expose keys, bypass execution gates, or put funds at risk.
