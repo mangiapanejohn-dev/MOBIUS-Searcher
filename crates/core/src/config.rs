@@ -70,6 +70,7 @@ impl Default for Config {
             storage: Default::default(),
             venues: BTreeMap::from([
                 ("okx".to_string(), VenueConfig::okx()),
+                ("binance".to_string(), VenueConfig::binance()),
                 (
                     "ethereum".to_string(),
                     VenueConfig::evm(
@@ -115,6 +116,10 @@ impl Default for Config {
 pub enum VenueKind {
     /// OKX v5 API. Public market data today (Markets page); trading next.
     Okx,
+    /// Binance spot. Market data from the public mirror by default; signed
+    /// requests go to `rest_url` (or the spot testnet with `demo = true`).
+    /// Binance refuses some locations (HTTP 451).
+    Binance,
     /// An EVM chain over JSON-RPC (`rest_url`): Uniswap v3 pool state and
     /// exact quotes from its QuoterV2. Read-only for now.
     Evm,
@@ -199,6 +204,22 @@ impl VenueConfig {
             quoter: String::new(),
             pools: Vec::new(),
             router: String::new(),
+        }
+    }
+
+    /// Binance spot market data from the public mirror. Disabled by default.
+    pub fn binance() -> Self {
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect();
+        Self {
+            kind: VenueKind::Binance,
+            enabled: false,
+            rest_url: "https://data-api.binance.vision".into(),
+            markets: v(&["SOLUSDT", "SOLUSDC"]),
+            watchlist: v(&["BTCUSDT", "ETHUSDT", "SOLUSDT"]),
+            api_key_env: "BINANCE_API_KEY".into(),
+            secret_env: "BINANCE_API_SECRET".into(),
+            passphrase_env: String::new(),
+            ..Self::okx()
         }
     }
 
@@ -1015,7 +1036,7 @@ impl Config {
             let evm_addr =
                 |a: &str| a.len() == 42 && a.starts_with("0x") && a[2..].chars().all(|c| c.is_ascii_hexdigit());
             match v.kind {
-                VenueKind::Okx => {
+                VenueKind::Okx | VenueKind::Binance => {
                     if v.enabled && v.markets.is_empty() {
                         return bad(format!("venues.{name}.markets: list at least one instrument"));
                     }
@@ -1515,8 +1536,8 @@ mod tests {
         assert_eq!(l.origin("venues.okx.markets"), Layer::User);
         assert_eq!(l.origin("venues.okx.rest_url"), Layer::Default);
         // unknown connector kinds and trading without a connector are refused
-        let user = write(&d, "user.toml", "[venues.bn]\nkind = \"binance\"\nrest_url = \"https://api.binance.com\"\n");
-        assert!(load_layered(&repo, &user).unwrap_err().to_string().contains("binance"));
+        let user = write(&d, "user.toml", "[venues.kr]\nkind = \"kraken\"\nrest_url = \"https://api.kraken.com\"\n");
+        assert!(load_layered(&repo, &user).unwrap_err().to_string().contains("kraken"));
         let user = write(&d, "user.toml", "[venues.okx]\ntrading = true\n");
         assert!(load_layered(&repo, &user).unwrap_err().to_string().contains("not implemented"));
     }

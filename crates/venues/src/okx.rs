@@ -7,7 +7,7 @@
 //! `x-simulated-trading: 1`.
 
 use crate::book::{Book, Level};
-use crate::{Balance, Instrument, OrderKind, OrderRequest, OrderState, OrderStatus, TradePermit};
+use crate::{AccountProbe, Balance, Instrument, OrderKind, OrderRequest, OrderState, OrderStatus, TradePermit};
 use base64::Engine;
 use hmac::{Hmac, Mac};
 use searcher_core::config::VenueConfig;
@@ -129,6 +129,7 @@ pub fn parse_instrument(body: &str) -> Result<Instrument, OkxError> {
         tick_sz: text(d, "tickSz").into(),
         lot_sz: text(d, "lotSz").into(),
         min_sz: text(d, "minSz").into(),
+        min_notional: 0.0,
         live: text(d, "state") == "live",
     })
 }
@@ -377,16 +378,6 @@ impl OkxClient {
         let body = json!({ "instId": inst_id, "ordId": order_id }).to_string();
         parse_order_ack(&self.private("POST", "/api/v5/trade/cancel-order", &body).await?).map(|_| ())
     }
-}
-
-/// What a read-only account check found (`--doctor`).
-#[derive(Clone, Debug, PartialEq)]
-pub struct AccountProbe {
-    pub demo: bool,
-    /// OKX clock − ours, ms (requests fail beyond ±30 s).
-    pub offset_ms: i64,
-    /// Non-zero balances, largest first by amount (not by value).
-    pub balances: Vec<Balance>,
 }
 
 /// Check the venue's credentials without trading: sync the clock, then read

@@ -7,14 +7,16 @@
 //! a real-account permit also needs a sending mode (CONFIRM/LIVE) and
 //! `execution.live_enabled = true`. A client refuses a permit of the other kind.
 
+pub mod binance;
 pub mod book;
 pub mod evm;
 pub mod evm_sign;
 pub mod evm_trade;
 pub mod okx;
 
+pub use binance::{BinanceClient, BinanceCredentials, BinanceError};
 pub use book::{Book, Level, PaperFill, fill_against_book};
-pub use okx::{AccountProbe, Credentials, OkxClient, OkxError, probe_account};
+pub use okx::{Credentials, OkxClient, OkxError};
 
 use searcher_core::config::VenueConfig;
 use searcher_core::model::Mode;
@@ -39,7 +41,7 @@ impl Side {
 
 /// Trading rules of one instrument. Steps are kept as the exchange's decimal
 /// strings so order sizes and prices are formatted exactly on the grid.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Instrument {
     pub inst_id: String,
     pub base: String,
@@ -47,6 +49,8 @@ pub struct Instrument {
     pub tick_sz: String,
     pub lot_sz: String,
     pub min_sz: String,
+    /// Smallest order value in quote currency (0 = none published).
+    pub min_notional: f64,
     /// Open for trading.
     pub live: bool,
 }
@@ -62,12 +66,17 @@ fn decimals(step: &str) -> u8 {
     step.split_once('.').map_or(0, |(_, f)| f.trim_end_matches('0').len() as u8)
 }
 
+/// `0.00100000` → `0.001` (Binance pads steps with zeros).
+fn trim_zeros(s: &str) -> &str {
+    if s.contains('.') { s.trim_end_matches('0').trim_end_matches('.') } else { s }
+}
+
 impl Instrument {
     /// `qty` rounded down to the lot size, or `None` below the minimum size.
     pub fn size(&self, qty: f64) -> Option<String> {
         let d = decimals(&self.lot_sz);
-        let lot = parse_decimal(&self.lot_sz, d).ok()?.max(1) as u128;
-        let min = parse_decimal(&self.min_sz, d).ok()? as u128;
+        let lot = parse_decimal(trim_zeros(&self.lot_sz), d).ok()?.max(1) as u128;
+        let min = parse_decimal(trim_zeros(&self.min_sz), d).ok()? as u128;
         if !qty.is_finite() || qty <= 0.0 {
             return None;
         }
@@ -81,7 +90,7 @@ impl Instrument {
     /// paying up to it), a sell limit down.
     pub fn price(&self, px: f64, side: Side) -> Option<String> {
         let d = decimals(&self.tick_sz);
-        let tick = parse_decimal(&self.tick_sz, d).ok()?.max(1) as f64;
+        let tick = parse_decimal(trim_zeros(&self.tick_sz), d).ok()?.max(1) as f64;
         if !px.is_finite() || px <= 0.0 {
             return None;
         }
@@ -151,6 +160,28 @@ pub struct Balance {
     pub total: f64,
 }
 
+/// What a read-only account check found (`--doctor`).
+#[derive(Clone, Debug, PartialEq)]
+pub struct AccountProbe {
+    pub demo: bool,
+    /// Venue clock − ours, ms (signed requests fail beyond a few seconds).
+    pub offset_ms: i64,
+    /// Non-zero balances, largest amount first.
+    pub balances: Vec<Balance>,
+}
+
+/// Check a venue's credentials without trading (clock sync + a signed
+/// balance read). `Ok(None)` when the venue has no credentials set or no
+/// account (EVM chains: the address is public, nothing to prove).
+pub async fn probe_account(v: &VenueConfig) -> Result<Option<AccountProbe>, String> {
+    use searcher_core::config::VenueKind;
+    match v.kind {
+        VenueKind::Okx => okx::probe_account(v).await.map_err(|e| e.to_string()),
+        VenueKind::Binance => binance::probe_account(v).await.map_err(|e| e.to_string()),
+        VenueKind::Evm => Ok(None),
+    }
+}
+
 /// Proof that orders may be sent to a venue. Only [`TradePermit::check`]
 /// makes one.
 #[derive(Debug)]
@@ -192,6 +223,7 @@ mod tests {
             tick_sz: "0.01".into(),
             lot_sz: "0.000001".into(),
             min_sz: "0.01".into(),
+            min_notional: 0.0,
             live: true,
         }
     }

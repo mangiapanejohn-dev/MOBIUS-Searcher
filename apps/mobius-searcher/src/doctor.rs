@@ -139,6 +139,28 @@ async fn check_venue(name: &str, v: &VenueConfig) -> Check {
             };
             Check::new(unknown.is_empty(), label, target, detail).optional()
         }
+        VenueKind::Binance => {
+            let c = match searcher_venues::BinanceClient::new(v, None) {
+                Ok(c) => c,
+                Err(e) => return Check::new(false, label, target, e.to_string()).optional(),
+            };
+            let t = Instant::now();
+            let mut unknown = Vec::new();
+            for sym in &v.markets {
+                match c.instrument(sym).await {
+                    Ok(i) if i.live => {}
+                    Ok(_) => unknown.push(format!("{sym} (not trading)")),
+                    Err(searcher_venues::BinanceError::Api { .. }) => unknown.push(sym.clone()),
+                    Err(e) => return Check::new(false, label, target, e.to_string()).optional(),
+                }
+            }
+            let detail = if unknown.is_empty() {
+                format!("binance · {} markets answered in {}", v.markets.len(), ms(t.elapsed()))
+            } else {
+                format!("unknown instruments in markets: {}", unknown.join(", "))
+            };
+            Check::new(unknown.is_empty(), label, target, detail).optional()
+        }
         VenueKind::Evm => {
             use searcher_venues::evm::{EvmRpc, UniV3Pool};
             let t = Instant::now();
@@ -177,9 +199,6 @@ async fn check_venue(name: &str, v: &VenueConfig) -> Check {
 
 /// Signed read-only request with the venue's credentials, when they are set.
 async fn check_venue_account(name: &str, v: &VenueConfig) -> Option<Check> {
-    if v.kind != VenueKind::Okx {
-        return None;
-    }
     let label = format!("venue {name} account");
     let target = if v.demo { "demo trading" } else { "real account" };
     match searcher_venues::probe_account(v).await {
@@ -193,7 +212,7 @@ async fn check_venue_account(name: &str, v: &VenueConfig) -> Option<Check> {
             );
             Some(Check::new(true, label, target, detail))
         }
-        Err(e) => Some(Check::new(false, label, target, e.to_string()).optional()),
+        Err(e) => Some(Check::new(false, label, target, e).optional()),
     }
 }
 

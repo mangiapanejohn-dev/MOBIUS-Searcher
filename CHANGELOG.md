@@ -24,8 +24,14 @@ before 1.0 a minor version may change configuration or behaviour.
   address first and refused below `min_out`. Our swap calldata, simulated on
   the real routers, returns exactly QuoterV2's output on all three chains.
   Needs a real-account permit (no demo on chains). No strategy sends yet.
+- **Binance connector** (`kind = "binance"`, off by default): market data
+  from the public mirror `data-api.binance.vision` (instrument rules incl.
+  minimum notional, order book, paper fills); signed spot orders, balances
+  and cancel (signature checked against Binance's documented examples),
+  against `rest_url` or, with `demo = true`, the spot testnet. HTTP 451
+  ("not available from this location") is reported as such.
 - `--doctor` checks enabled EVM venues (chain id, pool price, block) and,
-  when OKX credentials are set, a signed read-only balance request.
+  when OKX or Binance credentials are set, a signed read-only balance request.
 
 ## 0.1.0 — 2026-09-19
 

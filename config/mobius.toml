@@ -47,6 +47,23 @@ trading = false                       # market data only (no order connector yet
 demo = true                           # orders go to OKX demo trading (simulated funds)
 taker_fee_bps = 10                    # assumed taker fee for paper fills
 
+# ════ Venue: Binance (spot) ═════════════════════════════════════════════════
+# Off by default. Market data comes from Binance's public mirror, which works
+# where the main API does not. To trade (where Binance serves you) set
+# rest_url = "https://api.binance.com"; demo = true signs against the spot
+# testnet instead. Binance answers HTTP 451 from locations it does not serve.
+[venues.binance]
+kind = "binance"
+enabled = false
+rest_url = "https://data-api.binance.vision"
+markets = ["SOLUSDT", "SOLUSDC"]
+watchlist = ["BTCUSDT", "ETHUSDT", "SOLUSDT"]
+api_key_env = "BINANCE_API_KEY"
+secret_env = "BINANCE_API_SECRET"
+trading = false
+demo = true
+taker_fee_bps = 10
+
 # ════ Venues: EVM chains (Uniswap v3, read-only for now) ════════════════════
 # Pool state and exact quotes (QuoterV2) over JSON-RPC. Off by default; turn
 # one on in your file with e.g. `[venues.base] enabled = true`. Addresses are
