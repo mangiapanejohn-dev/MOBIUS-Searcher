@@ -1,0 +1,67 @@
+name: Bug report
+description: Report a reproducible problem in the CLI, TUI, data path, simulation, or reporting.
+title: "[bug] "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for making this reproducible. Do not include private keys, API keys, wallet files, or sensitive recordings.
+  - type: input
+    id: version
+    attributes:
+      label: Version / commit
+      description: Release version or git commit SHA.
+      placeholder: v0.1.0 or abc1234
+    validations:
+      required: true
+  - type: dropdown
+    id: area
+    attributes:
+      label: Area
+      options:
+        - CLI / setup
+        - Terminal UI
+        - Market data
+        - Jupiter / routing
+        - Transaction build / simulation
+        - Risk / execution gates
+        - Storage / replay / reports
+        - Installation / platform support
+        - Other
+    validations:
+      required: true
+  - type: textarea
+    id: steps
+    attributes:
+      label: Reproduction steps
+      description: Exact commands and minimal config needed to reproduce. Remove secrets.
+      placeholder: |
+        1. ...
+        2. ...
+    validations:
+      required: true
+  - type: textarea
+    id: expected
+    attributes:
+      label: Expected result
+    validations:
+      required: true
+  - type: textarea
+    id: actual
+    attributes:
+      label: Actual result
+    validations:
+      required: true
+  - type: textarea
+    id: environment
+    attributes:
+      label: Environment
+      description: OS, architecture, terminal, RPC/provider class, Jupiter tier if relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs / screenshots / report excerpts
+      description: Paste only non-sensitive evidence.
