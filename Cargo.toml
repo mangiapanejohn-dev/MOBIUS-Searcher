@@ -68,6 +68,9 @@ unicode-width = "0.2"
 # real logo image on kitty / iTerm2 / sixel terminals; no libchafa, PNG only
 ratatui-image = { version = "11.1", default-features = false, features = ["crossterm"] }
 image = { version = "0.25", default-features = false, features = ["png"] }
+# funding QR code in setup (rqrr only decodes it back in tests)
+qrcode = { version = "0.14", default-features = false }
+rqrr = { version = "0.9", default-features = false }
 
 # misc
 thiserror = "2.0"

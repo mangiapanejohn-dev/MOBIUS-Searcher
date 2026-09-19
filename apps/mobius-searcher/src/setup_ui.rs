@@ -218,6 +218,75 @@ pub fn with_spinner<T>(label: &str, work: impl FnOnce() -> T) -> T {
     out
 }
 
+/// The QR code of `data` with a two-module quiet zone; `true` = dark module.
+pub fn qr_matrix(data: &str) -> Option<Vec<Vec<bool>>> {
+    let code = qrcode::QrCode::with_error_correction_level(data, qrcode::EcLevel::M).ok()?;
+    let (width, quiet) = (code.width(), 2);
+    let size = width + 2 * quiet;
+    Some(
+        (0..size)
+            .map(|y| {
+                (0..size)
+                    .map(|x| {
+                        let inside = (quiet..quiet + width).contains(&x) && (quiet..quiet + width).contains(&y);
+                        inside && code[(x - quiet, y - quiet)] == qrcode::Color::Dark
+                    })
+                    .collect()
+            })
+            .collect(),
+    )
+}
+
+/// Two modules per cell (`▀` = upper). With colour the modules are painted
+/// black on white explicitly, so the code scans on dark and light themes;
+/// without colour a dark terminal background is assumed.
+fn qr_rows(matrix: &[Vec<bool>], colour: bool) -> Vec<String> {
+    let blank = vec![false; matrix.first().map_or(0, Vec::len)];
+    matrix
+        .chunks(2)
+        .map(|pair| {
+            let (top, bottom) = (&pair[0], pair.get(1).unwrap_or(&blank));
+            let mut row = String::new();
+            for (&t, &b) in top.iter().zip(bottom) {
+                if colour {
+                    let shade = |dark: bool| if dark { "0;0;0" } else { "255;255;255" };
+                    row.push_str(&format!("\x1b[38;2;{}m\x1b[48;2;{}m▀", shade(t), shade(b)));
+                } else {
+                    row.push(match (t, b) {
+                        (false, false) => '█',
+                        (true, false) => '▄',
+                        (false, true) => '▀',
+                        (true, true) => ' ',
+                    });
+                }
+            }
+            if colour {
+                row.push_str(RESET);
+            }
+            row
+        })
+        .collect()
+}
+
+/// A scannable QR code of `data` on the rail between a caption and `label`
+/// (what to copy by hand); the code is left out when the terminal is too
+/// narrow for it.
+pub fn qr(data: &str, label: &str, caption: &str) -> Result<()> {
+    let mut lines = with_step_only();
+    for part in wrap(caption, content_width().saturating_sub(5)) {
+        lines.push(format!("{}    {}", paint(FAINT, "│"), paint(MUTED, &part)));
+    }
+    if let Some(matrix) = qr_matrix(data)
+        && matrix.len() + 5 <= content_width()
+    {
+        for row in qr_rows(&matrix, colors()) {
+            lines.push(format!("{}    {row}", paint(FAINT, "│")));
+        }
+    }
+    lines.push(format!("{}    {}", paint(FAINT, "│"), paint(BOLD, label)));
+    print_lines(&lines)
+}
+
 /// A warning on the rail itself (`▲`).
 pub fn warn(message: &str) -> Result<()> {
     let mut lines = block_start();
@@ -908,5 +977,39 @@ mod tests {
         assert!(body.iter().all(|l| l.starts_with('│') && l.ends_with('│')));
         assert!(lines[lines.len() - 2].starts_with('├') && lines[lines.len() - 2].ends_with('╯'));
         assert!(lines.iter().any(|l| l.contains("Mode  PAPER")));
+    }
+
+    #[test]
+    fn the_funding_qr_code_decodes_back_to_the_address() {
+        let uri = "solana:9N67XSEmZkYMtrRHvBLn3fBycGDGh47o2opNANJeHr7p";
+        let matrix = qr_matrix(uri).expect("encodes");
+        // read the rendered cells back into pixels: each glyph is one module
+        // wide and two tall, light = '█' in the no-colour form
+        let rows = qr_rows(&matrix, false);
+        let width = rows[0].chars().count();
+        let mut dark = vec![vec![false; width]; rows.len() * 2];
+        for (y, row) in rows.iter().enumerate() {
+            for (x, glyph) in row.chars().enumerate() {
+                let (top, bottom) = match glyph {
+                    '█' => (false, false),
+                    '▄' => (true, false),
+                    '▀' => (false, true),
+                    _ => (true, true),
+                };
+                dark[2 * y][x] = top;
+                dark[2 * y + 1][x] = bottom;
+            }
+        }
+        let scale = 6;
+        let mut image = rqrr::PreparedImage::prepare_from_greyscale(width * scale, dark.len() * scale, |x, y| {
+            if dark[y / scale][x / scale] { 0 } else { 255 }
+        });
+        let grids = image.detect_grids();
+        assert_eq!(grids.len(), 1);
+        assert_eq!(grids[0].decode().expect("decodes").1, uri);
+        // the colour form paints the very same modules, one cell per pair
+        let coloured = qr_rows(&matrix, true);
+        assert_eq!(coloured.len(), rows.len());
+        assert!(coloured.iter().all(|r| r.matches('▀').count() == width));
     }
 }

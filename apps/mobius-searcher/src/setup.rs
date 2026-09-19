@@ -921,7 +921,8 @@ fn configure_wallet(
         let kept = keep.expect("the keep option is listed only with a current wallet");
         cfg.wallet.pubkey = Some(kept.pubkey.clone());
         cfg.wallet.keypair_path = kept.keypair_path.clone();
-        return success(&format!("Keeping wallet {}", kept.pubkey));
+        success(&format!("Keeping wallet {}", kept.pubkey))?;
+        return wallet_status(cfg, false);
     };
 
     *pending_wallet = None;
@@ -989,7 +990,56 @@ fn configure_wallet(
             success(&format!("Virtual PAPER equity: {} SOL", format_sol(cfg.paper.equity_lamports)))?;
         }
     }
+    let fresh = pending_wallet.is_some();
+    wallet_status(cfg, fresh)
+}
+
+/// Balance of an existing wallet, and a funding QR code when this setup will
+/// send transactions from a wallet that cannot yet pay for them.
+fn wallet_status(cfg: &Config, fresh: bool) -> Result<()> {
+    let Some(address) = cfg.wallet.pubkey.clone() else { return Ok(()) };
+    let sends = cfg.general.mode.sends_transactions() && cfg.wallet.keypair_path.is_some();
+    let reserve = cfg.risk.min_wallet_sol_for_fees_lamports;
+    let balance = if fresh {
+        Some(0)
+    } else {
+        let balance = setup_ui::with_spinner("Reading the wallet balance…", || wallet_balance(cfg, &address));
+        match balance {
+            Some(b) => info(&format!("Balance {} SOL", format_sol(b)))?,
+            None => info("Balance unavailable right now; `mobius-searcher --doctor` shows it later.")?,
+        }
+        balance
+    };
+    if sends && balance.is_some_and(|b| b < reserve) {
+        let caption = format!(
+            "Fund it before sending: at least {} SOL for fees, plus what it may trade. Scan with a Solana wallet \
+             app or copy the address.",
+            format_sol(reserve)
+        );
+        qr(&format!("solana:{address}"), &address, &caption)?;
+    }
     Ok(())
+}
+
+/// `getBalance` through the configured RPC; `None` when it cannot answer.
+fn wallet_balance(cfg: &Config, address: &str) -> Option<u64> {
+    #[cfg(test)]
+    if script::active() {
+        return script::balance();
+    }
+    let address: searcher_core::Address = address.parse().ok()?;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
+    runtime.block_on(async {
+        let rpc = searcher_market::RpcClient::new(
+            &cfg.rpc.resolved_url(),
+            searcher_telemetry::LimiterConfig::new(cfg.rpc.rps, cfg.rpc.burst),
+            cfg.rpc.simulate_rps,
+            std::time::Duration::from_millis(cfg.rpc.timeout_ms),
+            std::sync::Arc::new(searcher_telemetry::Telemetry::new()),
+        )
+        .ok()?;
+        rpc.get_balance(&address).await.ok()
+    })
 }
 
 fn apply_strategy_scope(cfg: &mut Config, scope: usize) {
@@ -1674,6 +1724,19 @@ fn outline(title: &str, rows: &[(&str, String)]) -> Result<()> {
     note(title, rows)
 }
 
+fn qr(data: &str, address: &str, caption: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!("qr {data}"));
+        return Ok(());
+    }
+    if setup_ui::active() {
+        return setup_ui::qr(data, address, caption);
+    }
+    println!("  {caption}\n  {address}");
+    Ok(())
+}
+
 fn check_line(ok: bool, optional: bool, name: &str, detail: &str) -> Result<()> {
     #[cfg(test)]
     if script::active() {
@@ -2175,6 +2238,16 @@ mod script {
 
     thread_local! {
         static SCRIPT: RefCell<Option<Script>> = const { RefCell::new(None) };
+        static BALANCE: RefCell<Option<u64>> = const { RefCell::new(None) };
+    }
+
+    /// What `getBalance` answers in this test (default: unavailable).
+    pub fn set_balance(lamports: Option<u64>) {
+        BALANCE.with(|b| *b.borrow_mut() = lamports);
+    }
+
+    pub fn balance() -> Option<u64> {
+        BALANCE.with(|b| *b.borrow())
     }
 
     pub fn install(answers: Vec<A>) {
@@ -2894,5 +2967,63 @@ mod tests {
         };
         assert_eq!(Check::from_json(&c.to_json()), Some(c));
         assert_eq!(Check::from_json(&serde_json::json!({"ok": true})), None);
+    }
+
+    // ------------------------------------------------ wallet status (phase 4)
+
+    #[test]
+    fn a_new_signing_wallet_gets_a_funding_qr_code() {
+        let sb = Sandbox::new("qr");
+        let answers = vec![
+            Pick("Assisted"),
+            Pick("Create"),
+            Pick("Public"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Pick("Stay"),
+            Yes,
+        ];
+        let (outcome, log) = sb.run(answers);
+        outcome.unwrap();
+        let pubkey = sb.effective().wallet.pubkey.unwrap();
+        assert!(log.iter().any(|l| *l == format!("qr solana:{pubkey}")), "{log:#?}");
+    }
+
+    #[test]
+    fn research_wallets_show_their_balance_but_need_no_funding() {
+        let sb = Sandbox::new("balance");
+        let keypair = sb.dir.join("mine.json");
+        GeneratedWallet::new().write_new(&keypair).unwrap();
+        script::set_balance(Some(500_000_000));
+        let path = keypair.display().to_string().leak();
+        let answers = vec![
+            Pick("Research"),
+            Pick("Use an existing"),
+            Text(path),
+            Pick("Public"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ];
+        let (outcome, log) = sb.run(answers);
+        script::set_balance(None);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l == "info Balance 0.5 SOL"), "{log:#?}");
+        assert!(!log.iter().any(|l| l.starts_with("qr ")), "PAPER needs no funding: {log:#?}");
+    }
+
+    #[test]
+    fn a_live_wallet_below_the_fee_reserve_is_asked_to_be_funded() {
+        let live = format!("{EXISTING}\n[general]\nmode = \"live\"\n");
+        let sb = Sandbox::new("underfunded").with_config(&live);
+        script::set_balance(Some(1_000));
+        let (outcome, log) = sb.run(vec![Pick("Change"), Pick("Wallet"), Pick("Keep"), Pick("Nothing")]);
+        script::set_balance(None);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l == "info Balance 0.000001 SOL"), "{log:#?}");
+        assert!(log.iter().any(|l| l == "qr solana:So11111111111111111111111111111111111111112"), "{log:#?}");
+        assert_eq!(fs::read_to_string(sb.config()).unwrap(), live, "looking at the wallet changes nothing");
     }
 }
