@@ -67,6 +67,12 @@ struct Cli {
     /// Validate a private key file offline and print its public wallet address.
     #[arg(long, value_name = "PATH")]
     check_wallet: Option<PathBuf>,
+    /// Price MARKET (e.g. WETH/USDC, SOL/USDT) on every enabled venue that lists it, then exit.
+    #[arg(long, value_name = "MARKET")]
+    quote: Option<String>,
+    /// Base amount for --quote.
+    #[arg(long, default_value_t = 1.0)]
+    size: f64,
     /// Report as JSON.
     #[arg(long)]
     json: bool,
@@ -241,6 +247,7 @@ fn main() -> Result<()> {
         && cli.check_wallet.is_none()
         && !cli.print_config
         && !cli.doctor
+        && cli.quote.is_none()
         && !cli.list_sessions
         && !cli.prune
         && !cli.db_info
@@ -267,6 +274,10 @@ fn main() -> Result<()> {
     if cli.print_config {
         print_config(&layered, &env_files);
         return Ok(());
+    }
+    if let Some(market) = &cli.quote {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        return rt.block_on(mobius_searcher::quote::run(&cfg, market, cli.size));
     }
     if cli.doctor {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;

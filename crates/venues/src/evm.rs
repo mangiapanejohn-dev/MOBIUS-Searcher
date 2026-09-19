@@ -23,6 +23,8 @@ pub const SYMBOL: &str = "0x95d89b41";
 pub const DECIMALS: &str = "0x313ce567";
 /// QuoterV2 `quoteExactInputSingle((address,address,uint256,uint24,uint160))`
 pub const QUOTE_EXACT_INPUT_SINGLE: &str = "0xc6a5026a";
+/// QuoterV2 `quoteExactOutputSingle((address,address,uint256,uint24,uint160))`
+pub const QUOTE_EXACT_OUTPUT_SINGLE: &str = "0xbd21704a";
 
 #[derive(Debug, thiserror::Error)]
 pub enum EvmError {
@@ -269,6 +271,34 @@ pub fn quote_calldata(pool: &UniV3Pool, token_in: &Token, amount_in: u128) -> St
         word_u128(pool.fee as u128),
         word_u128(0)
     )
+}
+
+/// Calldata of `quoteExactOutputSingle`: buy exactly `amount_out` raw units
+/// of `token_out`; the answer's first word is the input needed.
+pub fn quote_output_calldata(pool: &UniV3Pool, token_out: &Token, amount_out: u128) -> String {
+    let token_in = if token_out.address == pool.token0.address { &pool.token1 } else { &pool.token0 };
+    format!(
+        "{QUOTE_EXACT_OUTPUT_SINGLE}{}{}{}{}{}",
+        word_address(&token_in.address),
+        word_address(&token_out.address),
+        word_u128(amount_out),
+        word_u128(pool.fee as u128),
+        word_u128(0)
+    )
+}
+
+/// Input needed to receive exactly `amount_out` of `token_out` (`amount_out`
+/// of the returned [`Quote`] holds that input amount).
+pub async fn quote_exact_output(
+    rpc: &EvmRpc,
+    quoter: &str,
+    pool: &UniV3Pool,
+    token_out: &Token,
+    amount_out: u128,
+) -> Result<Quote, EvmError> {
+    let (block, _) = rpc.latest_block().await?;
+    let data = rpc.call(quoter, &quote_output_calldata(pool, token_out, amount_out), &format!("0x{block:x}")).await?;
+    parse_quote(&data, block)
 }
 
 pub fn parse_quote(data: &[u8], block: u64) -> Result<Quote, EvmError> {

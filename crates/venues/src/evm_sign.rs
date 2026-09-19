@@ -253,6 +253,10 @@ mod tests {
             selector("quoteExactInputSingle((address,address,uint256,uint24,uint160))"),
             evm::QUOTE_EXACT_INPUT_SINGLE
         );
+        assert_eq!(
+            selector("quoteExactOutputSingle((address,address,uint256,uint24,uint160))"),
+            evm::QUOTE_EXACT_OUTPUT_SINGLE
+        );
     }
 
     /// EIP-155's worked example (legacy transaction, chain id 1): exercises

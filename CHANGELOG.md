@@ -30,6 +30,12 @@ before 1.0 a minor version may change configuration or behaviour.
   and cancel (signature checked against Binance's documented examples),
   against `rest_url` or, with `demo = true`, the spot testnet. HTTP 451
   ("not available from this location") is reported as such.
+- **One price question for every venue** (`searcher_venues::market`):
+  "buy/sell N base now: average and net price after fees (and gas on
+  chains), source, data age". Order books are walked; Uniswap uses
+  QuoterV2 exact input (sell) / exact output (buy).
+- `--quote MARKET --size N` prints that for every enabled venue listing the
+  market, plus the cheapest buy, the best sell and the gap between them.
 - `--doctor` checks enabled EVM venues (chain id, pool price, block) and,
   when OKX or Binance credentials are set, a signed read-only balance request.
 
