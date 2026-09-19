@@ -120,6 +120,16 @@ struct CurrentWallet {
     keypair_path: Option<String>,
 }
 
+/// What every step may read but none changes.
+struct Ctx {
+    /// Credentials already stored somewhere (env files or process env).
+    present: Present,
+    /// The wallet in the settings setup started from.
+    current_wallet: Option<CurrentWallet>,
+    /// New bot keypairs go here: `wallets/` next to the user's config file.
+    wallet_dir: PathBuf,
+}
+
 pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bool) -> Result<Outcome> {
     // The effective settings come first: a file that does not load must be
     // fixed by hand, never silently replaced.
@@ -155,6 +165,8 @@ pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bo
         jito: has(&jito_env),
         pyth: has(&pyth_env),
     };
+    let wallet_dir = config_path.parent().unwrap_or(Path::new(".")).join("wallets");
+    let ctx = Ctx { present, current_wallet, wallet_dir };
 
     let mut env_answers = EnvAnswers::default();
     let mut pending_wallet = None;
@@ -172,11 +184,10 @@ pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bo
         )?;
         let changed = match action {
             0 => false,
-            1 => edit_sections(&mut cfg, &mut env_answers, &mut pending_wallet, present)?,
+            1 => edit_sections(&mut cfg, &mut env_answers, &mut pending_wallet, &ctx)?,
             _ => {
                 cfg = below.clone();
-                first_use_path =
-                    Some(first_use(&mut cfg, &mut env_answers, &mut pending_wallet, present, current_wallet.as_ref())?);
+                first_use_path = Some(first_use(&mut cfg, &mut env_answers, &mut pending_wallet, &ctx)?);
                 true
             }
         };
@@ -185,8 +196,7 @@ pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bo
             return Ok(Outcome { start_now: !explicit });
         }
     } else {
-        first_use_path =
-            Some(first_use(&mut cfg, &mut env_answers, &mut pending_wallet, present, current_wallet.as_ref())?);
+        first_use_path = Some(first_use(&mut cfg, &mut env_answers, &mut pending_wallet, &ctx)?);
     }
     cfg.validate().map_err(anyhow::Error::msg)?;
 
@@ -250,8 +260,7 @@ fn first_use(
     cfg: &mut Config,
     env: &mut EnvAnswers,
     pending_wallet: &mut Option<PendingWallet>,
-    present: Present,
-    current_wallet: Option<&CurrentWallet>,
+    ctx: &Ctx,
 ) -> Result<SetupPath> {
     let path = match menu(
         "What should MØBIUS be ready to do?",
@@ -277,14 +286,12 @@ fn first_use(
     outline(&format!("{} · {} steps", path.label(), steps.len()), &plan)?;
 
     match path {
-        SetupPath::Research | SetupPath::Assisted => {
-            configure_guided(cfg, env, pending_wallet, path, present, current_wallet)?
-        }
+        SetupPath::Research | SetupPath::Assisted => configure_guided(cfg, env, pending_wallet, path, ctx)?,
         SetupPath::Advanced => {
             // "keep the current values" should mean the recommended ones
             apply_strategy_scope(cfg, 0);
             apply_safety_policy(cfg, 0);
-            configure_advanced(cfg, env, pending_wallet, present, current_wallet)?;
+            configure_advanced(cfg, env, pending_wallet, ctx)?;
         }
     }
     Ok(path)
@@ -398,8 +405,9 @@ fn edit_sections(
     cfg: &mut Config,
     env: &mut EnvAnswers,
     pending_wallet: &mut Option<PendingWallet>,
-    present: Present,
+    ctx: &Ctx,
 ) -> Result<bool> {
+    let present = ctx.present;
     let start = snapshot(cfg);
     loop {
         let secrets_changed = env.jupiter_key.is_some()
@@ -445,7 +453,7 @@ fn edit_sections(
                     .clone()
                     .map(|pubkey| CurrentWallet { pubkey, keypair_path: cfg.wallet.keypair_path.clone() });
                 let signer = cfg.general.mode.sends_transactions();
-                configure_wallet(cfg, pending_wallet, signer, current.as_ref())?;
+                configure_wallet(cfg, pending_wallet, signer, current.as_ref(), ctx)?;
             }
             1 => {
                 let update = menu(
@@ -505,7 +513,7 @@ fn edit_sections(
                     success(&format!("Routes now start at {}", route_summary(cfg)))?;
                 }
             }
-            5 => edit_mode(cfg, pending_wallet)?,
+            5 => edit_mode(cfg, pending_wallet, ctx)?,
             6 => {
                 for (prompt, section) in [
                     ("Adjust API endpoints and rate limits?", 0),
@@ -558,7 +566,7 @@ fn edit_venues(cfg: &mut Config) -> Result<()> {
     Ok(())
 }
 
-fn edit_mode(cfg: &mut Config, pending_wallet: &mut Option<PendingWallet>) -> Result<()> {
+fn edit_mode(cfg: &mut Config, pending_wallet: &mut Option<PendingWallet>, ctx: &Ctx) -> Result<()> {
     let modes = [Mode::Paper, Mode::Confirm, Mode::Live];
     let now = modes.iter().position(|m| *m == cfg.general.mode).unwrap_or(0);
     let badge = |i: usize| (i == now).then_some("current");
@@ -582,7 +590,7 @@ fn edit_mode(cfg: &mut Config, pending_wallet: &mut Option<PendingWallet>) -> Re
     cfg.general.mode = picked;
     if cfg.wallet.keypair_path.is_none() {
         warn(&format!("{} needs a signing wallet.", picked.label()))?;
-        configure_wallet(cfg, pending_wallet, true, None)?;
+        configure_wallet(cfg, pending_wallet, true, None, ctx)?;
     }
     let phrase = format!("ENABLE {}", picked.label());
     let check = |value: &str| -> std::result::Result<(), String> {
@@ -605,9 +613,9 @@ fn configure_guided(
     env: &mut EnvAnswers,
     pending_wallet: &mut Option<PendingWallet>,
     path: SetupPath,
-    present: Present,
-    current_wallet: Option<&CurrentWallet>,
+    ctx: &Ctx,
 ) -> Result<()> {
+    let present = ctx.present;
     let assisted = path == SetupPath::Assisted;
     cfg.general.mode = if assisted { Mode::Confirm } else { Mode::Paper };
     cfg.execution.live_enabled = false;
@@ -619,7 +627,7 @@ fn configure_guided(
             "A new key stays in memory until you save, and is never shown or logged.",
         ],
     );
-    configure_wallet(cfg, pending_wallet, assisted, current_wallet)?;
+    configure_wallet(cfg, pending_wallet, assisted, ctx.current_wallet.as_ref(), ctx)?;
 
     path.step(
         2,
@@ -725,6 +733,7 @@ fn configure_wallet(
     pending_wallet: &mut Option<PendingWallet>,
     require_signer: bool,
     current: Option<&CurrentWallet>,
+    ctx: &Ctx,
 ) -> Result<()> {
     let keep = current.filter(|c| !require_signer || c.keypair_path.is_some());
     let keep_title = keep.map(|c| format!("Keep {}", short_key(&c.pubkey)));
@@ -757,7 +766,7 @@ fn configure_wallet(
     *pending_wallet = None;
     match selection {
         0 => {
-            let path = next_wallet_path();
+            let path = next_wallet_path(&ctx.wallet_dir);
             let wallet = GeneratedWallet::new();
             cfg.wallet.pubkey = Some(wallet.pubkey().to_string());
             cfg.wallet.keypair_path = Some(path.display().to_string());
@@ -879,11 +888,7 @@ fn secret(label: &str, placeholder: &str, validate: Option<Validator<'_>>) -> Re
     })
 }
 
-fn next_wallet_path() -> PathBuf {
-    let root = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config/mobius/wallets");
+fn next_wallet_path(root: &Path) -> PathBuf {
     let first = root.join("bot-keypair.json");
     if !first.exists() {
         return first;
@@ -934,12 +939,12 @@ fn configure_advanced(
     cfg: &mut Config,
     env: &mut EnvAnswers,
     pending_wallet: &mut Option<PendingWallet>,
-    present: Present,
-    current_wallet: Option<&CurrentWallet>,
+    ctx: &Ctx,
 ) -> Result<()> {
+    let present = ctx.present;
     let path = SetupPath::Advanced;
     path.step(1, &["LIVE and CONFIRM send real transactions and need a signing wallet and a typed phrase."]);
-    configure_profile(cfg, pending_wallet, current_wallet)?;
+    configure_profile(cfg, pending_wallet, ctx)?;
 
     path.step(2, &["All optional. Values are hidden while typed and stored only in .env (0600)."]);
     *env = configure_credentials(present, true)?;
@@ -990,11 +995,7 @@ fn customize(prompt: &str) -> Result<bool> {
     )? == 1)
 }
 
-fn configure_profile(
-    cfg: &mut Config,
-    pending_wallet: &mut Option<PendingWallet>,
-    current_wallet: Option<&CurrentWallet>,
-) -> Result<()> {
+fn configure_profile(cfg: &mut Config, pending_wallet: &mut Option<PendingWallet>, ctx: &Ctx) -> Result<()> {
     let default = match cfg.general.mode {
         Mode::Paper => 0,
         Mode::Confirm => 1,
@@ -1016,14 +1017,14 @@ fn configure_profile(
 
     if cfg.general.mode == Mode::Paper {
         lock_to_paper(cfg);
-        configure_wallet(cfg, pending_wallet, false, current_wallet)?;
+        configure_wallet(cfg, pending_wallet, false, ctx.current_wallet.as_ref(), ctx)?;
         cfg.paper.equity_lamports = prompt_sol("Virtual PAPER equity", cfg.paper.equity_lamports)?;
         return Ok(());
     }
 
     cfg.execution.live_enabled = false;
     cfg.paper.simulation_taker = None;
-    configure_wallet(cfg, pending_wallet, true, current_wallet)?;
+    configure_wallet(cfg, pending_wallet, true, ctx.current_wallet.as_ref(), ctx)?;
     warn("This mode can send real transactions. The key itself is never copied into the config.")?;
     let phrase = format!("ENABLE {}", cfg.general.mode.label());
     let check = |value: &str| -> std::result::Result<(), String> {
@@ -1278,6 +1279,10 @@ fn configure_ui_and_execution(cfg: &mut Config) -> Result<()> {
 // ------------------------------------------------- prompts (visual or plain)
 
 fn step(current: usize, total: usize, title: &str, details: &[&str]) {
+    #[cfg(test)]
+    if script::active() {
+        return script::log(format!("step {current}/{total} {title}"));
+    }
     if setup_ui::active() {
         setup_ui::step(current, total, title, details);
     } else {
@@ -1290,6 +1295,12 @@ fn step(current: usize, total: usize, title: &str, details: &[&str]) {
 }
 
 fn note(title: &str, rows: &[(&str, String)]) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        let body: Vec<String> = rows.iter().map(|(k, v)| format!("{k}={v}")).collect();
+        script::log(format!("note {title}: {}", body.join(" | ")));
+        return Ok(());
+    }
     if setup_ui::active() {
         return setup_ui::note(title, rows);
     }
@@ -1306,6 +1317,10 @@ fn note(title: &str, rows: &[(&str, String)]) -> Result<()> {
 }
 
 fn outline(title: &str, rows: &[(&str, String)]) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        return note(title, rows);
+    }
     if setup_ui::active() {
         return setup_ui::outline(title, rows);
     }
@@ -1313,6 +1328,11 @@ fn outline(title: &str, rows: &[(&str, String)]) -> Result<()> {
 }
 
 fn success(message: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!("success {message}"));
+        return Ok(());
+    }
     if setup_ui::active() {
         return setup_ui::success(message);
     }
@@ -1321,6 +1341,11 @@ fn success(message: &str) -> Result<()> {
 }
 
 fn info(message: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!("info {message}"));
+        return Ok(());
+    }
     if setup_ui::active() {
         return setup_ui::info(message);
     }
@@ -1329,6 +1354,11 @@ fn info(message: &str) -> Result<()> {
 }
 
 fn warn(message: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!("warn {message}"));
+        return Ok(());
+    }
     if setup_ui::active() {
         return setup_ui::warn(message);
     }
@@ -1337,6 +1367,11 @@ fn warn(message: &str) -> Result<()> {
 }
 
 fn finish(title: &str, hint: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!("finish {title}"));
+        return Ok(());
+    }
     if setup_ui::active() {
         return setup_ui::finish(title, hint);
     }
@@ -1351,6 +1386,10 @@ fn menu(prompt: &str, items: &[(&str, &str, Option<&str>)], default: usize) -> R
 }
 
 fn menu_items(prompt: &str, items: &[MenuItem<'_>], default: usize) -> Result<usize> {
+    #[cfg(test)]
+    if let Some(answer) = script::menu(prompt, items, default) {
+        return answer;
+    }
     if let Some(value) = setup_ui::prompt_menu(prompt, items, default)? {
         return Ok(value);
     }
@@ -1382,6 +1421,10 @@ fn choice(prompt: &str, values: &[&str], default: usize) -> Result<usize> {
 }
 
 fn confirm(prompt: &str, default: bool) -> Result<bool> {
+    #[cfg(test)]
+    if let Some(answer) = script::confirm(prompt, default) {
+        return answer;
+    }
     if let Some(value) = setup_ui::prompt_bool(prompt, default)? {
         return Ok(value);
     }
@@ -1399,6 +1442,10 @@ fn confirm(prompt: &str, default: bool) -> Result<bool> {
 
 /// One line of text; validation errors re-ask instead of failing.
 fn ask(spec: &TextPrompt<'_>) -> Result<String> {
+    #[cfg(test)]
+    if let Some(answer) = script::text(spec) {
+        return answer;
+    }
     if let Some(value) = setup_ui::prompt_text(spec)? {
         return Ok(value);
     }
@@ -1719,6 +1766,126 @@ fn trim_newline(mut s: String) -> String {
     s
 }
 
+/// Scripted answers for driving whole setup flows in tests: every prompt
+/// takes the next answer (menus match an option by the start of its title),
+/// every line of output is logged instead of printed.
+#[cfg(test)]
+mod script {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    #[derive(Clone, Debug)]
+    pub enum A {
+        /// Pick the first option whose title starts with this.
+        Pick(&'static str),
+        /// Accept the highlighted default (menu or yes/no).
+        Default,
+        Yes,
+        No,
+        /// Type this and press Enter ("" = keep the shown value).
+        Text(&'static str),
+        Esc,
+    }
+
+    struct Script {
+        answers: VecDeque<A>,
+        log: Vec<String>,
+    }
+
+    thread_local! {
+        static SCRIPT: RefCell<Option<Script>> = const { RefCell::new(None) };
+    }
+
+    pub fn install(answers: Vec<A>) {
+        SCRIPT.with(|s| *s.borrow_mut() = Some(Script { answers: answers.into(), log: Vec::new() }));
+    }
+
+    /// Ends the script; every answer must have been used.
+    pub fn take() -> Vec<String> {
+        let script = SCRIPT.with(|s| s.borrow_mut().take()).expect("a script was installed");
+        assert!(script.answers.is_empty(), "unused answers {:?}\nlog:\n{}", script.answers, script.log.join("\n"));
+        script.log
+    }
+
+    pub fn active() -> bool {
+        SCRIPT.with(|s| s.borrow().is_some())
+    }
+
+    pub fn log(line: String) {
+        SCRIPT.with(|s| {
+            if let Some(script) = s.borrow_mut().as_mut() {
+                script.log.push(line);
+            }
+        });
+    }
+
+    fn next(prompt: &str) -> A {
+        SCRIPT.with(|s| {
+            let mut s = s.borrow_mut();
+            let script = s.as_mut().expect("script active");
+            script
+                .answers
+                .pop_front()
+                .unwrap_or_else(|| panic!("script ran out of answers at {prompt:?}\nlog:\n{}", script.log.join("\n")))
+        })
+    }
+
+    pub fn menu(prompt: &str, items: &[MenuItem<'_>], default: usize) -> Option<Result<usize>> {
+        if !active() {
+            return None;
+        }
+        let pick = match next(prompt) {
+            A::Esc => return Some(Err(setup_ui::cancelled())),
+            A::Default => default,
+            A::Pick(start) => items.iter().position(|i| i.title.starts_with(start)).unwrap_or_else(|| {
+                let titles: Vec<&str> = items.iter().map(|i| i.title).collect();
+                panic!("{prompt:?} has no option starting with {start:?}: {titles:?}")
+            }),
+            other => panic!("{prompt:?} is a menu, the script has {other:?}"),
+        };
+        log(format!("menu {prompt} -> {}", items[pick].title));
+        Some(Ok(pick))
+    }
+
+    pub fn confirm(prompt: &str, default: bool) -> Option<Result<bool>> {
+        if !active() {
+            return None;
+        }
+        let yes = match next(prompt) {
+            A::Esc => return Some(Err(setup_ui::cancelled())),
+            A::Default => default,
+            A::Yes => true,
+            A::No => false,
+            other => panic!("{prompt:?} is yes/no, the script has {other:?}"),
+        };
+        log(format!("confirm {prompt} -> {yes}"));
+        Some(Ok(yes))
+    }
+
+    pub fn text(spec: &TextPrompt<'_>) -> Option<Result<String>> {
+        if !active() {
+            return None;
+        }
+        loop {
+            let value = match next(spec.label) {
+                A::Esc => return Some(Err(setup_ui::cancelled())),
+                A::Default => "",
+                A::Text(value) => value,
+                other => panic!("{:?} is a text prompt, the script has {other:?}", spec.label),
+            };
+            match spec.validate.map_or(Ok(()), |validate| validate(value.trim())) {
+                Ok(()) => {
+                    let shown = if spec.hidden && !value.is_empty() { "<hidden>" } else { value };
+                    log(format!("text {} -> {shown}", spec.label));
+                    return Some(Ok(value.to_string()));
+                }
+                Err(reason) => log(format!("rejected {} -> {reason}", spec.label)),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1818,5 +1985,319 @@ mod tests {
         assert_eq!(cfg.risk.max_open_executions, 1);
         assert!(cfg.profit.protect_min_out);
         cfg.validate().unwrap();
+    }
+
+    // ---------------------------------------------------------- whole flows
+
+    use super::script::A::{self, *};
+
+    /// A throwaway user directory: config, secrets, marker and wallets all
+    /// live here, never in the real ~/.config.
+    struct Sandbox {
+        dir: PathBuf,
+    }
+
+    impl Sandbox {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("mobius-flow-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self { dir }
+        }
+        fn config(&self) -> PathBuf {
+            self.dir.join("config.toml")
+        }
+        fn env(&self) -> PathBuf {
+            self.dir.join(".env")
+        }
+        fn marker(&self) -> PathBuf {
+            self.dir.join("setup-complete")
+        }
+        fn with_config(self, text: &str) -> Self {
+            fs::write(self.config(), text).unwrap();
+            self
+        }
+        fn run(&self, answers: Vec<A>) -> (Result<Outcome>, Vec<String>) {
+            script::install(answers);
+            let outcome = run(&self.config(), &self.env(), &self.marker(), true);
+            (outcome, script::take())
+        }
+        fn effective(&self) -> Config {
+            config::load_layered(Path::new(config::REPO_CONFIG_PATH), &self.config()).unwrap().config
+        }
+        fn files(&self) -> Vec<String> {
+            let mut out = Vec::new();
+            let mut stack = vec![self.dir.clone()];
+            while let Some(dir) = stack.pop() {
+                for entry in fs::read_dir(dir).unwrap().flatten() {
+                    if entry.path().is_dir() {
+                        stack.push(entry.path());
+                    } else {
+                        out.push(entry.path().strip_prefix(&self.dir).unwrap().display().to_string());
+                    }
+                }
+            }
+            out.sort();
+            out
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    fn mode_bits(path: &Path) -> u32 {
+        use std::os::unix::fs::PermissionsExt;
+        fs::metadata(path).unwrap().permissions().mode() & 0o777
+    }
+
+    #[test]
+    fn research_first_use_creates_a_wallet_and_saves_only_a_delta() {
+        let sb = Sandbox::new("research");
+        let (outcome, log) =
+            sb.run(vec![Pick("Research"), Pick("Create"), Pick("Public"), Pick("Core"), Pick("Guarded"), Yes]);
+        assert!(!outcome.unwrap().start_now, "--setup never starts the engine");
+        let cfg = sb.effective();
+        assert_eq!(cfg.general.mode, Mode::Paper);
+        assert!(!cfg.execution.live_enabled);
+        let keypair = PathBuf::from(cfg.wallet.keypair_path.clone().unwrap());
+        assert_eq!(keypair, sb.dir.join("wallets/bot-keypair.json"), "wallets live next to the config");
+        assert_eq!(mode_bits(&keypair), 0o600);
+        let wallet = Wallet::load(&keypair, None).unwrap();
+        assert_eq!(cfg.wallet.pubkey.as_deref(), Some(wallet.pubkey().to_string().as_str()));
+        assert_eq!(cfg.risk.max_trade_lamports, 10_000_000);
+        assert!(cfg.strategies.cross_dex[0].enabled && !cfg.strategies.triangular[0].enabled);
+        let text = fs::read_to_string(sb.config()).unwrap();
+        assert!(text.contains("[wallet]") && !text.contains("[jupiter]"), "only the delta: {text}");
+        assert!(sb.marker().exists());
+        assert!(!sb.env().exists(), "no secrets were entered, so no .env");
+        assert!(log.iter().any(|l| l.starts_with("warn Back up")), "{log:#?}");
+    }
+
+    #[test]
+    fn cancelling_or_declining_writes_nothing() {
+        for answers in [
+            vec![Esc],
+            vec![Pick("Research"), Esc],
+            vec![Pick("Research"), Pick("Create"), Pick("Public"), Pick("Core"), Esc],
+            vec![Pick("Assisted"), Pick("Create"), Pick("Public"), Pick("Core"), Pick("Guarded"), Pick("Unlock"), Esc],
+        ] {
+            let sb = Sandbox::new("cancel");
+            let (outcome, _) = sb.run(answers.clone());
+            assert!(is_cancelled(&outcome.err().expect("cancelled")), "{answers:?}");
+            assert!(sb.files().is_empty(), "{answers:?} wrote {:?}", sb.files());
+        }
+        let sb = Sandbox::new("decline");
+        let (outcome, log) =
+            sb.run(vec![Pick("Research"), Pick("Create"), Pick("Public"), Pick("Core"), Pick("Guarded"), No]);
+        assert!(!outcome.unwrap().start_now);
+        assert!(sb.files().is_empty(), "declined save wrote {:?}", sb.files());
+        assert!(log.iter().any(|l| l == "info Nothing was written."), "{log:#?}");
+    }
+
+    #[test]
+    fn assisted_unlocks_confirm_only_with_the_exact_phrase() {
+        let sb = Sandbox::new("assisted");
+        let (outcome, log) = sb.run(vec![
+            Pick("Assisted"),
+            Pick("Create"),
+            Pick("Public"),
+            Pick("Core"),
+            Pick("Guarded"),
+            Pick("Unlock"),
+            Text("enable confirm"),
+            Text("ENABLE CONFIRM"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("rejected Type ENABLE CONFIRM")), "{log:#?}");
+        let cfg = sb.effective();
+        assert_eq!(cfg.general.mode, Mode::Confirm);
+        assert!(cfg.execution.live_enabled);
+        assert!(Path::new(cfg.wallet.keypair_path.as_deref().unwrap()).exists());
+    }
+
+    #[test]
+    fn assisted_can_stay_in_paper_and_keep_the_new_wallet() {
+        let sb = Sandbox::new("assisted-paper");
+        let answers =
+            vec![Pick("Assisted"), Pick("Create"), Pick("Public"), Pick("Core"), Pick("Guarded"), Pick("Stay"), Yes];
+        sb.run(answers).0.unwrap();
+        let cfg = sb.effective();
+        assert_eq!(cfg.general.mode, Mode::Paper);
+        assert!(!cfg.execution.live_enabled);
+        assert!(cfg.wallet.keypair_path.is_some(), "the wallet is kept for later");
+    }
+
+    #[test]
+    fn an_existing_keypair_or_a_watched_address_is_checked_before_it_is_used() {
+        let sb = Sandbox::new("existing-keypair");
+        let keypair = sb.dir.join("mine.json");
+        let generated = GeneratedWallet::new();
+        generated.write_new(&keypair).unwrap();
+        let leaked = keypair.display().to_string().leak();
+        let (outcome, log) = sb.run(vec![
+            Pick("Research"),
+            Pick("Use an existing"),
+            Text("/no/such/keypair.json"),
+            Text(leaked),
+            Pick("Public"),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("rejected Keypair file")), "{log:#?}");
+        let cfg = sb.effective();
+        assert_eq!(cfg.wallet.pubkey, Some(generated.pubkey().to_string()));
+        assert_eq!(cfg.wallet.keypair_path.as_deref(), Some(leaked as &str));
+
+        let sb = Sandbox::new("watch");
+        let address = "So11111111111111111111111111111111111111112";
+        let answers = vec![
+            Pick("Research"),
+            Pick("Watch"),
+            Text("not-an-address"),
+            Text(address),
+            Pick("Public"),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ];
+        let (outcome, log) = sb.run(answers);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("rejected Wallet address")), "{log:#?}");
+        let cfg = sb.effective();
+        assert_eq!(cfg.wallet.pubkey.as_deref(), Some(address));
+        assert!(cfg.wallet.keypair_path.is_none(), "watch only");
+    }
+
+    #[test]
+    fn advanced_first_use_keeps_the_recommended_values_on_enter() {
+        let sb = Sandbox::new("advanced");
+        let mut answers = vec![Pick("Advanced"), Pick("PAPER"), Pick("No wallet"), Text("2.5")];
+        answers.extend([Default, Default, Default, Default, Default]); // five optional secrets
+        answers.push(Pick("Keep")); // network limits
+        answers.extend([Default, Default, Default, Default]); // round-trip: on, quote, amount, weight
+        answers.extend([Default, Default, Default, Default, Default]); // cross-DEX: on, quote, amount, dexes, weight
+        answers.push(Default); // triangular stays off
+        answers.extend([Pick("Keep"), Pick("Keep"), Pick("Keep"), Pick("Keep"), Pick("Keep"), Yes]);
+        sb.run(answers).0.unwrap();
+        let cfg = sb.effective();
+        assert_eq!(cfg.paper.equity_lamports, 2_500_000_000);
+        assert_eq!(cfg.risk.max_trade_pct_of_equity_bps, 100, "guarded until customised");
+        assert!(cfg.wallet.pubkey.is_none());
+        assert!(!cfg.strategies.triangular[0].enabled);
+    }
+
+    const EXISTING: &str = "[execution]\nlive_enabled = true\n\n[risk]\nmax_trade_pct_of_equity_bps = 1000\n\n\
+                            [wallet]\npubkey = \"So11111111111111111111111111111111111111112\"\n\
+                            keypair_path = \"/somewhere/hot-wallet.json\"\n";
+
+    #[test]
+    fn keeping_an_existing_setup_writes_nothing() {
+        let sb = Sandbox::new("keep").with_config(EXISTING);
+        let (outcome, log) = sb.run(vec![Pick("Keep")]);
+        outcome.unwrap();
+        assert_eq!(fs::read_to_string(sb.config()).unwrap(), EXISTING);
+        assert_eq!(sb.files(), vec!["config.toml".to_string()]);
+        assert!(log[0].contains("Wallet=So1111") && log[0].contains("hot-wallet.json"), "shown first: {}", log[0]);
+    }
+
+    #[test]
+    fn changing_one_part_leaves_everything_else_untouched() {
+        let sb = Sandbox::new("edit").with_config(EXISTING);
+        let before = sb.effective();
+        let answers = vec![Pick("Change"), Pick("Markets"), Pick("okx"), No, Pick("Review"), Yes];
+        sb.run(answers).0.unwrap();
+        let mut after = sb.effective();
+        assert!(!after.venues["okx"].enabled);
+        after.venues.get_mut("okx").unwrap().enabled = true;
+        assert_eq!(snapshot(&after), snapshot(&before), "only the venue switch changed");
+        assert_eq!(fs::read_to_string(sb.dir.join("config.toml.bak")).unwrap(), EXISTING);
+        assert!(!sb.env().exists());
+    }
+
+    #[test]
+    fn nothing_to_change_in_the_hub_writes_nothing() {
+        let sb = Sandbox::new("hub-noop").with_config(EXISTING);
+        let answers = vec![Pick("Change"), Pick("Wallet"), Pick("Keep"), Pick("Safety"), Pick("Keep"), Pick("Nothing")];
+        sb.run(answers).0.unwrap();
+        assert_eq!(fs::read_to_string(sb.config()).unwrap(), EXISTING);
+        assert_eq!(sb.files(), vec!["config.toml".to_string()]);
+    }
+
+    #[test]
+    fn switching_to_live_needs_the_exact_phrase() {
+        let sb = Sandbox::new("to-live").with_config(EXISTING);
+        let (outcome, log) = sb.run(vec![
+            Pick("Change"),
+            Pick("Mode"),
+            Pick("LIVE"),
+            Text("ENABLE CONFIRM"),
+            Text("ENABLE LIVE"),
+            Pick("Review"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("rejected Type ENABLE LIVE")), "{log:#?}");
+        let cfg = sb.effective();
+        assert_eq!(cfg.general.mode, Mode::Live);
+        assert!(cfg.execution.live_enabled);
+        assert_eq!(cfg.wallet.keypair_path.as_deref(), Some("/somewhere/hot-wallet.json"));
+    }
+
+    #[test]
+    fn starting_over_offers_to_keep_the_current_wallet() {
+        let sb = Sandbox::new("start-over").with_config(EXISTING);
+        let answers = vec![
+            Pick("Start over"),
+            Pick("Research"),
+            Pick("Keep"),
+            Pick("Public"),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ];
+        sb.run(answers).0.unwrap();
+        let cfg = sb.effective();
+        assert_eq!(cfg.wallet.pubkey.as_deref(), Some("So11111111111111111111111111111111111111112"));
+        assert_eq!(cfg.wallet.keypair_path.as_deref(), Some("/somewhere/hot-wallet.json"));
+        assert_eq!(cfg.general.mode, Mode::Paper);
+        assert!(!cfg.execution.live_enabled, "research mode locks sending");
+        assert!(sb.dir.join("config.toml.bak").exists());
+    }
+
+    #[test]
+    fn secrets_go_only_to_the_private_env_file_and_never_to_the_screen() {
+        let sb = Sandbox::new("secrets");
+        let (outcome, log) = sb.run(vec![
+            Pick("Research"),
+            Pick("Create"),
+            Pick("My own"),
+            Text("jup-secret-123456"),
+            Text("ftp://rpc.example"),
+            Text("https://rpc.example/rpc-secret-789"),
+            Default,
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("rejected Private RPC URL")), "{log:#?}");
+        let all = log.join("\n");
+        assert!(!all.contains("jup-secret") && !all.contains("rpc-secret"), "a secret reached the output:\n{all}");
+        let cfg = sb.effective();
+        let env = fs::read_to_string(sb.env()).unwrap();
+        assert!(env.contains(&format!("{}='jup-secret-123456'", cfg.jupiter.api_key_env)), "{env}");
+        assert!(env.contains("rpc-secret-789"));
+        assert_eq!(mode_bits(&sb.env()), 0o600);
+        let config_text = fs::read_to_string(sb.config()).unwrap();
+        assert!(
+            !config_text.contains("jup-secret") && !config_text.contains("rpc-secret"),
+            "secrets never go into the config: {config_text}"
+        );
     }
 }
