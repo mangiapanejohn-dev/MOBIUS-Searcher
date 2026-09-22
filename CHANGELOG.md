@@ -3,6 +3,19 @@
 All notable changes to MØBIUS. Versions follow [Semantic Versioning](https://semver.org/);
 before 1.0 a minor version may change configuration or behaviour.
 
+## Unreleased
+
+### Fixed
+
+- Localhost and loopback Jupiter/RPC endpoints now bypass automatic system
+  proxies and respect `NO_PROXY`, so local nodes and HTTP test servers are not
+  routed through a macOS proxy.
+
+### Documentation
+
+- Removed npm from the advertised install methods until the package is
+  available in the public registry.
+
 ## 0.1.0 — 2026-09-19
 
 First public release. MØBIUS is built as a multi-venue quant trading bot; in

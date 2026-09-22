@@ -107,18 +107,12 @@ curl -fsSL https://raw.githubusercontent.com/mangiapanejohn-dev/MOBIUS-Searcher/
 ```
 
 <details>
-<summary><b>Windows · npm · Cargo · 从源码编译</b></summary>
+<summary><b>Windows · Cargo · 从源码编译</b></summary>
 
 Windows（PowerShell）：
 
 ```powershell
 irm https://raw.githubusercontent.com/mangiapanejohn-dev/MOBIUS-Searcher/main/scripts/install.ps1 | iex
-```
-
-npm（自动下载对应平台的预编译程序）：
-
-```bash
-npm install -g mobius-searcher
 ```
 
 Cargo（Rust ≥ 1.91）：

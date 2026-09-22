@@ -6,13 +6,13 @@ MØBIUS is a single binary, `mobius-searcher`. Pick one way to install it.
 |---|---|---|
 | **Install script** (macOS, Linux) | `curl -fsSL https://raw.githubusercontent.com/mangiapanejohn-dev/MOBIUS-Searcher/main/scripts/install.sh \| sh` | `curl`, `tar` |
 | **Install script** (Windows) | `irm https://raw.githubusercontent.com/mangiapanejohn-dev/MOBIUS-Searcher/main/scripts/install.ps1 \| iex` | PowerShell |
-| **npm** | `npm install -g mobius-searcher` | Node.js 18+ |
 | **Prebuilt binary** | download from [Releases](https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/releases) | nothing |
 | **Cargo** | `cargo install --git https://github.com/mangiapanejohn-dev/MOBIUS-Searcher mobius-searcher --locked` | Rust ≥ 1.91 and a C compiler |
 | **From source** | `git clone` + `cargo build --release` | Rust ≥ 1.91 and a C compiler |
 
-Every installer downloads the release archive for your OS and CPU, verifies it
-against the release's `SHA256SUMS`, and refuses a mismatch.
+The macOS, Linux and Windows install scripts download the release archive for
+your OS and CPU, verify it against the release's `SHA256SUMS`, and refuse a
+mismatch.
 
 Prebuilt binaries:
 
@@ -49,20 +49,6 @@ irm https://raw.githubusercontent.com/mangiapanejohn-dev/MOBIUS-Searcher/main/sc
 Options (environment variables, both scripts): `MOBIUS_VERSION=v0.1.0` (a
 specific release), `MOBIUS_INSTALL_DIR` (where to put the binary),
 `MOBIUS_DOWNLOAD_BASE` (a mirror of the release files).
-
-## npm
-
-```bash
-npm install -g mobius-searcher
-```
-
-```bash
-mobius-searcher --doctor
-```
-
-The package downloads the release binary that matches your OS and CPU during
-install, checks it against `SHA256SUMS`, and puts `mobius-searcher` on your
-`PATH`. With `--ignore-scripts` it downloads on the first run instead.
 
 ## Prebuilt binary
 
@@ -150,6 +136,7 @@ Then see [USAGE.md](USAGE.md).
 
 ## Uninstall
 
-`npm uninstall -g mobius-searcher`, `cargo uninstall mobius-searcher`, or
-delete the binary (`~/.local/bin/mobius-searcher` from the install script). Your settings and recordings stay in `~/.config/mobius/`
-and the data directory until you remove them.
+Run `cargo uninstall mobius-searcher`, or delete the binary
+(`~/.local/bin/mobius-searcher` when installed by the script). Your settings
+and recordings stay in `~/.config/mobius/` and the data directory until you
+remove them.

@@ -211,10 +211,10 @@ impl JupiterClient {
             .http2_keep_alive_timeout(Duration::from_secs(10))
             .http2_keep_alive_while_idle(true);
         // no HTTPS_PROXY in the environment (Ghostty, the app's terminal): use the OS proxy
-        if let Some(p) = searcher_telemetry::proxy::fallback_https_proxy() {
+        if let Some(p) = searcher_telemetry::proxy::fallback_https_proxy_for(base_url) {
             b = b.proxy(reqwest::Proxy::all(p).map_err(|e| JupiterError::Transport(e.to_string()))?);
         }
-        if searcher_telemetry::proxy::direct() {
+        if searcher_telemetry::proxy::direct() || searcher_telemetry::proxy::bypass_proxy_for(base_url) {
             b = b.no_proxy();
         }
         let http = b.build().map_err(|e| JupiterError::Transport(e.to_string()))?;

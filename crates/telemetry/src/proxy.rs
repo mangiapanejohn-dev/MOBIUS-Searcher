@@ -70,10 +70,7 @@ pub fn proxy_for(url: &str) -> Option<(String, u16)> {
         ProxySetting::Url(p) => Some(p.clone()),
         ProxySetting::Auto => None,
     };
-    let no_proxy = std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy")).unwrap_or_default();
-    if no_proxy.split(',').map(str::trim).filter(|s| !s.is_empty()).any(|n| {
-        n == "*" || host == n.trim_start_matches('.') || host.ends_with(&format!(".{}", n.trim_start_matches('.')))
-    }) {
+    if bypasses_proxy_host(&host) {
         return None;
     }
     if let Some(p) = explicit {
@@ -141,6 +138,34 @@ pub fn fallback_https_proxy() -> Option<String> {
     system_proxy(true).map(|(h, p)| format!("http://{h}:{p}"))
 }
 
+/// Target-aware variant for HTTP clients with one base URL. An explicitly
+/// configured reqwest proxy otherwise overrides both `NO_PROXY` and the macOS
+/// system proxy's localhost exceptions.
+pub fn fallback_https_proxy_for(url: &str) -> Option<String> {
+    let (host, _) = ws_target(url)?;
+    (!bypasses_proxy_host(&host)).then(fallback_https_proxy).flatten()
+}
+
+/// Whether an HTTP client must explicitly disable reqwest's automatic system
+/// proxy for this target.
+pub fn bypass_proxy_for(url: &str) -> bool {
+    ws_target(url).is_some_and(|(host, _)| bypasses_proxy_host(&host))
+}
+
+fn bypasses_proxy_host(host: &str) -> bool {
+    let bare_host = host.trim_matches(&['[', ']'][..]);
+    if bare_host.eq_ignore_ascii_case("localhost")
+        || bare_host.parse::<std::net::IpAddr>().is_ok_and(|ip| ip.is_loopback())
+    {
+        return true;
+    }
+    let no_proxy = std::env::var("NO_PROXY").or_else(|_| std::env::var("no_proxy")).unwrap_or_default();
+    no_proxy.split(',').map(str::trim).filter(|s| !s.is_empty()).any(|entry| {
+        let entry = entry.trim_start_matches('.');
+        entry == "*" || bare_host == entry || bare_host.ends_with(&format!(".{entry}"))
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -156,5 +181,15 @@ mod tests {
         );
         assert!(ProxySetting::parse("socks5://127.0.0.1:1080").is_err());
         assert!(ProxySetting::parse("yes").is_err());
+    }
+
+    #[test]
+    fn loopback_targets_never_use_the_system_proxy_fallback() {
+        assert_eq!(fallback_https_proxy_for("http://127.0.0.1:8080"), None);
+        assert_eq!(fallback_https_proxy_for("http://localhost:8080"), None);
+        assert_eq!(fallback_https_proxy_for("http://[::1]:8080"), None);
+        assert!(bypass_proxy_for("http://127.0.0.1:8080"));
+        assert!(bypass_proxy_for("http://localhost:8080"));
+        assert!(bypass_proxy_for("http://[::1]:8080"));
     }
 }

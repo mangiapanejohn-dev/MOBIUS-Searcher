@@ -104,18 +104,12 @@ curl -fsSL https://raw.githubusercontent.com/mangiapanejohn-dev/MOBIUS-Searcher/
 ```
 
 <details>
-<summary><b>Windows · npm · Cargo · from source</b></summary>
+<summary><b>Windows · Cargo · from source</b></summary>
 
 Windows (PowerShell):
 
 ```powershell
 irm https://raw.githubusercontent.com/mangiapanejohn-dev/MOBIUS-Searcher/main/scripts/install.ps1 | iex
-```
-
-npm (downloads the prebuilt binary for your platform):
-
-```bash
-npm install -g mobius-searcher
 ```
 
 Cargo (Rust ≥ 1.91):

@@ -93,10 +93,10 @@ impl RpcClient {
             .user_agent(concat!("mobius-searcher/", env!("CARGO_PKG_VERSION")))
             .pool_idle_timeout(Duration::from_secs(600))
             .tcp_keepalive(Duration::from_secs(30));
-        if let Some(p) = searcher_telemetry::proxy::fallback_https_proxy() {
+        if let Some(p) = searcher_telemetry::proxy::fallback_https_proxy_for(url) {
             b = b.proxy(reqwest::Proxy::all(p).map_err(|e| RpcError::Transport(e.to_string()))?);
         }
-        if searcher_telemetry::proxy::direct() {
+        if searcher_telemetry::proxy::direct() || searcher_telemetry::proxy::bypass_proxy_for(url) {
             b = b.no_proxy();
         }
         let http = b.build().map_err(|e| RpcError::Transport(e.to_string()))?;
