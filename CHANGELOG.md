@@ -54,6 +54,18 @@ before 1.0 a minor version may change configuration or behaviour.
   executed-vs-quoted first legs and created accounts. This explained the
   0.013 SOL gap on HumidiFi-final routes: the route creates a 2,440-byte
   account (13,045,440 lamports = its rent-exempt minimum) paid by the taker.
+- Two-token inventory (SOL + USDC): a leg's input stays fixed at the previous
+  leg's quote, and the wallet's inventory of the intermediate token absorbs
+  the difference instead of the transaction failing. The SOL-equivalent
+  result now includes that inventory drift (executed leg outputs, valued at
+  the rest of the route's quoted rate); protection adds the intermediate
+  legs' worst-case shortfall to the final leg's minimum output. When the
+  inventory cannot cover a shortfall the skip reason is `INVENTORY_LOW`.
+- Deposits (rent of accounts a trade leaves created) are capital, not a trade
+  cost: excluded from net PnL, shown separately, and capped by
+  `profit.max_new_deposit_lamports` (default 0.003 SOL, two token accounts;
+  above it: `DEPOSIT_TOO_HIGH`). Previously the rent of a missing token
+  account was charged to every candidate, so a new wallet could never pass.
 - One process at a time uses the Jupiter budget: `--research` and trading
   sessions take `<data dir>/jupiter-budget.lock`; the second one is refused
   with the holder's name. On macOS `--research` keeps the machine awake

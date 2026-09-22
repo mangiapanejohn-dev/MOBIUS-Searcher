@@ -498,6 +498,10 @@ pub struct ProfitConfig {
     /// Tighten the final leg's min-out so the transaction reverts unless
     /// output ≥ input + costs + min profit (costs one extra `/build`).
     pub protect_min_out: bool,
+    /// Largest rent deposit a trade may lock in accounts it leaves created
+    /// (token accounts: 1,488,440 lamports each on 2026-09-22). Deposits are
+    /// capital, not trade costs. 0 = never create accounts.
+    pub max_new_deposit_lamports: u64,
 }
 
 impl Default for ProfitConfig {
@@ -513,6 +517,7 @@ impl Default for ProfitConfig {
             est_cu_per_leg: 300_000,
             max_cu_price_micro: 200_000,
             protect_min_out: true,
+            max_new_deposit_lamports: 3_000_000,
         }
     }
 }
@@ -536,6 +541,7 @@ impl ProfitConfig {
             safety_buffer: Ppm::from_bps(self.safety_buffer_bps),
             // replaced by the chain's current value at engine start
             token_account_rent: crate::units::TOKEN_ACCOUNT_RENT_LAMPORTS,
+            max_new_deposit: self.max_new_deposit_lamports,
         }
     }
 }

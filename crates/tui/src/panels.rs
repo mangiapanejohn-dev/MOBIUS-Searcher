@@ -373,7 +373,8 @@ pub fn inspector(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, focuse
     l.money("Priority fee", c.priority_fee as i64, &cu_note, th.text(), th);
     l.money("Jito tip", c.jito_tip as i64, "policy · if sent now", th.text(), th);
     if c.ata_rent > 0 {
-        l.money("ATA rent", c.ata_rent as i64, &format!("{} account(s)", c.atas_created), th.text(), th);
+        // capital locked in accounts left created: shown, not subtracted from net
+        l.money("Deposit", c.ata_rent as i64, "account rent · capital, not in net", th.muted(), th);
     }
     l.money("Slippage buffer", c.expected_slippage as i64, "share of min-out tolerance", th.text(), th);
     l.money("Safety buffer", c.safety_buffer as i64, "", th.text(), th);

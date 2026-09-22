@@ -208,6 +208,12 @@ pub enum SkipReason {
     SimUnavailable,
     Declined,
     Expired,
+    /// The route would leave accounts created whose rent exceeds
+    /// `profit.max_new_deposit_lamports`.
+    Deposit,
+    /// An earlier leg delivered less than the next leg's fixed input and the
+    /// wallet's inventory of that token could not cover the difference.
+    Inventory,
 }
 
 impl SkipReason {
@@ -228,6 +234,8 @@ impl SkipReason {
             SkipReason::SimUnavailable => "SIM_UNAVAILABLE",
             SkipReason::Declined => "DECLINED",
             SkipReason::Expired => "EXPIRED",
+            SkipReason::Deposit => "DEPOSIT_TOO_HIGH",
+            SkipReason::Inventory => "INVENTORY_LOW",
         }
     }
 }

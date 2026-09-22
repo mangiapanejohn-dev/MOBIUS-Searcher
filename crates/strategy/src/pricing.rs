@@ -103,6 +103,8 @@ pub fn price(inp: PricingInput<'_>, env: &PricingEnv<'_>) -> Opportunity {
     let guard = check_guards(&eval, input, env.guards).err();
     let status = if chain_ok.is_err() {
         OppStatus::Skipped(SkipReason::BuildFailed)
+    } else if costs.ata_rent > env.cost_params.max_new_deposit {
+        OppStatus::Skipped(SkipReason::Deposit)
     } else if let Some(g) = &guard {
         OppStatus::Skipped(guard_skip(g))
     } else if tip.capped {
@@ -134,15 +136,18 @@ pub fn price(inp: PricingInput<'_>, env: &PricingEnv<'_>) -> Opportunity {
 }
 
 /// Re-price with simulated CU (per tx) and the actual transaction shape.
-/// `simulated_delta`: taker's net lamport change measured in an exact
-/// simulation, already corrected to the final CU limit. Slippage and buffer
-/// are still subtracted (the simulation executed at the quoted state).
+/// `simulated_delta`: taker's SOL-equivalent change measured in an exact
+/// simulation (inventory drift included, deposits excluded), already
+/// corrected to the final CU limit. Slippage and buffer are still subtracted
+/// (the simulation executed at the quoted state). `deposits`: rent of the
+/// accounts the simulation left created, when measured.
 #[allow(clippy::too_many_arguments)]
 pub fn reprice_after_simulation(
     opp: &mut Opportunity,
     shape: TxShape,
     cu_used: &[u32],
     simulated_delta: Option<i64>,
+    deposits: Option<u64>,
     atas_to_create: u8,
     env: &PricingEnv<'_>,
     base_decimals: u8,
@@ -153,6 +158,9 @@ pub fn reprice_after_simulation(
     let profit_before_tip = opp.gross_output as i64 - opp.input as i64 - pre_tip.total() as i64;
     let tip = (env.tip)(profit_before_tip);
     opp.costs = costs_for(&legs, opp.input, shape, Some(cu_used), tip.lamports, atas_to_create, env.cost_params);
+    if let Some(d) = deposits {
+        opp.costs.ata_rent = d;
+    }
     let mut eval = evaluate(opp.input, opp.gross_output, &opp.costs, base_decimals, opp.sol_price);
     eval.simulated_net =
         simulated_delta.map(|d| d - opp.costs.expected_slippage as i64 - opp.costs.safety_buffer as i64);
@@ -160,6 +168,7 @@ pub fn reprice_after_simulation(
     opp.updated_at = now;
     opp.guard = check_guards(&opp.eval, opp.input, env.guards).err();
     opp.status = match &opp.guard {
+        _ if opp.costs.ata_rent > env.cost_params.max_new_deposit => OppStatus::Skipped(SkipReason::Deposit),
         Some(g) => OppStatus::Skipped(guard_skip(g)),
         None if tip.capped => OppStatus::Skipped(SkipReason::TipTooHigh),
         None => OppStatus::Quoted,
@@ -182,8 +191,47 @@ pub fn protective_slippage_bps(final_out: u64, required: u64) -> Option<u16> {
 pub fn required_final_out(opp: &Opportunity, guards: &ProfitGuards) -> u64 {
     let c = &opp.costs;
     let non_slippage = c.total().saturating_sub(c.expected_slippage);
-    (opp.input as i128 + non_slippage as i128 + guards.min_profit_lamports.max(0) as i128).clamp(0, u64::MAX as i128)
-        as u64
+    // Intermediate legs may deliver down to their min-out: the next leg's
+    // input is fixed, so the difference comes out of the wallet's inventory.
+    // The final leg has to pay that back too for the trade to stay above water.
+    let shortfall = intermediate_shortfall_value(&opp.route.legs);
+    (opp.input as i128 + non_slippage as i128 + shortfall as i128 + guards.min_profit_lamports.max(0) as i128)
+        .clamp(0, u64::MAX as i128) as u64
+}
+
+/// Value in base units of one intermediate token amount after leg `i`: the
+/// rest of the cycle's quoted rate (`final out / leg i+1 input`).
+fn to_base(legs: &[Leg], i: usize, amount: i128) -> i128 {
+    let (Some(next), Some(last)) = (legs.get(i + 1), legs.last()) else { return 0 };
+    if next.in_amount == 0 {
+        return 0;
+    }
+    amount * last.out_amount as i128 / next.in_amount as i128
+}
+
+/// Worst case the intermediate legs can cost the inventory: each delivers
+/// only its min-out while the next leg still spends the quoted amount.
+pub fn intermediate_shortfall_value(legs: &[Leg]) -> u64 {
+    (0..legs.len().saturating_sub(1))
+        .map(|i| to_base(legs, i, legs[i].out_amount.saturating_sub(legs[i].min_out) as i128))
+        .sum::<i128>()
+        .clamp(0, u64::MAX as i128) as u64
+}
+
+/// What the intermediate legs actually left in (+) or took from (−) the
+/// wallet's inventory, valued in base units: executed output of leg i minus
+/// the fixed input of leg i+1. `None` without an executed output per
+/// intermediate leg.
+pub fn intermediate_drift_value(legs: &[Leg], executed: &[u64]) -> Option<i64> {
+    let n = legs.len();
+    if n < 2 {
+        return Some(0);
+    }
+    if executed.len() < n - 1 {
+        return None;
+    }
+    let v: i128 = (0..n - 1).map(|i| to_base(legs, i, executed[i] as i128 - legs[i + 1].in_amount as i128)).sum();
+    Some(v.clamp(i64::MIN as i128, i64::MAX as i128) as i64)
 }
 
 #[cfg(test)]
@@ -312,12 +360,81 @@ mod tests {
         let tip = |_| TipInfo { lamports: 5_000, capped: false };
         let legs = vec![leg(0, SOL, USDC, 1_000_000_000, 105_000_000), leg(1, USDC, SOL, 105_000_000, 1_010_000_000)];
         let mut o = price(input(legs), &env(&p, &g, &tip));
-        reprice_after_simulation(&mut o, TxShape::SINGLE, &[250_000], Some(20_000), 0, &env(&p, &g, &tip), 9, Ts(9));
+        reprice_after_simulation(
+            &mut o,
+            TxShape::SINGLE,
+            &[250_000],
+            Some(20_000),
+            None,
+            0,
+            &env(&p, &g, &tip),
+            9,
+            Ts(9),
+        );
         assert_eq!(o.costs.compute_units_used, Some(250_000));
         assert_eq!(o.costs.compute_units_limit, 300_000);
         assert_eq!(o.eval.simulated_net, Some(20_000 - o.costs.safety_buffer as i64));
         // simulated net (~ -85k) is far below the model → guard fails
         assert_eq!(o.status, OppStatus::Skipped(SkipReason::EdgeTooSmall));
+    }
+
+    #[test]
+    fn inventory_drift_and_worst_case_shortfall_are_valued_in_base_units() {
+        // recorded LIVE simulation 20260920-103123-50a6 #12450: leg 1 quoted
+        // 11_568_000 USDC atoms and executed 11_567_999; leg 2 spent the quoted
+        // amount and returned 99_925_992 lamports
+        let mut l0 = leg(0, SOL, USDC, 100_000_000, 11_568_000);
+        l0.min_out = 11_556_432; // 10 bp tolerance
+        let l1 = leg(1, USDC, SOL, 11_568_000, 99_925_992);
+        let legs = vec![l0, l1];
+        // one USDC atom short, worth 99_925_992 / 11_568_000 lamports (≈ 8.6 → 8)
+        assert_eq!(intermediate_drift_value(&legs, &[11_567_999, 99_925_992]), Some(-8));
+        assert_eq!(intermediate_drift_value(&legs, &[11_570_000, 99_925_992]), Some(17_276));
+        assert_eq!(intermediate_drift_value(&legs, &[]), None, "unknown without executed outputs");
+        // worst case: leg 1 at its min-out → 11_568 atoms short ≈ 99_925 lamports
+        assert_eq!(intermediate_shortfall_value(&legs), 11_568 * 99_925_992 / 11_568_000);
+    }
+
+    #[test]
+    fn protection_covers_the_intermediate_shortfall_and_deposits_are_capital() {
+        let p = CostParams { expected_slippage_share: Ppm(0), ..CostParams::default() };
+        let g = ProfitGuards { min_profit_usd: UsdMicros(0), ..ProfitGuards::default() };
+        let tip = |_| TipInfo { lamports: 1_000, capped: false };
+        let legs = vec![leg(0, SOL, USDC, 1_000_000_000, 105_000_000), leg(1, USDC, SOL, 105_000_000, 1_010_000_000)];
+        let mut o = price(input(legs), &env(&p, &g, &tip));
+        let without = o.input + o.costs.total() + g.min_profit_lamports as u64;
+        assert_eq!(required_final_out(&o, &g), without + intermediate_shortfall_value(&o.route.legs));
+        assert!(intermediate_shortfall_value(&o.route.legs) > 1_000_000, "0.1 % of leg 1, valued in SOL");
+
+        // a measured 1.49M deposit is capital: net unchanged, under the cap → still quoted
+        let net_before = o.eval.expected_net;
+        reprice_after_simulation(
+            &mut o,
+            TxShape::SINGLE,
+            &[250_000],
+            None,
+            Some(1_488_440),
+            0,
+            &env(&p, &g, &tip),
+            9,
+            Ts(9),
+        );
+        assert_eq!(o.costs.ata_rent, 1_488_440);
+        assert!(o.eval.expected_net >= net_before - 10_000, "deposit not charged as a cost");
+        assert_eq!(o.status, OppStatus::Quoted);
+        // the 13,045,440 lamport account a HumidiFi route creates is over the default cap
+        reprice_after_simulation(
+            &mut o,
+            TxShape::SINGLE,
+            &[250_000],
+            None,
+            Some(13_045_440),
+            0,
+            &env(&p, &g, &tip),
+            9,
+            Ts(9),
+        );
+        assert_eq!(o.status, OppStatus::Skipped(SkipReason::Deposit));
     }
 
     #[test]

@@ -176,7 +176,9 @@ mod tests {
         ) {
             let c = costs(parts);
             let e = evaluate(input, out, &c, 9, None);
-            let expect = out as i128 - input as i128 - parts.iter().map(|p| *p as i128).sum::<i128>();
+            // parts[3] is the deposit (rent of accounts left created): capital, not a cost
+            let expect = out as i128 - input as i128
+                - parts.iter().enumerate().filter(|(i, _)| *i != 3).map(|(_, p)| *p as i128).sum::<i128>();
             prop_assert_eq!(e.expected_net as i128, expect);
             prop_assert_eq!(e.gross_pnl as i128, out as i128 - input as i128);
             prop_assert!(e.net_edge <= e.gross_edge);
@@ -194,7 +196,9 @@ mod tests {
             more[idx] = extra;
             let a = evaluate(input, out, &costs(base), 9, None);
             let b = evaluate(input, out, &costs(more), 9, None);
-            prop_assert_eq!(a.expected_net - b.expected_net, extra as i64);
+            // every cost lowers net one for one; the deposit (idx 3) does not
+            let expect = if idx == 3 { 0 } else { extra as i64 };
+            prop_assert_eq!(a.expected_net - b.expected_net, expect);
         }
 
         #[test]

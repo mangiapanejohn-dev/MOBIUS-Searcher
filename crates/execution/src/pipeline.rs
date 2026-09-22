@@ -31,7 +31,8 @@ use searcher_jupiter::{BuildRequest, BuiltLeg, JupiterClient, JupiterError};
 use searcher_market::{ChainState, RpcClient};
 use searcher_risk::{RiskContext, RiskEngine};
 use searcher_strategy::pricing::{
-    PricingEnv, PricingInput, TipInfo, price, protective_slippage_bps, reprice_after_simulation, required_final_out,
+    PricingEnv, PricingInput, TipInfo, intermediate_drift_value, price, protective_slippage_bps,
+    reprice_after_simulation, required_final_out,
 };
 use searcher_strategy::{CandidatePlan, LegSpec, Scheduler};
 use searcher_telemetry::EventBus;
@@ -40,6 +41,17 @@ use std::sync::Arc;
 use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::{Duration, Instant};
 use tokio::sync::{mpsc, oneshot, watch};
+
+/// First intermediate leg that delivered less than the next leg's fixed
+/// input: `(leg, needed, delivered)` (leg numbers from 1).
+fn inventory_short(legs: &[Leg], executed: &[u64]) -> Option<(usize, u64, u64)> {
+    executed
+        .iter()
+        .zip(legs.iter().skip(1))
+        .enumerate()
+        .find(|(_, (got, next))| **got < next.in_amount)
+        .map(|(i, (got, next))| (i + 1, next.in_amount, *got))
+}
 
 #[derive(Clone, Debug)]
 pub struct PipelineConfig {
@@ -775,23 +787,72 @@ impl Pipeline {
             let env = self.pricing_env(&tip);
             let status_before = job.opp.status.clone();
             let base_dec = self.tokens.sol().decimals;
-            reprice_after_simulation(&mut job.opp, shape, &cu_used, None, job.atas_to_create, &env, base_dec, now);
-            let delta = Self::sol_equivalent(&job, &sim, balances.as_ref()).map(|d| {
+            reprice_after_simulation(
+                &mut job.opp,
+                shape,
+                &cu_used,
+                None,
+                None,
+                job.atas_to_create,
+                &env,
+                base_dec,
+                now,
+            );
+            let exact = (sim.fidelity == SimFidelity::Exact && sim.txs.len() == 1).then(|| &sim.txs[0]);
+            // rent of accounts left created: capital, reported and capped, not a trade cost
+            let deposits = exact.map(|t| t.created.iter().map(|(_, l)| *l).sum::<u64>());
+            // what intermediate legs left in / took from the inventory, valued in base units
+            let drift = exact.and_then(|t| intermediate_drift_value(&job.opp.route.legs, &t.leg_outputs));
+            if exact.is_some() && drift.is_none() {
+                self.stage(id, Stage::Simulation, true, "drift unknown", "", "no executed output per leg in the logs");
+            }
+            let delta = Self::sol_equivalent(&job, &sim, balances.as_ref()).and_then(|d| {
                 // Correct the simulated fee/tip to the final CU limit and tip.
                 let sim_prio = priority_fee_lamports(job.sim_cu_limit, job.sim_cu_price) as i64;
-                d + sim_prio - job.opp.costs.priority_fee as i64 + job.sim_tip as i64 - job.opp.costs.jito_tip as i64
+                Some(
+                    d + drift? + deposits.unwrap_or(0) as i64 + sim_prio - job.opp.costs.priority_fee as i64
+                        + job.sim_tip as i64
+                        - job.opp.costs.jito_tip as i64,
+                )
             });
-            reprice_after_simulation(&mut job.opp, shape, &cu_used, delta, job.atas_to_create, &env, base_dec, now);
+            reprice_after_simulation(
+                &mut job.opp,
+                shape,
+                &cu_used,
+                delta,
+                deposits,
+                job.atas_to_create,
+                &env,
+                base_dec,
+                now,
+            );
             if !candidate {
                 // unprofitable sample: keep the original (first) reason
                 job.opp.status = status_before;
             }
         } else if candidate {
+            let short =
+                inventory_short(&job.opp.route.legs, sim.txs.first().map(|t| &t.leg_outputs[..]).unwrap_or(&[]));
             job.opp.status = OppStatus::Skipped(match sim.failure.as_ref().map(|f| f.class) {
                 Some(SimFailureClass::RpcError) => SkipReason::SimUnavailable,
                 Some(SimFailureClass::SlippageExceeded) => SkipReason::Slippage,
+                Some(SimFailureClass::InsufficientFunds) if short.is_some() => SkipReason::Inventory,
                 _ => SkipReason::SimFailed,
             });
+            if let (Some(SkipReason::Inventory), Some((leg, need, got))) = (job.opp.status.skip(), short) {
+                self.stage(
+                    id,
+                    Stage::Skip,
+                    false,
+                    "INVENTORY_LOW",
+                    format!("{}", need - got),
+                    format!(
+                        "leg {} needs {need}, leg {leg} delivered {got}: keep at least {} of that token in the wallet",
+                        leg + 1,
+                        need - got
+                    ),
+                );
+            }
         }
         job.opp.simulation = Some(sim.clone());
         job.opp.updated_at = Ts::now();

@@ -83,7 +83,7 @@ The Solana stack still uses the top-level sections below and moves under
 | `[wallet]` | the bot wallet | `pubkey`, `keypair_path` (CONFIRM/LIVE only) |
 | `[execution]` | the hard gate for sending | `live_enabled` (must be `true` for CONFIRM and LIVE) |
 | `[risk]` | limits checked before anything is sent | `max_trade_lamports`, `max_trade_pct_of_equity_bps`, `max_daily_loss_usd`, `min_wallet_sol_for_fees_lamports`, `max_consecutive_failures` |
-| `[profit]` | what counts as profitable after costs | `min_profit_lamports`, `min_profit_bps`, `min_profit_usd`, `protect_min_out` |
+| `[profit]` | what counts as profitable after costs | `min_profit_lamports`, `min_profit_bps`, `min_profit_usd`, `protect_min_out`, `max_new_deposit_lamports` (rent a trade may lock in accounts it leaves created: capital, not a cost) |
 | `[strategies]` | routes to evaluate: `round_trip`, `cross_dex`, `triangular` | `amount_lamports`, `dexes`, `cycle`, `enabled`, `weight` |
 | `[jupiter]` | Jupiter Swap API V2 | `api_key_env`, `slippage`, `for_jito_bundle` |
 | `[rpc]` | Solana JSON-RPC and WebSocket | `url`, `ws_url` (or the `*_env` variables) |

@@ -37,7 +37,11 @@ pub struct CostBreakdown {
     /// Σ ceil(cu_limit × cu_price / 1e6). This is the compute cost.
     pub priority_fee: u64,
     pub jito_tip: u64,
-    /// Rent locked by token accounts the cycle has to create (not refunded in-tx).
+    /// Deposits: rent locked in accounts the cycle leaves created (token
+    /// accounts, or program accounts a route opens for the taker). Capital,
+    /// not a cost of this trade: excluded from [`CostBreakdown::total`] and
+    /// limited by `profit.max_new_deposit_lamports` instead. Estimated from
+    /// missing ATAs before simulation, measured by it afterwards.
     pub ata_rent: u64,
     pub atas_created: u8,
     /// Modeled adverse fill vs. quote on the final leg (share × tolerance).
@@ -50,12 +54,11 @@ pub struct CostBreakdown {
 }
 
 impl CostBreakdown {
-    /// Everything subtracted from gross PnL.
+    /// Everything subtracted from gross PnL (deposits are capital, not included).
     pub fn total(&self) -> u64 {
         self.base_fee
             .saturating_add(self.priority_fee)
             .saturating_add(self.jito_tip)
-            .saturating_add(self.ata_rent)
             .saturating_add(self.expected_slippage)
             .saturating_add(self.safety_buffer)
             .saturating_add(self.platform_fee)
@@ -82,6 +85,8 @@ pub struct CostParams {
     pub safety_buffer: Ppm,
     /// Rent-exempt deposit of one token account (read from the chain at startup).
     pub token_account_rent: u64,
+    /// Largest deposit (rent of accounts left created) a trade may lock.
+    pub max_new_deposit: u64,
 }
 
 impl Default for CostParams {
@@ -94,6 +99,7 @@ impl Default for CostParams {
             safety_buffer_lamports: 5_000,
             safety_buffer: Ppm::from_bps(1),
             token_account_rent: TOKEN_ACCOUNT_RENT_LAMPORTS,
+            max_new_deposit: 3_000_000,
         }
     }
 }
