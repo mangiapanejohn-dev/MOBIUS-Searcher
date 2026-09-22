@@ -10,7 +10,7 @@
 //!   mobius-searcher --research [--duration N]   measurements only (research.sqlite)
 //!   mobius-searcher --research-report [RUN|latest|all]
 
-use mobius_searcher::{budget, doctor, engine, envfile, research, setup};
+use mobius_searcher::{budget, canary, doctor, engine, envfile, research, setup};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -71,6 +71,11 @@ struct Cli {
     /// Validate a private key file offline and print its public wallet address.
     #[arg(long, value_name = "PATH")]
     check_wallet: Option<PathBuf>,
+    /// One real trade through the LIVE path to prove it end to end: CONFIRM
+    /// (approve with y), one SOL→USDC→SOL route, loss ≤ canary.max_loss_lamports
+    /// (also on chain), then an account-by-account reconciliation.
+    #[arg(long)]
+    canary: bool,
     /// Research mode: size ladder, cross-chain spreads and DEX lag, recorded to
     /// <data dir>/research.sqlite. Holds the Jupiter budget; signs and sends nothing.
     #[arg(long)]
@@ -260,6 +265,7 @@ fn main() -> Result<()> {
         && !cli.doctor
         && cli.quote.is_none()
         && !cli.research
+        && !cli.canary
         && cli.research_report.is_none()
         && !cli.list_sessions
         && !cli.prune
@@ -387,6 +393,22 @@ fn main() -> Result<()> {
             eprintln!("loaded from {}: {}", path.display(), names.join(", ")); // names only, never values
         }
     }
+    let cfg = if cli.canary {
+        if cli.headless {
+            bail!("--canary needs the TUI: sending is approved with a keypress (y)");
+        }
+        let c = canary::prepare(&cfg)?;
+        println!(
+            "CANARY · one SOL→USDC→SOL round trip of {} SOL through the LIVE path\n  \
+             each candidate waits for y (n declines) · loss bound {} lamports (also the on-chain min-out)\n  \
+             after the first landed trade the session ends and the transaction is reconciled",
+            c.strategies.round_trip[0].amount_lamports as f64 / 1e9,
+            c.canary.max_loss_lamports
+        );
+        c
+    } else {
+        cfg
+    };
     let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
     rt.block_on(run(cli, cfg, db_path))
 }
@@ -441,6 +463,8 @@ fn ratatui_key(c: char) -> ratatui::crossterm::event::KeyEvent {
 
 async fn run(cli: Cli, cfg: Config, db_path: PathBuf) -> Result<()> {
     let mode = cfg.general.mode;
+    let is_canary = cli.canary;
+    let canary_cfg = cfg.clone();
     let _budget = budget::acquire(&cfg.data_dir(), &format!("{} session", mode.label()))?;
     let opts = tui_opts(&cfg, None);
     let user_config = Some(user_config_path(&cli));
@@ -474,8 +498,18 @@ async fn run(cli: Cli, cfg: Config, db_path: PathBuf) -> Result<()> {
 
     let deadline = cli.duration.map(|s| tokio::time::Instant::now() + Duration::from_secs(s));
     let mut status_tick = tokio::time::interval(Duration::from_secs(15));
+    let mut canary_tick = tokio::time::interval(Duration::from_secs(1));
     loop {
         tokio::select! {
+            _ = canary_tick.tick(), if is_canary => {
+                // the canary ends with its first sent trade (landed or failed)
+                let done = running.vm.read().executions.values().any(|x| {
+                    matches!(x.state, searcher_core::model::ExecState::Landed { .. } | searcher_core::model::ExecState::Failed { .. })
+                });
+                if done {
+                    break;
+                }
+            }
             _ = tokio::signal::ctrl_c() => break,
             _ = shutdown_rx.changed() => break,
             _ = async { match deadline { Some(d) => tokio::time::sleep_until(d).await, None => std::future::pending().await } } => break,
@@ -497,6 +531,7 @@ async fn run(cli: Cli, cfg: Config, db_path: PathBuf) -> Result<()> {
         let _ = tokio::task::spawn_blocking(move || t.join()).await;
     }
     let db = running.db_path.clone();
+    let landed = if is_canary { canary_landed(&running.vm.read()) } else { None };
     running.probe.finish();
     let latency = running.telemetry.latency.report();
     let stats = running.stop().await;
@@ -511,6 +546,11 @@ async fn run(cli: Cli, cfg: Config, db_path: PathBuf) -> Result<()> {
     if let Ok(r) = searcher_storage::build_report(&store, &session) {
         print!("\n{}", searcher_storage::render_report(&r));
     }
+    if let Some((opp, sig, tip)) = landed {
+        canary_report(&canary_cfg, &opp, &sig, tip, db.parent().unwrap_or(std::path::Path::new("."))).await?;
+    } else if is_canary {
+        println!("\ncanary: no trade landed in this session (nothing to reconcile)");
+    }
     // Stage latencies (monotonic clocks) → stdout + data/bench/<session>.json
     print!("\n{}", latency.render());
     let dir = db.parent().unwrap_or(std::path::Path::new(".")).join("bench");
@@ -521,6 +561,57 @@ async fn run(cli: Cli, cfg: Config, db_path: PathBuf) -> Result<()> {
             println!("latency report → {}", path.display());
         }
     }
+    Ok(())
+}
+
+/// The canary's landed trade: (opportunity, first signature, tip).
+fn canary_landed(vm: &ViewModel) -> Option<(searcher_core::Opportunity, String, u64)> {
+    let x = vm.executions.values().find(|x| matches!(x.state, searcher_core::model::ExecState::Landed { .. }))?;
+    Some((vm.opps.get(&x.opportunity)?.clone(), x.signatures.first()?.clone(), x.tip_lamports))
+}
+
+/// Fetch the landed transaction (retrying until the node has it), reconcile,
+/// print and keep the report under `<data dir>/canary/`.
+async fn canary_report(
+    cfg: &Config,
+    opp: &searcher_core::Opportunity,
+    sig: &str,
+    tip: u64,
+    data: &std::path::Path,
+) -> Result<()> {
+    let telemetry = Arc::new(searcher_telemetry::Telemetry::new());
+    let rpc = searcher_market::RpcClient::new(
+        &cfg.rpc.resolved_url(),
+        searcher_telemetry::LimiterConfig::new(cfg.rpc.rps, cfg.rpc.burst),
+        cfg.rpc.simulate_rps,
+        Duration::from_millis(cfg.rpc.timeout_ms),
+        telemetry,
+    )?;
+    let taker = match cfg.wallet.pubkey.as_deref() {
+        Some(p) => p.parse().map_err(|e| anyhow::anyhow!("wallet.pubkey: {e}"))?,
+        None => {
+            let path = cfg.wallet.keypair_path.clone().context("wallet.keypair_path")?;
+            searcher_execution::Wallet::load(std::path::Path::new(&path), None)?.pubkey()
+        }
+    };
+    let usdc = cfg.tokens().get("USDC").map(|t| t.mint).context("USDC token")?;
+    let mut tx = None;
+    for _ in 0..30 {
+        if let Some(t) = rpc.get_transaction(sig).await? {
+            tx = Some(t);
+            break;
+        }
+        tokio::time::sleep(Duration::from_secs(2)).await;
+    }
+    let tx = tx.with_context(|| format!("transaction {sig} not available from the RPC after 60 s; reconcile later"))?;
+    let r = canary::reconcile(opp, &taker, &usdc, tip, cfg.canary.max_loss_lamports, sig, &tx);
+    let text = canary::render(&r);
+    print!("\n{text}");
+    let dir = data.join("canary");
+    std::fs::create_dir_all(&dir)?;
+    std::fs::write(dir.join(format!("{sig}.txt")), &text)?;
+    std::fs::write(dir.join(format!("{sig}.json")), serde_json::to_string_pretty(&r)?)?;
+    println!("report → {}", dir.join(format!("{sig}.txt")).display());
     Ok(())
 }
 

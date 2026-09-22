@@ -1,6 +1,7 @@
 //! Library half of the `mobius-searcher` binary (wiring), so it can be tested.
 
 pub mod budget;
+pub mod canary;
 pub mod doctor;
 pub mod engine;
 pub mod envfile;

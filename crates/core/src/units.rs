@@ -181,6 +181,18 @@ pub fn parse_decimal(s: &str, decimals: u8) -> Result<u64, String> {
     u64::try_from(v).map_err(|_| format!("`{s}` overflows u64"))
 }
 
+/// [`parse_decimal`] with an optional leading `-` (e.g. a minimum profit an
+/// operator set below zero).
+pub fn parse_signed_decimal(s: &str, decimals: u8) -> Result<i64, String> {
+    let t = s.trim();
+    let (neg, body) = match t.strip_prefix('-') {
+        Some(b) => (true, b),
+        None => (false, t),
+    };
+    let v = i64::try_from(parse_decimal(body, decimals)?).map_err(|_| format!("`{s}` overflows i64"))?;
+    Ok(if neg { -v } else { v })
+}
+
 /// Format atoms as a decimal token amount with up to `max_frac` digits.
 pub fn format_atoms(atoms: i128, decimals: u8, max_frac: u8) -> String {
     let neg = atoms < 0;

@@ -175,6 +175,21 @@ impl RpcClient {
         v.as_u64().ok_or_else(|| RpcError::Decode("getSlot".into()))
     }
 
+    /// A confirmed transaction's metadata (`getTransaction`, json encoding).
+    /// `None` while the node does not have it yet.
+    pub async fn get_transaction(&self, signature: &str) -> Result<Option<TxMeta>, RpcError> {
+        let (v, _) = self
+            .call(
+                "getTransaction",
+                json!([signature, {"encoding": "json", "maxSupportedTransactionVersion": 0, "commitment": "confirmed"}]),
+            )
+            .await?;
+        if v.is_null() {
+            return Ok(None);
+        }
+        parse_transaction(&v).map(Some).ok_or_else(|| RpcError::Decode("getTransaction".into()))
+    }
+
     /// Total balance (atoms) of `owner`'s token accounts for `mint`.
     pub async fn token_balance(&self, owner: &Address, mint: &Address) -> Result<u64, RpcError> {
         let (v, _) = self
@@ -308,6 +323,77 @@ impl RpcClient {
         let arr = v.as_array().ok_or_else(|| RpcError::Decode("getRecentPrioritizationFees".into()))?;
         Ok(arr.iter().filter_map(|e| Some((e.get("slot")?.as_u64()?, e.get("prioritizationFee")?.as_u64()?))).collect())
     }
+}
+
+/// One token balance in a transaction's metadata.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TokenBalance {
+    pub index: usize,
+    pub mint: Address,
+    pub owner: Option<Address>,
+    pub amount: u64,
+}
+
+/// What a landed transaction did, as the chain recorded it.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct TxMeta {
+    pub slot: u64,
+    pub err: Option<String>,
+    pub fee: u64,
+    /// Static keys, then lookup-table writable, then readonly (message order).
+    pub keys: Vec<Address>,
+    pub pre: Vec<u64>,
+    pub post: Vec<u64>,
+    pub pre_tokens: Vec<TokenBalance>,
+    pub post_tokens: Vec<TokenBalance>,
+    pub logs: Vec<String>,
+}
+
+pub fn parse_transaction(v: &Value) -> Option<TxMeta> {
+    let meta = v.get("meta")?;
+    let addrs = |a: Option<&Value>| -> Vec<Address> {
+        a.and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|k| k.as_str()?.parse().ok()).collect())
+            .unwrap_or_default()
+    };
+    let mut keys = addrs(v.pointer("/transaction/message/accountKeys"));
+    keys.extend(addrs(meta.pointer("/loadedAddresses/writable")));
+    keys.extend(addrs(meta.pointer("/loadedAddresses/readonly")));
+    let u64s = |k: &str| -> Vec<u64> {
+        meta.get(k).and_then(Value::as_array).map(|a| a.iter().filter_map(Value::as_u64).collect()).unwrap_or_default()
+    };
+    let tokens = |k: &str| -> Vec<TokenBalance> {
+        meta.get(k)
+            .and_then(Value::as_array)
+            .map(|a| {
+                a.iter()
+                    .filter_map(|t| {
+                        Some(TokenBalance {
+                            index: t.get("accountIndex")?.as_u64()? as usize,
+                            mint: t.get("mint")?.as_str()?.parse().ok()?,
+                            owner: t.get("owner").and_then(Value::as_str).and_then(|o| o.parse().ok()),
+                            amount: t.pointer("/uiTokenAmount/amount")?.as_str()?.parse().ok()?,
+                        })
+                    })
+                    .collect()
+            })
+            .unwrap_or_default()
+    };
+    Some(TxMeta {
+        slot: v.get("slot").and_then(Value::as_u64).unwrap_or(0),
+        err: meta.get("err").filter(|e| !e.is_null()).map(|e| e.to_string()),
+        fee: meta.get("fee")?.as_u64()?,
+        keys,
+        pre: u64s("preBalances"),
+        post: u64s("postBalances"),
+        pre_tokens: tokens("preTokenBalances"),
+        post_tokens: tokens("postTokenBalances"),
+        logs: meta
+            .get("logMessages")
+            .and_then(Value::as_array)
+            .map(|a| a.iter().filter_map(|l| l.as_str().map(str::to_string)).collect())
+            .unwrap_or_default(),
+    })
 }
 
 pub fn parse_simulate(v: &Value, latency_ms: u32) -> SimulateOutcome {

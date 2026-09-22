@@ -126,7 +126,7 @@ pub fn parse(th: &Threshold, input: &str) -> Result<toml::Value, String> {
             .and_then(|v| i64::try_from(v).ok())
             .map(toml::Value::Integer)
             .ok_or_else(|| format!("{}: whole number ≥ 0", th.label)),
-        Kind::Decimal => crate::units::parse_decimal(s, 6)
+        Kind::Decimal => crate::units::parse_signed_decimal(s, 6)
             .map(|_| toml::Value::String(s.to_string()))
             .map_err(|e| format!("{}: {e}", th.label)),
         Kind::Bool => match s {
@@ -219,6 +219,11 @@ mod tests {
     #[test]
     fn bad_input_is_refused_with_the_reason() {
         let cfg = Config::default();
+        assert!(apply(&cfg, &[("profit.min_profit_usd".into(), "-0.01".into())]).is_ok(), "negative minimum allowed");
+        assert!(
+            apply(&cfg, &[("risk.max_daily_loss_usd".into(), "-1".into())]).is_err(),
+            "a loss limit is not negative"
+        );
         assert!(apply(&cfg, &[("profit.max_new_deposit_lamports".into(), "-1".into())]).is_err());
         assert!(apply(&cfg, &[("profit.min_profit_usd".into(), "abc".into())]).is_err());
         assert!(apply(&cfg, &[("jupiter.slippage".into(), "fast".into())]).unwrap_err().contains("slippage"));

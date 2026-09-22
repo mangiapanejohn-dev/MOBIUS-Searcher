@@ -47,6 +47,8 @@ pub struct Config {
     pub storage: StorageConfig,
     /// `--research`: measurements only (quotes, prices), nothing is signed.
     pub research: ResearchConfig,
+    /// `--canary`: one real trade through the LIVE path, loss-bounded.
+    pub canary: CanaryConfig,
     /// Venues other than the Solana stack, by a name you choose.
     pub venues: BTreeMap<String, VenueConfig>,
 }
@@ -71,6 +73,7 @@ impl Default for Config {
             network: Default::default(),
             storage: Default::default(),
             research: Default::default(),
+            canary: Default::default(),
             venues: BTreeMap::from([
                 ("okx".to_string(), VenueConfig::okx()),
                 ("binance".to_string(), VenueConfig::binance()),
@@ -536,7 +539,7 @@ impl ProfitConfig {
         Ok(ProfitGuards {
             min_profit_lamports: self.min_profit_lamports,
             min_profit_edge: Ppm::from_bps(self.min_profit_bps),
-            min_profit_usd: UsdMicros(parse_decimal(&self.min_profit_usd, 6)? as i64),
+            min_profit_usd: UsdMicros(crate::units::parse_signed_decimal(&self.min_profit_usd, 6)?),
         })
     }
 
@@ -1011,6 +1014,25 @@ impl ResearchConfig {
             return Err("research.lag_confirm_lamports must be > 0".into());
         }
         Ok(())
+    }
+}
+
+/// `--canary`: one approved trade through the real LIVE path to prove it
+/// works end to end. Profit guards are replaced by a loss bound that is also
+/// written into the transaction's minimum output.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct CanaryConfig {
+    /// Most the trade may lose, SOL-equivalent (fees, tip and price included).
+    pub max_loss_lamports: u64,
+    /// Input of the SOL → USDC → SOL round trip; 0 = the first enabled
+    /// round-trip strategy's amount (else 0.1 SOL).
+    pub amount_lamports: u64,
+}
+
+impl Default for CanaryConfig {
+    fn default() -> Self {
+        Self { max_loss_lamports: 500_000, amount_lamports: 0 }
     }
 }
 

@@ -7,4 +7,4 @@ pub mod hot;
 pub mod rpc;
 
 pub use feed::{ChainState, Emit};
-pub use rpc::{EpochInfo, RpcClient, RpcError, SimulateOutcome};
+pub use rpc::{EpochInfo, RpcClient, RpcError, SimulateOutcome, TokenBalance, TxMeta};

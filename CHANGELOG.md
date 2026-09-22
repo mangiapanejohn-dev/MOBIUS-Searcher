@@ -74,6 +74,16 @@ before 1.0 a minor version may change configuration or behaviour.
   price every minute (`inventory` table); `--report` splits the change of the
   wallet's value into trade PnL, deposits, SOL price change on holdings, and
   whatever is left unexplained (printed, not absorbed).
+- **`--canary`**: one real trade through the LIVE path to prove it end to
+  end. CONFIRM mode (approve each candidate with `y`), one SOL → USDC → SOL
+  route, and the profit guards replaced by a loss bound
+  (`canary.max_loss_lamports`, default 0.0005 SOL) that is also written into
+  the transaction's on-chain minimum output. After the first landed trade the
+  session ends and the transaction is fetched and reconciled account by
+  account: every lamport of the taker's SOL and every USDC atom must be
+  explained by the executed leg outputs, the fee, the tip and deposits. The
+  report is printed and kept under `<data dir>/canary/`.
+- A negative `profit.min_profit_usd` is accepted (it used to fail to parse).
 - Threshold panel in the TUI (`T`, keyboard only): minimum profit (lamports,
   bp, USD), on-chain min-out, slippage reserve, safety buffer, max deposit,
   slippage tolerance, max trade size, max daily loss. Changes are staged,
