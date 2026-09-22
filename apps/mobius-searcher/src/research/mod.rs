@@ -248,9 +248,18 @@ pub async fn run(cfg: Config, duration: Option<u64>) -> Result<()> {
             )
         });
     };
+    // `kill` (SIGTERM) stops as cleanly as Ctrl-C: the run's end is recorded
+    #[cfg(unix)]
+    let mut term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    #[cfg(unix)]
+    let terminated = async move { term.recv().await };
+    #[cfg(not(unix))]
+    let terminated = std::future::pending::<Option<()>>();
+    tokio::pin!(terminated);
     loop {
         tokio::select! {
             _ = tokio::signal::ctrl_c() => break,
+            _ = &mut terminated => break,
             _ = async { match deadline { Some(d) => tokio::time::sleep_until(d).await, None => std::future::pending().await } } => break,
             _ = status.tick() => {
                 progress(None);

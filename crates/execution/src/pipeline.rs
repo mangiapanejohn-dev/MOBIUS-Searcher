@@ -31,8 +31,8 @@ use searcher_jupiter::{BuildRequest, BuiltLeg, JupiterClient, JupiterError};
 use searcher_market::{ChainState, RpcClient};
 use searcher_risk::{RiskContext, RiskEngine};
 use searcher_strategy::pricing::{
-    PricingEnv, PricingInput, TipInfo, intermediate_drift_value, price, protective_slippage_bps,
-    reprice_after_simulation, required_final_out,
+    PricingEnv, PricingInput, TipInfo, intermediate_drift_value, intermediate_shortfall_value, price,
+    protective_slippage_bps, reprice_after_simulation, required_final_out,
 };
 use searcher_strategy::{CandidatePlan, LegSpec, Scheduler};
 use searcher_telemetry::EventBus;
@@ -831,11 +831,21 @@ impl Pipeline {
             let exact = (sim.fidelity == SimFidelity::Exact && sim.txs.len() == 1).then(|| &sim.txs[0]);
             // rent of accounts left created: capital, reported and capped, not a trade cost
             let deposits = exact.map(|t| t.created.iter().map(|(_, l)| *l).sum::<u64>());
-            // what intermediate legs left in / took from the inventory, valued in base units
-            let drift = exact.and_then(|t| intermediate_drift_value(&job.opp.route.legs, &t.leg_outputs));
-            if exact.is_some() && drift.is_none() {
-                self.stage(id, Stage::Simulation, true, "drift unknown", "", "no executed output per leg in the logs");
-            }
+            // what intermediate legs left in / took from the inventory, valued in base units;
+            // without an executed output per leg (logs can be truncated) assume the worst case
+            let drift = exact.map(|t| {
+                intermediate_drift_value(&job.opp.route.legs, &t.leg_outputs).unwrap_or_else(|| {
+                    self.stage(
+                        id,
+                        Stage::Simulation,
+                        true,
+                        "drift unknown",
+                        "",
+                        "no executed output per leg in the logs: worst-case inventory draw assumed",
+                    );
+                    -(intermediate_shortfall_value(&job.opp.route.legs) as i64)
+                })
+            });
             let delta = Self::sol_equivalent(&job, &sim, balances.as_ref()).and_then(|d| {
                 // Correct the simulated fee/tip to the final CU limit and tip.
                 let sim_prio = priority_fee_lamports(job.sim_cu_limit, job.sim_cu_price) as i64;
