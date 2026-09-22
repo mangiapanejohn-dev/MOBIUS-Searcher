@@ -106,7 +106,7 @@ fn http_client() -> Result<reqwest::Client, String> {
 /// Venue reachability and instrument check (public endpoints, no key).
 async fn check_venue(name: &str, v: &VenueConfig) -> Check {
     let label = format!("venue {name}");
-    let target = display_url(&v.rest_url);
+    let target = display_url(&v.resolved_url());
     let http = match http_client() {
         Ok(h) => h,
         Err(e) => return Check::new(false, label, target, e).optional(),
@@ -139,6 +139,80 @@ async fn check_venue(name: &str, v: &VenueConfig) -> Check {
             };
             Check::new(unknown.is_empty(), label, target, detail).optional()
         }
+        VenueKind::Binance => {
+            let c = match searcher_venues::BinanceClient::new(v, None) {
+                Ok(c) => c,
+                Err(e) => return Check::new(false, label, target, e.to_string()).optional(),
+            };
+            let t = Instant::now();
+            let mut unknown = Vec::new();
+            for sym in &v.markets {
+                match c.instrument(sym).await {
+                    Ok(i) if i.live => {}
+                    Ok(_) => unknown.push(format!("{sym} (not trading)")),
+                    Err(searcher_venues::BinanceError::Api { .. }) => unknown.push(sym.clone()),
+                    Err(e) => return Check::new(false, label, target, e.to_string()).optional(),
+                }
+            }
+            let detail = if unknown.is_empty() {
+                format!("binance · {} markets answered in {}", v.markets.len(), ms(t.elapsed()))
+            } else {
+                format!("unknown instruments in markets: {}", unknown.join(", "))
+            };
+            Check::new(unknown.is_empty(), label, target, detail).optional()
+        }
+        VenueKind::Evm => {
+            use searcher_venues::evm::{EvmRpc, UniV3Pool};
+            let t = Instant::now();
+            let rpc = match EvmRpc::new(&v.resolved_url(), 3.0) {
+                Ok(r) => r,
+                Err(e) => return Check::new(false, label, target, e.to_string()).optional(),
+            };
+            let want = v.chain_id.unwrap_or_default();
+            match rpc.chain_id().await {
+                Ok(id) if id == want => {}
+                Ok(id) => return Check::new(false, label, target, format!("RPC is chain {id}, config says {want}")),
+                Err(e) => return Check::new(false, label, target, e.to_string()).optional(),
+            }
+            let mut parts = Vec::new();
+            for addr in &v.pools {
+                let pool = match UniV3Pool::load(&rpc, addr).await {
+                    Ok(p) => p,
+                    Err(e) => return Check::new(false, label, target, format!("pool {addr}: {e}")).optional(),
+                };
+                let base = pool.market().split('/').next().unwrap_or_default().to_string();
+                match pool.state(&rpc).await.map(|s| (s.block, pool.mid(s.sqrt_price_x96, &base))) {
+                    Ok((block, Some(mid))) => parts.push(format!(
+                        "{} {mid:.2} ({:.2} %) @ block {block}",
+                        pool.market(),
+                        pool.fee as f64 / 10_000.0
+                    )),
+                    Ok((_, None)) => parts.push(format!("{} (no price)", pool.market())),
+                    Err(e) => return Check::new(false, label, target, format!("pool {addr}: {e}")).optional(),
+                }
+            }
+            let detail = format!("chain {want} · {} · {}", parts.join(" · "), ms(t.elapsed()));
+            Check::new(true, label, target, detail).optional()
+        }
+    }
+}
+
+/// Signed read-only request with the venue's credentials, when they are set.
+async fn check_venue_account(name: &str, v: &VenueConfig) -> Option<Check> {
+    let label = format!("venue {name} account");
+    let target = if v.demo { "demo trading" } else { "real account" };
+    match searcher_venues::probe_account(v).await {
+        Ok(None) => None,
+        Ok(Some(p)) => {
+            let top: Vec<String> = p.balances.iter().take(4).map(|b| format!("{} {:.4}", b.ccy, b.total)).collect();
+            let detail = format!(
+                "signed request OK · clock offset {} ms · {}",
+                p.offset_ms,
+                if top.is_empty() { "no balances".to_string() } else { top.join(", ") }
+            );
+            Some(Check::new(true, label, target, detail))
+        }
+        Err(e) => Some(Check::new(false, label, target, e).optional()),
     }
 }
 
@@ -327,6 +401,7 @@ pub async fn run(l: &Layered, env_files: &[(PathBuf, Vec<String>)]) -> bool {
 
     for (name, v) in cfg.venues.iter().filter(|(_, v)| v.enabled) {
         checks.push(check_venue(name, v).await);
+        checks.extend(check_venue_account(name, v).await);
     }
 
     // CONFIRM / LIVE: the signer must load, match, and afford fees

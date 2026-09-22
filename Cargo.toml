@@ -10,6 +10,7 @@ members = [
     "crates/execution",
     "crates/risk",
     "crates/storage",
+    "crates/venues",
     "crates/tui",
     "apps/mobius-searcher",
 ]
@@ -32,6 +33,7 @@ searcher-strategy = { path = "crates/strategy" }
 searcher-execution = { path = "crates/execution" }
 searcher-risk = { path = "crates/risk" }
 searcher-storage = { path = "crates/storage" }
+searcher-venues = { path = "crates/venues" }
 searcher-tui = { path = "crates/tui" }
 
 # async / net
@@ -45,6 +47,10 @@ serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 toml = "1.1"
 base64 = "0.22"
+hmac = "0.12"
+sha2 = "0.10"
+k256 = { version = "0.13", default-features = false, features = ["ecdsa", "std"] }
+sha3 = "0.10"
 bs58 = "0.5"
 rusqlite = { version = "0.40", features = ["bundled"] }
 # compressed event-log blocks (pure-Rust backend)

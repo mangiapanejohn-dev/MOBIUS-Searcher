@@ -3,5 +3,6 @@
 pub mod doctor;
 pub mod engine;
 pub mod envfile;
+pub mod quote;
 pub mod setup;
 pub mod setup_ui;
