@@ -116,6 +116,12 @@ CREATE TABLE IF NOT EXISTS attribution (
     PRIMARY KEY (session_id, opportunity_id)
 );
 
+-- Wallet inventory in sending modes (the USD ledger): value = SOL × price + USDC.
+CREATE TABLE IF NOT EXISTS inventory (
+    session_id TEXT NOT NULL, ts INTEGER NOT NULL,
+    sol_lamports INTEGER NOT NULL, usdc_atoms INTEGER, sol_usd_micros INTEGER
+);
+
 CREATE TABLE IF NOT EXISTS simulations (
     session_id TEXT NOT NULL, opportunity_id INTEGER NOT NULL, ts INTEGER NOT NULL,
     ok INTEGER NOT NULL, plan TEXT NOT NULL, fidelity TEXT NOT NULL,

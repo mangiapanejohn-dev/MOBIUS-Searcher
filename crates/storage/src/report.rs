@@ -89,6 +89,24 @@ pub struct Report {
     pub first_leg_p5_bps: Option<f64>,
     /// Accounts the simulated transactions leave created: (address, times, lamports each).
     pub created_accounts: Vec<(String, i64, i64)>,
+    /// Wallet ledger (sending modes), USD.
+    pub ledger: Option<Ledger>,
+}
+
+/// Change of the wallet's USD value split into what explains it.
+#[derive(Clone, Debug, Default, Serialize)]
+pub struct Ledger {
+    pub snapshots: i64,
+    pub start_usd: f64,
+    pub end_usd: f64,
+    /// Σ net USD of real (non-paper) trades in the session.
+    pub trades_usd: f64,
+    /// Rent locked in accounts that landed trades left created.
+    pub deposits_usd: f64,
+    /// Starting SOL holdings × (end price − start price).
+    pub revaluation_usd: f64,
+    /// What none of the above explains (should be ~0; shown, not hidden).
+    pub unexplained_usd: f64,
 }
 
 fn median(v: &mut [i64]) -> Option<i64> {
@@ -375,7 +393,45 @@ fn attribution(c: &rusqlite::Connection, session: &str, rep: &mut Report) -> Res
     v.sort_by_key(|e| std::cmp::Reverse(e.1));
     v.truncate(8);
     rep.created_accounts = v;
+    rep.ledger = ledger(c, session)?;
     Ok(())
+}
+
+fn ledger(c: &rusqlite::Connection, session: &str) -> Result<Option<Ledger>, StoreError> {
+    let mut st = c.prepare(
+        "SELECT sol_lamports, COALESCE(usdc_atoms, 0), sol_usd_micros FROM inventory
+         WHERE session_id = ?1 AND sol_usd_micros IS NOT NULL ORDER BY ts",
+    )?;
+    let snaps: Vec<(i64, i64, i64)> =
+        st.query_map(params![session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?;
+    let (Some(first), Some(last)) = (snaps.first(), snaps.last()) else { return Ok(None) };
+    let value = |(sol, usdc, px): (i64, i64, i64)| sol as f64 / 1e9 * px as f64 / 1e6 + usdc as f64 / 1e6;
+    let trades_usd: i64 = c.query_row(
+        "SELECT COALESCE(SUM(net_usd_micros), 0) FROM trades WHERE session_id = ?1 AND paper = 0",
+        params![session],
+        |r| r.get(0),
+    )?;
+    let deposits: i64 = c.query_row(
+        "SELECT COALESCE(SUM(a.created_lamports), 0) FROM attribution a
+         JOIN trades t ON t.session_id = a.session_id AND t.opportunity_id = a.opportunity_id
+         WHERE a.session_id = ?1 AND t.paper = 0",
+        params![session],
+        |r| r.get(0),
+    )?;
+    let px_end = last.2 as f64 / 1e6;
+    let (start, end) = (value(*first), value(*last));
+    let trades = trades_usd as f64 / 1e6;
+    let deposits_usd = deposits as f64 / 1e9 * px_end;
+    let revaluation = first.0 as f64 / 1e9 * (last.2 - first.2) as f64 / 1e6;
+    Ok(Some(Ledger {
+        snapshots: snaps.len() as i64,
+        start_usd: start,
+        end_usd: end,
+        trades_usd: trades,
+        deposits_usd,
+        revaluation_usd: revaluation,
+        unexplained_usd: (end - start) - trades + deposits_usd - revaluation,
+    }))
 }
 
 fn sol(l: i64) -> String {
@@ -521,6 +577,18 @@ pub fn render(r: &Report) -> String {
             obps(s.best_net_edge_bps),
             format!("{}/{}", s.sim_ok, s.simulations)
         ));
+    }
+    if let Some(l) = &r.ledger {
+        o.push_str("\nWALLET LEDGER (USD, SOL + USDC)\n");
+        line(
+            &mut o,
+            "value start → end",
+            format!("${:.4} → ${:.4} ({} snapshots)", l.start_usd, l.end_usd, l.snapshots),
+        );
+        line(&mut o, "  trade PnL", format!("{:+.4}", l.trades_usd));
+        line(&mut o, "  deposits (capital locked)", format!("{:+.4}", -l.deposits_usd));
+        line(&mut o, "  SOL price change on holdings", format!("{:+.4}", l.revaluation_usd));
+        line(&mut o, "  unexplained", format!("{:+.4}", l.unexplained_usd));
     }
     o.push_str("\nSYSTEM\n");
     line(&mut o, "errors", r.errors.to_string());

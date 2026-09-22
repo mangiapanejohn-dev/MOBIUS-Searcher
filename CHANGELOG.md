@@ -66,6 +66,10 @@ before 1.0 a minor version may change configuration or behaviour.
   `profit.max_new_deposit_lamports` (default 0.003 SOL, two token accounts;
   above it: `DEPOSIT_TOO_HIGH`). Previously the rent of a missing token
   account was charged to every candidate, so a new wallet could never pass.
+- Wallet ledger in USD (CONFIRM/LIVE): SOL and USDC balances with the SOL
+  price every minute (`inventory` table); `--report` splits the change of the
+  wallet's value into trade PnL, deposits, SOL price change on holdings, and
+  whatever is left unexplained (printed, not absorbed).
 - One process at a time uses the Jupiter budget: `--research` and trading
   sessions take `<data dir>/jupiter-budget.lock`; the second one is refused
   with the holder's name. On macOS `--research` keeps the machine awake

@@ -80,6 +80,8 @@ pub struct ViewModel {
     pub realized_lamports: i64,
     pub simulated_lamports: i64,
     pub equity_lamports: Option<(u64, String)>,
+    /// Latest wallet inventory (sending modes): SOL lamports, USDC atoms.
+    pub inventory: Option<(u64, Option<u64>)>,
     pub sol_price: Option<UsdPrice>,
     pub quotes: Vec<Quote>,
     pub price_samples: HashMap<(String, String), TimeSeries>,
@@ -321,6 +323,7 @@ impl ViewModel {
                     self.push_metric(MetricId::Equity, *ts, eq.f64());
                 }
             }
+            Event::Inventory { sol_lamports, usdc_atoms, .. } => self.inventory = Some((*sol_lamports, *usdc_atoms)),
             Event::Log { ts, level, message } => self.log(*ts, *level, "engine", message.clone()),
         }
     }

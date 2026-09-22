@@ -175,6 +175,24 @@ impl RpcClient {
         v.as_u64().ok_or_else(|| RpcError::Decode("getSlot".into()))
     }
 
+    /// Total balance (atoms) of `owner`'s token accounts for `mint`.
+    pub async fn token_balance(&self, owner: &Address, mint: &Address) -> Result<u64, RpcError> {
+        let (v, _) = self
+            .call_background(
+                "getTokenAccountsByOwner",
+                json!([owner.to_string(), {"mint": mint.to_string()}, {"encoding": "jsonParsed", "commitment": "processed"}]),
+            )
+            .await?;
+        let accounts = v
+            .get("value")
+            .and_then(Value::as_array)
+            .ok_or_else(|| RpcError::Decode("getTokenAccountsByOwner".into()))?;
+        Ok(accounts
+            .iter()
+            .filter_map(|a| a.pointer("/account/data/parsed/info/tokenAmount/amount")?.as_str()?.parse::<u64>().ok())
+            .sum())
+    }
+
     /// Lamports an account of `space` bytes must hold to be rent-exempt.
     pub async fn minimum_balance_for_rent_exemption(&self, space: u64) -> Result<u64, RpcError> {
         let (v, _) = self.call("getMinimumBalanceForRentExemption", json!([space])).await?;

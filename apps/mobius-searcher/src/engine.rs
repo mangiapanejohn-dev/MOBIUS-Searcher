@@ -461,6 +461,7 @@ pub async fn start(cfg: Config, db_path: PathBuf) -> Result<Running> {
         let wallet_pk: Option<Address> =
             if mode.sends_transactions() { taker } else { cfg.wallet.pubkey.as_deref().and_then(|p| p.parse().ok()) };
         let paper_equity = cfg.paper.equity_lamports;
+        let usdc_mint = cfg.tokens().get("USDC").map(|t| t.mint).unwrap_or_default();
         let mut sd = shutdown_rx.clone();
         tasks.push(tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(2));
@@ -484,6 +485,16 @@ pub async fn start(cfg: Config, db_path: PathBuf) -> Result<Running> {
                                     if let Ok(b) = rpc.get_balance(&pk).await {
                                         view.set_wallet_lamports(b, now);
                                         bus.emit(Event::Equity { ts: now, lamports: b, source: "wallet SOL".into() });
+                                        // inventory ledger: every minute
+                                        if n % 30 == 1 {
+                                            let usdc = rpc.token_balance(&pk, &usdc_mint).await.ok();
+                                            bus.emit(Event::Inventory {
+                                                ts: now,
+                                                sol_lamports: b,
+                                                usdc_atoms: usdc,
+                                                sol_usd_micros: view.sol_price(now, 60_000).map(|p| p.micros_per_token),
+                                            });
+                                        }
                                     }
                                 }
                                 _ => {}

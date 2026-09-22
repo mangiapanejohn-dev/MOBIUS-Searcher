@@ -371,6 +371,18 @@ impl Store {
                     thin.pending_quotes.remove(&o.id);
                 }
             }
+            Event::Inventory { ts, sol_lamports, usdc_atoms, sol_usd_micros } => {
+                tx.execute(
+                    "INSERT INTO inventory(session_id, ts, sol_lamports, usdc_atoms, sol_usd_micros) VALUES (?1,?2,?3,?4,?5)",
+                    params![
+                        session,
+                        ts.0,
+                        *sol_lamports as i64,
+                        usdc_atoms.map(|u| u as i64),
+                        sol_usd_micros.map(|p| p as i64)
+                    ],
+                )?;
+            }
             Event::RawQuote { ts, opportunity, leg, body } => {
                 if thin.notable.contains(opportunity) {
                     Self::quote(tx, session, *opportunity, *leg, *ts, body)?;

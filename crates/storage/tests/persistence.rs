@@ -566,3 +566,27 @@ fn attribution_records_the_failed_guard_executed_outputs_and_created_accounts() 
     let text = render_report(&r);
     assert!(text.contains("PROFIT GUARD THAT FAILED") && text.contains("ACCOUNTS THE TRANSACTIONS CREATE"), "{text}");
 }
+
+#[test]
+fn ledger_splits_wallet_value_into_trades_deposits_and_revaluation() {
+    let mut st = Store::open_in_memory().unwrap();
+    st.begin_session(&session("L1")).unwrap();
+    let inv = |ts: i64, sol: u64, usdc: u64, px: u64| Event::Inventory {
+        ts: Ts(ts),
+        sol_lamports: sol,
+        usdc_atoms: Some(usdc),
+        sol_usd_micros: Some(px),
+    };
+    // 0.12 SOL + $5 at $100 → 0.12 SOL + $5 at $110, nothing traded
+    st.write_batch(
+        "L1",
+        &batch(vec![inv(1, 120_000_000, 5_000_000, 100_000_000), inv(2, 120_000_000, 5_000_000, 110_000_000)], 1),
+    )
+    .unwrap();
+    let l = build_report(&st, "L1").unwrap().ledger.unwrap();
+    assert!((l.start_usd - 17.0).abs() < 1e-9 && (l.end_usd - 18.2).abs() < 1e-9);
+    assert!((l.revaluation_usd - 1.2).abs() < 1e-9, "all of the change is the SOL price");
+    assert!(l.unexplained_usd.abs() < 1e-9);
+    assert_eq!(l.trades_usd, 0.0);
+    assert!(render_report(&build_report(&st, "L1").unwrap()).contains("WALLET LEDGER"));
+}

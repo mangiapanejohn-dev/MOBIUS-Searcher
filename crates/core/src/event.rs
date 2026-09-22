@@ -160,6 +160,14 @@ pub enum Event {
         lamports: u64,
         source: String,
     },
+    /// Wallet inventory (sending modes): SOL and USDC balances and the SOL
+    /// price, so trade PnL and revaluation can be told apart.
+    Inventory {
+        ts: Ts,
+        sol_lamports: u64,
+        usdc_atoms: Option<u64>,
+        sol_usd_micros: Option<u64>,
+    },
     Log {
         ts: Ts,
         level: LogLevel,
@@ -187,6 +195,7 @@ impl Event {
             | Event::Error { ts, .. }
             | Event::KillSwitch { ts, .. }
             | Event::Equity { ts, .. }
+            | Event::Inventory { ts, .. }
             | Event::Log { ts, .. }
             | Event::RawQuote { ts, .. } => *ts,
             Event::Sample(s) => s.ts,
@@ -221,6 +230,7 @@ impl Event {
             Event::TipFloor(_) => "tip_floor",
             Event::Network(_) => "network",
             Event::Equity { .. } => "equity",
+            Event::Inventory { .. } => "inventory",
             Event::Log { .. } => "log",
             Event::RawQuote { .. } => "raw_quote",
         }
