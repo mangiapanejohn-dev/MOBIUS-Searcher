@@ -45,6 +45,8 @@ pub struct Config {
     pub scheduler: SchedulerConfig,
     pub network: NetworkConfig,
     pub storage: StorageConfig,
+    /// `--research`: measurements only (quotes, prices), nothing is signed.
+    pub research: ResearchConfig,
     /// Venues other than the Solana stack, by a name you choose.
     pub venues: BTreeMap<String, VenueConfig>,
 }
@@ -68,6 +70,7 @@ impl Default for Config {
             scheduler: Default::default(),
             network: Default::default(),
             storage: Default::default(),
+            research: Default::default(),
             venues: BTreeMap::from([
                 ("okx".to_string(), VenueConfig::okx()),
                 ("binance".to_string(), VenueConfig::binance()),
@@ -933,6 +936,126 @@ impl Default for StorageConfig {
     }
 }
 
+/// `--research`: three measurements that decide what to build next. It runs
+/// on its own (it holds the Jupiter budget while it runs), writes to
+/// `<data_dir>/research.sqlite`, and never signs or sends anything.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields, default)]
+pub struct ResearchConfig {
+    /// Size ladder: every round quotes one configured route (the enabled
+    /// strategies' cycles, in turn) at each of these input sizes.
+    pub ladder_sizes_lamports: Vec<u64>,
+    pub ladder_every_s: u64,
+    /// Cross-chain: the same asset on Solana (Jupiter) and on EVM chains
+    /// (Uniswap v3 QuoterV2), bought and sold for this much USDC.
+    pub xchain_notional_usd: Vec<u32>,
+    pub xchain_every_s: u64,
+    pub xchain_assets: Vec<XchainAsset>,
+    /// DEX lag: every pool mid from `[feeds]` against the CEX mid. A gap wider
+    /// than this opens an episode, and one Jupiter quote on that DEX checks
+    /// what is actually executable (pool fees and impact included).
+    pub lag_trigger_bps: f64,
+    /// A confirming quote without a trigger every this many seconds (control
+    /// sample: does the trigger find better prices than chance?). 0 = off.
+    pub lag_control_every_s: u64,
+    pub lag_confirm_lamports: u64,
+    /// At most one confirming quote per pool per this many seconds.
+    pub lag_confirm_cooldown_s: u64,
+    /// CEX prices after an episode starts (seconds): who moved, DEX or CEX.
+    pub lag_markouts_s: Vec<u32>,
+    pub lag_okx_ws_url: String,
+    pub lag_okx_inst: String,
+    /// Binance's public mirror (the main endpoint refuses some locations).
+    pub lag_binance_ws_url: String,
+    /// Keep the machine awake while researching (macOS `caffeinate`).
+    pub keep_awake: bool,
+}
+
+impl ResearchConfig {
+    pub fn validate(&self) -> Result<(), String> {
+        if self.ladder_sizes_lamports.is_empty() || self.ladder_sizes_lamports.contains(&0) {
+            return Err("research.ladder_sizes_lamports: at least one size, all > 0".into());
+        }
+        if self.ladder_every_s < 5 || self.xchain_every_s < 5 {
+            return Err("research.*_every_s must be ≥ 5".into());
+        }
+        if self.xchain_notional_usd.contains(&0) {
+            return Err("research.xchain_notional_usd must be > 0".into());
+        }
+        for a in &self.xchain_assets {
+            a.solana_mint
+                .parse::<Address>()
+                .map_err(|e| format!("research.xchain_assets {}: solana_mint: {e}", a.symbol))?;
+        }
+        if self.lag_trigger_bps.is_nan() || self.lag_trigger_bps <= 0.0 {
+            return Err("research.lag_trigger_bps must be > 0".into());
+        }
+        if self.lag_confirm_lamports == 0 {
+            return Err("research.lag_confirm_lamports must be > 0".into());
+        }
+        Ok(())
+    }
+}
+
+/// One asset for the cross-chain comparison.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct XchainAsset {
+    pub symbol: String,
+    pub solana_mint: String,
+    pub solana_decimals: u8,
+    /// `venue name → Uniswap v3 pool` (the venue gives the chain RPC and QuoterV2).
+    pub evm_pools: BTreeMap<String, String>,
+}
+
+impl Default for ResearchConfig {
+    fn default() -> Self {
+        Self {
+            ladder_sizes_lamports: vec![
+                10_000_000,
+                50_000_000,
+                100_000_000,
+                250_000_000,
+                500_000_000,
+                1_000_000_000,
+                2_000_000_000,
+            ],
+            ladder_every_s: 60,
+            xchain_notional_usd: vec![25, 250],
+            xchain_every_s: 30,
+            // Addresses read back on chain 2026-09-22 (symbol, decimals, factory getPool).
+            xchain_assets: vec![
+                XchainAsset {
+                    symbol: "ETH".into(),
+                    // Wormhole-bridged ETH on Solana (8 decimals)
+                    solana_mint: "7vfCXTUXx5WJV5JADk17DUJ4ksgau7utNKj4b963voxs".into(),
+                    solana_decimals: 8,
+                    evm_pools: BTreeMap::from([
+                        ("base".into(), "0xd0b53D9277642d899DF5C87A3966A349A798F224".into()),
+                        ("arbitrum".into(), "0xC6962004f452bE9203591991D15f6b388e09E8D0".into()),
+                    ]),
+                },
+                XchainAsset {
+                    symbol: "cbBTC".into(),
+                    solana_mint: "cbbtcf3aa214zXHbiAZQwf4122FBYbraNdFqgw4iMij".into(),
+                    solana_decimals: 8,
+                    // Arbitrum's cbBTC/USDC pools hold almost no liquidity
+                    evm_pools: BTreeMap::from([("base".into(), "0xfbb6eed8e7aa03b138556eedaf5d271a5e1e43ef".into())]),
+                },
+            ],
+            lag_trigger_bps: 4.0,
+            lag_control_every_s: 120,
+            lag_confirm_lamports: 100_000_000,
+            lag_confirm_cooldown_s: 10,
+            lag_markouts_s: vec![1, 5, 30],
+            lag_okx_ws_url: "wss://ws.okx.com:8443/ws/v5/public".into(),
+            lag_okx_inst: "SOL-USDC".into(),
+            lag_binance_ws_url: "wss://data-stream.binance.vision/ws/solusdc@bookTicker".into(),
+            keep_awake: true,
+        }
+    }
+}
+
 /// 32-byte Pyth feed id from 64 hex chars (optional `0x`).
 pub fn parse_feed_id(s: &str) -> Option<[u8; 32]> {
     let s = s.strip_prefix("0x").unwrap_or(s);
@@ -988,6 +1111,7 @@ impl Config {
 
         self.jupiter.slippage_spec().map_err(ConfigError::Invalid)?;
         self.profit.guards().map_err(ConfigError::Invalid)?;
+        self.research.validate().map_err(ConfigError::Invalid)?;
         parse_decimal(&self.risk.max_daily_loss_usd, 6)
             .map_err(|e| ConfigError::Invalid(format!("risk.max_daily_loss_usd: {e}")))?;
         if self.jupiter.general_rps <= 0.0 || self.rpc.rps <= 0.0 || self.jito.rps <= 0.0 {

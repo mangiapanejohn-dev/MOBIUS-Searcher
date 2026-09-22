@@ -1873,6 +1873,7 @@ dependencies = [
  "searcher-telemetry",
  "searcher-tui",
  "searcher-venues",
+ "serde",
  "serde_json",
  "tokio",
  "toml",

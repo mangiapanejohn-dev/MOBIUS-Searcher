@@ -2,12 +2,14 @@
 
 pub mod recorder;
 pub mod report;
+pub mod research;
 pub mod retention;
 pub mod schema;
 pub mod store;
 
 pub use recorder::{RecorderStats, spawn_recorder, spawn_recorder_with};
 pub use report::{Report, build as build_report, render as render_report};
+pub use research::ResearchStore;
 pub use retention::{DbInfo, PruneReport, Retention};
 pub use store::{SessionRow, Store, StoreError};
 

@@ -175,6 +175,21 @@ keep_trading_days = 90    # sessions with trades or executions
 max_db_mb = 1024          # above this the oldest sessions go first
 prune_interval_min = 30   # while recording (also once at startup); --prune runs it now
 
+# ── Research mode (--research) ───────────────────────────────────────────────
+# Measurements only, written to <data dir>/research.sqlite; nothing is signed
+# or sent. It holds the Jupiter budget while it runs (a trading session started
+# meanwhile is refused, and the other way round). `--research-report` summarises.
+# The built-in defaults are listed here; set only what you want different.
+# [research]
+# ladder_sizes_lamports = [10000000, 50000000, 100000000, 250000000, 500000000, 1000000000, 2000000000]
+# ladder_every_s = 60           # one configured route at every size per round
+# xchain_notional_usd = [25, 250]
+# xchain_every_s = 30           # ETH and cbBTC: Solana (Jupiter) vs Base/Arbitrum (Uniswap v3)
+# lag_trigger_bps = 4.0         # pool mid vs CEX mid gap that opens an episode
+# lag_control_every_s = 120     # the same check at random times (control sample)
+# lag_confirm_lamports = 100000000
+# keep_awake = true             # macOS: caffeinate while running
+
 # ── Execution gate ──────────────────────────────────────────────────────────
 [execution]
 # Required for CONFIRM and LIVE, together with [wallet] keypair_path in YOUR

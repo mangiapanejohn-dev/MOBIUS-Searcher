@@ -32,7 +32,10 @@ pub struct Price {
     /// swap): what a buy pays / a sell receives.
     pub net_px: f64,
     /// Taker fee (order books) or estimated gas (chains), in quote currency.
+    /// Gas is only valued here when the base is the gas token (WETH).
     pub fee_quote: f64,
+    /// Estimated gas of one swap in the chain's native token (0 for books).
+    pub gas_native: f64,
     pub source: Source,
     /// How current the data is: the book's exchange-time age, or the block.
     pub as_of: String,
@@ -110,19 +113,19 @@ impl Market {
             };
             (f.filled, f.avg_px, net, f.fee, as_of)
         };
-        let (filled, avg_px, net_px, fee_quote, as_of, source) = match self {
+        let (filled, avg_px, net_px, fee_quote, gas_native, as_of, source) = match self {
             Market::Okx { client, inst, fee_bps, .. } => {
                 let b = client.book(&inst.inst_id, 400).await.map_err(|e| e.to_string())?;
                 let ts = b.ts_ms;
                 let (a, b2, c, d, e) = from_book(b, *fee_bps, ts);
-                (a, b2, c, d, e, Source::Book)
+                (a, b2, c, d, 0.0, e, Source::Book)
             }
             Market::Binance { client, inst, fee_bps, .. } => {
                 let b = client.book(&inst.inst_id, 100).await.map_err(|e| e.to_string())?;
                 // Binance's depth has no exchange timestamp: say so rather than invent one
                 let ts = 0;
                 let (a, b2, c, d, e) = from_book(b, *fee_bps, ts);
-                (a, b2, c, d, e, Source::Book)
+                (a, b2, c, d, 0.0, e, Source::Book)
             }
             Market::Uniswap { rpc, quoter, pool, .. } => {
                 let base_sym = pool.market().split('/').next().unwrap_or_default().to_string();
@@ -150,7 +153,7 @@ impl Market {
                     Side::Buy => (quote_amount + gas_quote) / size,
                     Side::Sell => (quote_amount - gas_quote) / size,
                 };
-                (size, px, net, gas_quote, format!("block {}", q.block), Source::Quoter)
+                (size, px, net, gas_quote, gas_eth, format!("block {}", q.block), Source::Quoter)
             }
         };
         Ok(Price {
@@ -162,6 +165,7 @@ impl Market {
             avg_px,
             net_px,
             fee_quote,
+            gas_native,
             source,
             as_of,
             latency_ms: t.elapsed().as_millis() as u64,

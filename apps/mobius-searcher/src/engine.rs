@@ -61,7 +61,7 @@ fn limits_for_display(c: &Config) -> Vec<(String, String)> {
     ]
 }
 
-fn build_strategies(c: &Config) -> Result<Vec<Box<dyn Strategy>>> {
+pub(crate) fn build_strategies(c: &Config) -> Result<Vec<Box<dyn Strategy>>> {
     let tokens = c.tokens();
     let tok = |s: &str| tokens.get(s).cloned().with_context(|| format!("unknown token {s}"));
     let fast = FastPairs(c.jupiter.fast_mode_pairs.clone());

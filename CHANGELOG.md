@@ -38,6 +38,18 @@ before 1.0 a minor version may change configuration or behaviour.
   market, plus the cheapest buy, the best sell and the gap between them.
 - `--doctor` checks enabled EVM venues (chain id, pool price, block) and,
   when OKX or Binance credentials are set, a signed read-only balance request.
+- **`--research`**: measurements that decide what to build next, recorded to
+  `<data dir>/research.sqlite` (nothing is signed or sent). Size ladder (the
+  configured routes quoted at 0.01–2 SOL), cross-chain spreads (ETH and cbBTC:
+  Solana via Jupiter vs Base/Arbitrum via Uniswap v3, after swap fees, Solana
+  fees and gas), and DEX lag (pool mids vs OKX/Binance best bid/ask, with an
+  executable Jupiter quote per episode, control samples at random times and
+  CEX/pool markouts). `--research-report [RUN|latest|all]` prints whole
+  distributions (sample counts next to positive counts).
+- One process at a time uses the Jupiter budget: `--research` and trading
+  sessions take `<data dir>/jupiter-budget.lock`; the second one is refused
+  with the holder's name. On macOS `--research` keeps the machine awake
+  (`caffeinate`; `research.keep_awake`).
 
 ### Fixed
 

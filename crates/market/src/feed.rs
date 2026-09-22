@@ -598,6 +598,18 @@ pub async fn run_chain_ws(
 pub async fn run_text_stream(
     url: String,
     idle: Duration,
+    on_text: impl FnMut(&str) + Send,
+    shutdown: watch::Receiver<bool>,
+) {
+    run_subscribed_stream(url, Vec::new(), idle, on_text, shutdown).await
+}
+
+/// [`run_text_stream`] that sends `subscribe` (e.g. an exchange's subscribe
+/// request) after every (re)connect.
+pub async fn run_subscribed_stream(
+    url: String,
+    subscribe: Vec<String>,
+    idle: Duration,
     mut on_text: impl FnMut(&str) + Send,
     mut shutdown: watch::Receiver<bool>,
 ) {
@@ -608,14 +620,23 @@ pub async fn run_text_stream(
             return;
         }
         if let Ok(Ok(mut ws)) = tokio::time::timeout(Duration::from_secs(10), connect_ws(&url)).await {
-            loop {
-                tokio::select! {
-                    _ = shutdown.changed() => { let _ = ws.close(None).await; return; }
-                    msg = tokio::time::timeout(idle, ws.next()) => match msg {
-                        Ok(Some(Ok(Message::Text(t)))) => { attempt = 0; on_text(&t); }
-                        Ok(Some(Ok(Message::Ping(p)))) => { let _ = ws.send(Message::Pong(p)).await; }
-                        Ok(Some(Ok(_))) => {}
-                        _ => break,
+            let mut subscribed = true;
+            for m in &subscribe {
+                if ws.send(Message::Text(m.clone().into())).await.is_err() {
+                    subscribed = false;
+                    break;
+                }
+            }
+            if subscribed {
+                loop {
+                    tokio::select! {
+                        _ = shutdown.changed() => { let _ = ws.close(None).await; return; }
+                        msg = tokio::time::timeout(idle, ws.next()) => match msg {
+                            Ok(Some(Ok(Message::Text(t)))) => { attempt = 0; on_text(&t); }
+                            Ok(Some(Ok(Message::Ping(p)))) => { let _ = ws.send(Message::Pong(p)).await; }
+                            Ok(Some(Ok(_))) => {}
+                            _ => break,
+                        }
                     }
                 }
             }

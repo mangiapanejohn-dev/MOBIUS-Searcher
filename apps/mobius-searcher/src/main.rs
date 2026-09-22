@@ -7,8 +7,10 @@
 //!   mobius-searcher --replay <SESSION>      same TUI over a recorded session
 //!   mobius-searcher --report <SESSION>      paper-run statistics
 //!   mobius-searcher --replay <SESSION> --snapshot 120x40,80x24 --out shots/
+//!   mobius-searcher --research [--duration N]   measurements only (research.sqlite)
+//!   mobius-searcher --research-report [RUN|latest|all]
 
-use mobius_searcher::{doctor, engine, envfile, setup};
+use mobius_searcher::{budget, doctor, engine, envfile, research, setup};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -69,6 +71,13 @@ struct Cli {
     /// Validate a private key file offline and print its public wallet address.
     #[arg(long, value_name = "PATH")]
     check_wallet: Option<PathBuf>,
+    /// Research mode: size ladder, cross-chain spreads and DEX lag, recorded to
+    /// <data dir>/research.sqlite. Holds the Jupiter budget; signs and sends nothing.
+    #[arg(long)]
+    research: bool,
+    /// Summarise research runs: a run id, `latest` or `all` (default: all).
+    #[arg(long, value_name = "RUN", num_args = 0..=1, default_missing_value = "all")]
+    research_report: Option<String>,
     /// Price MARKET (e.g. WETH/USDC, SOL/USDT) on every enabled venue that lists it, then exit.
     #[arg(long, value_name = "MARKET")]
     quote: Option<String>,
@@ -250,6 +259,8 @@ fn main() -> Result<()> {
         && !cli.print_config
         && !cli.doctor
         && cli.quote.is_none()
+        && !cli.research
+        && cli.research_report.is_none()
         && !cli.list_sessions
         && !cli.prune
         && !cli.db_info
@@ -285,6 +296,29 @@ fn main() -> Result<()> {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
         let ok = rt.block_on(doctor::run(&layered, &env_files, cli.json));
         std::process::exit(if ok { 0 } else { 1 });
+    }
+    if let Some(which) = &cli.research_report {
+        let store = searcher_storage::ResearchStore::open(&cfg.data_dir().join("research.sqlite"))?;
+        let all: Vec<String> = store.runs()?.into_iter().map(|r| r.id).collect();
+        let runs = match which.as_str() {
+            "all" => all,
+            "latest" => all.into_iter().take(1).collect(),
+            id => vec![id.to_string()],
+        };
+        if runs.is_empty() {
+            bail!("no research runs recorded yet (start one with --research)");
+        }
+        let r = research::report::build(&store, &runs)?;
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&r)?);
+        } else {
+            print!("{}", research::report::render(&r));
+        }
+        return Ok(());
+    }
+    if cli.research {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        return rt.block_on(research::run(cfg, cli.duration));
     }
     let db_path = cli.db.clone().unwrap_or_else(|| cfg.data_dir().join("mobius.sqlite"));
 
@@ -407,6 +441,7 @@ fn ratatui_key(c: char) -> ratatui::crossterm::event::KeyEvent {
 
 async fn run(cli: Cli, cfg: Config, db_path: PathBuf) -> Result<()> {
     let mode = cfg.general.mode;
+    let _budget = budget::acquire(&cfg.data_dir(), &format!("{} session", mode.label()))?;
     let opts = tui_opts(&cfg, None);
     let running = engine::start(cfg, db_path).await?;
     let session = running.session_id.clone();

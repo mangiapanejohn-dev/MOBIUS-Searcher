@@ -51,7 +51,7 @@ pub fn secrets(cfg: &Config, env_files: &[(PathBuf, Vec<String>)]) -> Vec<Secret
         .collect()
 }
 
-fn proxy_line() -> String {
+pub fn proxy_line() -> String {
     match proxy::setting() {
         ProxySetting::Direct => "none (direct connections)".into(),
         ProxySetting::Url(u) => format!("{u} (configured)"),
