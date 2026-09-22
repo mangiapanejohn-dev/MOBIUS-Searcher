@@ -165,3 +165,50 @@ almost exclusively prop-AMM quotes that fail or decay in simulation within
 Solana arbitrage in general: a competitive setup needs sub-second quotes (paid
 plan, co-located RPC, ideally local pool-state pricing), which this Phase 1 does
 not have. Do not enable LIVE on this evidence — see `LIVE_CHECKLIST.md`.
+
+## 0.2 — what the failed simulations were, and a soak with inventory accounting
+
+### Findings from the recorded LIVE simulations (2026-09-20, 0.1)
+
+These come from the simulations recorded while LIVE ran on 2026-09-20 with a
+0.14 SOL wallet (no transaction was sent: every candidate stopped at the
+profit guard).
+
+- **Jupiter custom error 6024 is `InsufficientFunds`.** Read from the
+  program's on-chain IDL (account `C88XWfp26heEmDkmfSzeXP7Fd7GQJ2j9dDTUsyiZbUTa`).
+  It happened in **136 of 136** simulations whose first leg returned less
+  than its quote, and in **0 of 19** where it returned at least the quote.
+  The second leg's input was fixed at the first leg's *quoted* output, and the
+  wallet held no USDC to cover the difference.
+- **The 0.013 SOL "gap" on HumidiFi-final routes is rent.** Those routes
+  created a 2,440-byte account paid by the taker: 13,045,440 lamports, exactly
+  `getMinimumBalanceForRentExemption(2440)`. The account did not exist on
+  chain. With a different taker that trades often (the shadow taker below),
+  the same routes created no account, which is consistent with a one-time
+  per-wallet account.
+- **Token-account rent changed.** Mainnet now charges 1,488,440 lamports for
+  a 165-byte token account (it was 2,039,280); the old constant overcharged
+  every route that creates one. 0.2 reads the value from the chain.
+
+### Soak — `20260922-072514-18d5` (0.2, 40 awake minutes)
+
+The LIVE settings of 2026-09-20 run in PAPER mode, simulating as the shadow taker
+`F7p3…gmNe` (which holds SOL and USDC), event-driven scheduler, Jupiter key.
+
+| | |
+|---|---|
+| evaluations / priced / simulated | 921 / 849 / 672 |
+| gross-positive quotes | 25 (2.9 %) · median gross −2.46 bp · best +1.83 bp |
+| net-positive / executable | **0 / 0** · best net −1.82 bp |
+| simulation failures | **7.0 %** (41 slippage, 4 Jupiter 6023 `InvalidAuthority`, 1 insufficient funds, 1 RPC) — the 0.1 LIVE sessions had 55 %, mostly 6024 |
+| first leg returned less than quoted | 266 of 611 checked simulations; **9** of them failed (inventory covered the rest) |
+| median simulated net − model net | −878 lamports |
+| accounts created | none |
+| Jupiter 429s | 0 |
+
+**Reading.** The execution-path defects are fixed: fixed leg inputs no longer
+fail when the first leg under-delivers, deposits are no longer charged as
+trade costs, and the model agrees with simulation to under a thousand
+lamports. The market is unchanged: at these sizes on public infrastructure
+the quoted round trips are still negative after costs, and 0.2 does not pretend
+otherwise. Where an edge could come from is what `--research` measures.
