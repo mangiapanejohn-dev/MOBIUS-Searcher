@@ -1853,7 +1853,7 @@ dependencies = [
 
 [[package]]
 name = "mobius-searcher"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "anyhow",
  "clap",
@@ -2939,7 +2939,7 @@ checksum = "94143f37725109f92c262ed2cf5e59bce7498c01bcc1502d7b9afe439a4e9f49"
 
 [[package]]
 name = "searcher-core"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "bs58",
  "chrono",
@@ -2952,7 +2952,7 @@ dependencies = [
 
 [[package]]
 name = "searcher-execution"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "parking_lot",
@@ -2982,7 +2982,7 @@ dependencies = [
 
 [[package]]
 name = "searcher-jito"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "rand 0.9.5",
@@ -2998,7 +2998,7 @@ dependencies = [
 
 [[package]]
 name = "searcher-jupiter"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "parking_lot",
@@ -3014,7 +3014,7 @@ dependencies = [
 
 [[package]]
 name = "searcher-market"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "futures-util",
@@ -3031,7 +3031,7 @@ dependencies = [
 
 [[package]]
 name = "searcher-risk"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "parking_lot",
  "proptest",
@@ -3040,7 +3040,7 @@ dependencies = [
 
 [[package]]
 name = "searcher-storage"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "flate2",
  "rusqlite",
@@ -3054,7 +3054,7 @@ dependencies = [
 
 [[package]]
 name = "searcher-strategy"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "proptest",
  "searcher-core",
@@ -3062,7 +3062,7 @@ dependencies = [
 
 [[package]]
 name = "searcher-telemetry"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "parking_lot",
  "rand 0.9.5",
@@ -3074,7 +3074,7 @@ dependencies = [
 
 [[package]]
 name = "searcher-tui"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "crossterm",
@@ -3093,7 +3093,7 @@ dependencies = [
 
 [[package]]
 name = "searcher-venues"
-version = "0.1.0"
+version = "0.2.0-rc.1"
 dependencies = [
  "base64 0.22.1",
  "chrono",
