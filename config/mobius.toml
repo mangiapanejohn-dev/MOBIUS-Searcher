@@ -105,7 +105,7 @@ taker_fee_bps = 0
 # ════ Venue: Solana (DEX via Jupiter; bundles via Jito) ══════════════════════
 
 # ── Jupiter (quotes and swap instructions) ──────────────────────────────────
-[jupiter]
+[venues.solana.jupiter]
 base_url = "https://api.jup.ag"
 # Optional. Without a key Jupiter allows ~5 requests per 10 s; a free key
 # (portal.jup.ag) gives ~10. The scheduler learns the real limit from the
@@ -121,7 +121,7 @@ api_key_env = "JUPITER_API_KEY"
 # included, in the environment, not here:
 #   SOLANA_RPC_URL=https://mainnet.helius-rpc.com/?api-key=…
 #   SOLANA_WS_URL=wss://mainnet.helius-rpc.com/?api-key=…
-[rpc]
+[venues.solana.rpc]
 url = "https://api.mainnet-beta.solana.com"
 ws_url = "wss://api.mainnet-beta.solana.com"
 url_env = "SOLANA_RPC_URL"
@@ -131,13 +131,13 @@ burst = 3
 simulate_rps = 0.5
 
 # ── Jito (tips, bundles) ────────────────────────────────────────────────────
-[jito]
+[venues.solana.jito]
 block_engine_url = "https://mainnet.block-engine.jito.wtf"
 tip_floor_url = "https://bundles.jito.wtf/api/v1/bundles/tip_floor"
 uuid_env = "JITO_UUID"   # optional
 
 # ── Real-time feeds (do not spend the Jupiter limit) ────────────────────────
-[feeds]
+[venues.solana.feeds]
 enabled = true
 # Jito tip stream; "" = poll the REST tip floor only.
 tip_stream_url = "wss://bundles.jito.wtf/api/v1/bundles/tip_stream"

@@ -1118,7 +1118,10 @@ pub enum ConfigError {
 
 impl Config {
     pub fn from_toml(s: &str) -> Result<Config, ConfigError> {
-        let c: Config = toml::from_str(s).map_err(|e| ConfigError::Parse(e.to_string()))?;
+        let t: toml::Table = s.parse().map_err(|e: toml::de::Error| ConfigError::Parse(e.to_string()))?;
+        let (t, _) = lift_solana(t).map_err(ConfigError::Invalid)?;
+        let c: Config =
+            toml::Value::Table(t).try_into().map_err(|e: toml::de::Error| ConfigError::Parse(e.to_string()))?;
         c.validate()?;
         Ok(c)
     }
@@ -1427,6 +1430,9 @@ pub struct Layered {
     pub below_user: Config,
     /// Files read, in order (missing files are skipped).
     pub files: Vec<(Layer, PathBuf)>,
+    /// Files that still put Solana sections at the top level (old layout;
+    /// read until v0.4, `--migrate-config` moves them under `[venues.solana]`).
+    pub legacy_solana: Vec<PathBuf>,
     /// Dotted key → the layer that set it; keys absent here are built-in defaults.
     pub origins: BTreeMap<String, Layer>,
 }
@@ -1453,6 +1459,40 @@ fn read_table(path: &Path) -> Result<Option<toml::Table>, ConfigError> {
         Err(e) => return Err(ConfigError::Parse(format!("{}: {e}", path.display()))),
     };
     text.parse::<toml::Table>().map(Some).map_err(|e| ConfigError::Parse(format!("{}: {e}", path.display())))
+}
+
+/// The Solana stack's sections. Since v0.2 they live under `[venues.solana]`
+/// (e.g. `[venues.solana.rpc]`); the top-level form is still read until v0.4.
+pub const SOLANA_SECTIONS: [&str; 5] = ["rpc", "jupiter", "jito", "feeds", "wallet"];
+
+/// Lift `[venues.solana.<section>]` to the internal top-level `<section>`.
+/// Returns the table and whether it used the old top-level form.
+pub fn lift_solana(mut t: toml::Table) -> Result<(toml::Table, bool), String> {
+    let legacy = SOLANA_SECTIONS.iter().any(|s| t.contains_key(*s));
+    let solana = match t.get_mut("venues") {
+        Some(toml::Value::Table(v)) => v.remove("solana"),
+        _ => None,
+    };
+    if matches!(t.get("venues"), Some(toml::Value::Table(v)) if v.is_empty()) {
+        t.remove("venues");
+    }
+    let Some(solana) = solana else { return Ok((t, legacy)) };
+    let toml::Value::Table(mut solana) = solana else { return Err("[venues.solana] must be a table".into()) };
+    if let Some(k) = solana.remove("kind")
+        && k.as_str() != Some("solana")
+    {
+        return Err(format!("[venues.solana] kind must be \"solana\", got {k}"));
+    }
+    for (k, v) in solana {
+        if !SOLANA_SECTIONS.contains(&k.as_str()) {
+            return Err(format!("[venues.solana] has no `{k}` (sections: {})", SOLANA_SECTIONS.join(", ")));
+        }
+        if t.contains_key(&k) {
+            return Err(format!("[{k}] is set both at the top level and as [venues.solana.{k}]; keep one"));
+        }
+        t.insert(k, v);
+    }
+    Ok((t, legacy))
 }
 
 /// Tables merge key by key; anything else (including arrays) replaces.
@@ -1492,11 +1532,16 @@ pub fn load_layered(repo: &Path, user: &Path) -> Result<Layered, ConfigError> {
     let mut files = Vec::new();
     let mut origins = BTreeMap::new();
     let mut below_user = None;
+    let mut legacy_solana = Vec::new();
     for (layer, path) in [(Layer::Repo, repo), (Layer::User, user)] {
         if layer == Layer::User {
             below_user = Some(to_config(merged.clone()).map_err(|e| in_file(e, repo))?);
         }
         let Some(t) = read_table(path)? else { continue };
+        let (t, legacy) = lift_solana(t).map_err(|e| ConfigError::Invalid(format!("{}: {e}", path.display())))?;
+        if legacy {
+            legacy_solana.push(path.to_path_buf());
+        }
         // each file must be valid on its own terms (unknown keys, types),
         // read over the defaults so a partial venue table is complete
         let mut alone = match toml::Value::try_from(Config::default()) {
@@ -1513,7 +1558,7 @@ pub fn load_layered(repo: &Path, user: &Path) -> Result<Layered, ConfigError> {
     }
     let config = to_config(merged)?;
     config.validate()?;
-    Ok(Layered { config, below_user: below_user.unwrap_or_default(), files, origins })
+    Ok(Layered { config, below_user: below_user.unwrap_or_default(), files, legacy_solana, origins })
 }
 
 fn in_file(e: ConfigError, path: &Path) -> ConfigError {
@@ -1562,6 +1607,40 @@ pub fn display_url(url: &str) -> String {
     let host = rest[..end].rsplit('@').next().unwrap_or("");
     let more = rest[end..].trim_start_matches('/');
     format!("{scheme}://{host}{}", if more.is_empty() { "" } else { "/…" })
+}
+
+#[cfg(test)]
+mod solana_layout_tests {
+    use super::*;
+
+    fn write(dir: &Path, name: &str, text: &str) -> PathBuf {
+        let p = dir.join(name);
+        std::fs::write(&p, text).unwrap();
+        p
+    }
+
+    #[test]
+    fn old_and_new_solana_layouts_load_the_same_and_can_mix_across_layers() {
+        let dir = std::env::temp_dir().join(format!("mobius-layout-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let none = dir.join("absent.toml");
+        let old = write(&dir, "old.toml", "[rpc]\nrps = 7.0\n[jupiter]\nslippage = \"10\"\n");
+        let new =
+            write(&dir, "new.toml", "[venues.solana.rpc]\nrps = 7.0\n[venues.solana.jupiter]\nslippage = \"10\"\n");
+        let a = load_layered(&none, &old).unwrap();
+        let b = load_layered(&none, &new).unwrap();
+        assert_eq!(toml::Value::try_from(&a.config).unwrap(), toml::Value::try_from(&b.config).unwrap());
+        assert_eq!(a.legacy_solana, vec![old.clone()]);
+        assert!(b.legacy_solana.is_empty());
+        // repo file in the new layout, the user's old file still overrides it
+        let repo = write(&dir, "repo.toml", "[venues.solana.rpc]\nrps = 3.0\n");
+        assert_eq!(load_layered(&repo, &old).unwrap().config.rpc.rps, 7.0);
+        // one section in both places is refused
+        let both = write(&dir, "both.toml", "[rpc]\nrps = 1.0\n[venues.solana.rpc]\nrps = 2.0\n");
+        assert!(load_layered(&none, &both).unwrap_err().to_string().contains("keep one"));
+        assert!(Config::from_toml("[venues.solana.rpc]\nrps = 4.0\n").unwrap().rpc.rps == 4.0);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 }
 
 #[cfg(test)]

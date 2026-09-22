@@ -74,6 +74,13 @@ before 1.0 a minor version may change configuration or behaviour.
   price every minute (`inventory` table); `--report` splits the change of the
   wallet's value into trade PnL, deposits, SOL price change on holdings, and
   whatever is left unexplained (printed, not absorbed).
+- The Solana stack's settings live under `[venues.solana]` now
+  (`[venues.solana.rpc]`, `.jupiter`, `.jito`, `.feeds`, `.wallet`), next to
+  the other venues. The old top-level sections are still read (until v0.4;
+  a note says so); `--migrate-config` moves them in your file, shows the
+  result, asks first, keeps comments and a `.bak`, and checks that the
+  effective configuration is exactly the same. A section set in both places
+  is refused.
 - **`--canary`**: one real trade through the LIVE path to prove it end to
   end. CONFIRM mode (approve each candidate with `y`), one SOL → USDC → SOL
   route, and the profit guards replaced by a loss bound

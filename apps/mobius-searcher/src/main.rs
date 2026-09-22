@@ -10,7 +10,7 @@
 //!   mobius-searcher --research [--duration N]   measurements only (research.sqlite)
 //!   mobius-searcher --research-report [RUN|latest|all]
 
-use mobius_searcher::{budget, canary, doctor, engine, envfile, research, setup};
+use mobius_searcher::{budget, canary, doctor, engine, envfile, migrate, research, setup};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -71,6 +71,10 @@ struct Cli {
     /// Validate a private key file offline and print its public wallet address.
     #[arg(long, value_name = "PATH")]
     check_wallet: Option<PathBuf>,
+    /// Move the Solana sections of your config file under [venues.solana]
+    /// (shows the result and asks first; keeps a .bak; meaning unchanged).
+    #[arg(long)]
+    migrate_config: bool,
     /// One real trade through the LIVE path to prove it end to end: CONFIRM
     /// (approve with y), one SOL→USDC→SOL route, loss ≤ canary.max_loss_lamports
     /// (also on chain), then an account-by-account reconciliation.
@@ -266,6 +270,7 @@ fn main() -> Result<()> {
         && cli.quote.is_none()
         && !cli.research
         && !cli.canary
+        && !cli.migrate_config
         && cli.research_report.is_none()
         && !cli.list_sessions
         && !cli.prune
@@ -285,7 +290,30 @@ fn main() -> Result<()> {
     // secrets: process env, then the user's .env, then ./.env (first one wins)
     let env_files: Vec<(PathBuf, Vec<String>)> =
         envfile::sources().into_iter().map(|p| (p.clone(), envfile::load(&p))).collect();
+    if cli.migrate_config {
+        let repo = std::path::Path::new(config::REPO_CONFIG_PATH);
+        let msg = migrate::run(repo, &config_path, |text, moved| {
+            println!("{}\n──────── {} after the migration ────────", text.trim_end(), config_path.display());
+            println!(
+                "moves {} under [venues.solana]; the effective configuration stays the same (checked).",
+                moved.iter().map(|s| format!("[{s}]")).collect::<Vec<_>>().join(" ")
+            );
+            print!("write it? type yes: ");
+            let _ = std::io::Write::flush(&mut std::io::stdout());
+            let mut answer = String::new();
+            std::io::stdin().read_line(&mut answer).is_ok() && answer.trim() == "yes"
+        })?;
+        println!("{msg}");
+        return Ok(());
+    }
     let layered = load_config(&cli)?;
+    for f in &layered.legacy_solana {
+        eprintln!(
+            "note: {} keeps Solana settings at the top level (old layout, read until v0.4); \
+             `mobius-searcher --migrate-config` moves them under [venues.solana]",
+            f.display()
+        );
+    }
     let cfg = layered.config.clone();
     searcher_telemetry::proxy::configure(
         searcher_telemetry::proxy::ProxySetting::parse(&cfg.network.proxy).map_err(anyhow::Error::msg)?,
