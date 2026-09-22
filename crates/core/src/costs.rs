@@ -80,6 +80,8 @@ pub struct CostParams {
     pub safety_buffer_lamports: u64,
     /// Additional buffer proportional to trade input.
     pub safety_buffer: Ppm,
+    /// Rent-exempt deposit of one token account (read from the chain at startup).
+    pub token_account_rent: u64,
 }
 
 impl Default for CostParams {
@@ -91,6 +93,7 @@ impl Default for CostParams {
             expected_slippage_share: Ppm(250_000),
             safety_buffer_lamports: 5_000,
             safety_buffer: Ppm::from_bps(1),
+            token_account_rent: TOKEN_ACCOUNT_RENT_LAMPORTS,
         }
     }
 }
@@ -155,7 +158,7 @@ pub fn compute_costs(inp: &CostInputs<'_>, p: &CostParams) -> CostBreakdown {
         compute_unit_price_micro: cu_price,
         priority_fee,
         jito_tip: inp.jito_tip,
-        ata_rent: TOKEN_ACCOUNT_RENT_LAMPORTS * inp.atas_to_create as u64,
+        ata_rent: p.token_account_rent * inp.atas_to_create as u64,
         atas_created: inp.atas_to_create,
         expected_slippage: expected_slippage(inp.legs, p.expected_slippage_share),
         safety_buffer: safety_buffer(inp.input, p),

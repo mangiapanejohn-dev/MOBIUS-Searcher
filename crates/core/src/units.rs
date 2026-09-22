@@ -10,8 +10,11 @@ pub const BASE_FEE_LAMPORTS_PER_SIGNATURE: u64 = 5_000;
 pub const MICRO_LAMPORTS_PER_LAMPORT: u128 = 1_000_000;
 /// Max compute units a single transaction may request.
 pub const MAX_COMPUTE_UNITS_PER_TX: u32 = 1_400_000;
-/// Rent-exempt minimum of a 165-byte SPL token account: (165 + 128) * 3480 * 2.
-pub const TOKEN_ACCOUNT_RENT_LAMPORTS: u64 = 2_039_280;
+/// Rent-exempt minimum of a 165-byte SPL token account as read from mainnet
+/// on 2026-09-22 (`getMinimumBalanceForRentExemption(165)`; it was 2,039,280
+/// before rent was lowered). The engine reads the current value at startup;
+/// this is only the fallback.
+pub const TOKEN_ACCOUNT_RENT_LAMPORTS: u64 = 1_488_440;
 /// Jito enforces a minimum bundle tip of 1000 lamports.
 pub const JITO_MIN_TIP_LAMPORTS: u64 = 1_000;
 /// v0 / legacy packet limit.

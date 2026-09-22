@@ -100,10 +100,11 @@ pub fn price(inp: PricingInput<'_>, env: &PricingEnv<'_>) -> Opportunity {
     let costs = costs_for(&inp.legs, input, inp.shape, None, tip.lamports, inp.atas_to_create, env.cost_params);
     let eval = evaluate(input, gross_output, &costs, inp.base_decimals, inp.sol_price);
 
+    let guard = check_guards(&eval, input, env.guards).err();
     let status = if chain_ok.is_err() {
         OppStatus::Skipped(SkipReason::BuildFailed)
-    } else if let Err(g) = check_guards(&eval, input, env.guards) {
-        OppStatus::Skipped(guard_skip(&g))
+    } else if let Some(g) = &guard {
+        OppStatus::Skipped(guard_skip(g))
     } else if tip.capped {
         OppStatus::Skipped(SkipReason::TipTooHigh)
     } else {
@@ -128,6 +129,7 @@ pub fn price(inp: PricingInput<'_>, env: &PricingEnv<'_>) -> Opportunity {
         sol_price: inp.sol_price,
         simulation: None,
         risk: None,
+        guard,
     }
 }
 
@@ -156,10 +158,11 @@ pub fn reprice_after_simulation(
         simulated_delta.map(|d| d - opp.costs.expected_slippage as i64 - opp.costs.safety_buffer as i64);
     opp.eval = eval;
     opp.updated_at = now;
-    opp.status = match check_guards(&opp.eval, opp.input, env.guards) {
-        Err(g) => OppStatus::Skipped(guard_skip(&g)),
-        Ok(()) if tip.capped => OppStatus::Skipped(SkipReason::TipTooHigh),
-        Ok(()) => OppStatus::Quoted,
+    opp.guard = check_guards(&opp.eval, opp.input, env.guards).err();
+    opp.status = match &opp.guard {
+        Some(g) => OppStatus::Skipped(guard_skip(g)),
+        None if tip.capped => OppStatus::Skipped(SkipReason::TipTooHigh),
+        None => OppStatus::Quoted,
     };
 }
 

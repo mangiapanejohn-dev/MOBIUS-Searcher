@@ -102,6 +102,7 @@ fn opp(id: u64, t: i64, gross: i64, status: OppStatus) -> Opportunity {
             context_slot: Some(448_011_563),
         }),
         risk: None,
+        guard: None,
     }
 }
 

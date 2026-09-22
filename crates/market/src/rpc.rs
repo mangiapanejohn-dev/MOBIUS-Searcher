@@ -175,6 +175,12 @@ impl RpcClient {
         v.as_u64().ok_or_else(|| RpcError::Decode("getSlot".into()))
     }
 
+    /// Lamports an account of `space` bytes must hold to be rent-exempt.
+    pub async fn minimum_balance_for_rent_exemption(&self, space: u64) -> Result<u64, RpcError> {
+        let (v, _) = self.call("getMinimumBalanceForRentExemption", json!([space])).await?;
+        v.as_u64().ok_or_else(|| RpcError::Decode("getMinimumBalanceForRentExemption".into()))
+    }
+
     pub async fn get_epoch_info(&self) -> Result<EpochInfo, RpcError> {
         let (v, _) = self.call_background("getEpochInfo", json!([{"commitment": "processed"}])).await?;
         let g = |k: &str| v.get(k).and_then(Value::as_u64).ok_or_else(|| RpcError::Decode(format!("getEpochInfo.{k}")));

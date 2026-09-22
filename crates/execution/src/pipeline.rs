@@ -847,7 +847,14 @@ impl Pipeline {
                             f
                         });
                     }
-                    txs.push(tx_sim(i as u8, a, &out, margin));
+                    // account keys (with lookup tables) name the accounts the tx creates
+                    let keys = (job.txs.len() == 1)
+                        .then(|| {
+                            let legs: Vec<&LegInstructions> = job.legs.iter().collect();
+                            message_account_keys(&a.tx, &legs)
+                        })
+                        .flatten();
+                    txs.push(tx_sim(i as u8, a, &out, margin, keys.as_deref()));
                 }
                 Err(e) => {
                     failure = Some(SimFailure {

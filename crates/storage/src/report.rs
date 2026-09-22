@@ -76,6 +76,19 @@ pub struct Report {
     pub errors: i64,
     pub rate_limited_429: i64,
     pub dropped_events: i64,
+    /// Which profit guard failed (EDGE_TOO_SMALL covers three), by count.
+    pub guards: Vec<(String, i64)>,
+    /// Multi-leg simulations whose first leg's executed output is known.
+    pub first_leg_checked: i64,
+    /// … of which the first leg delivered less than its quote.
+    pub first_leg_short: i64,
+    /// … of those, the simulation failed (the next leg lacked input).
+    pub first_leg_short_failed: i64,
+    /// Executed − quoted first-leg output (bp): median and 5th percentile.
+    pub first_leg_median_bps: Option<f64>,
+    pub first_leg_p5_bps: Option<f64>,
+    /// Accounts the simulated transactions leave created: (address, times, lamports each).
+    pub created_accounts: Vec<(String, i64, i64)>,
 }
 
 fn median(v: &mut [i64]) -> Option<i64> {
@@ -306,7 +319,63 @@ pub fn build(store: &Store, session: &str) -> Result<Report, StoreError> {
     rep.paper_fills = fills;
     rep.errors = c.query_row("SELECT COUNT(*) FROM errors WHERE session_id = ?1", params![session], |r| r.get(0))?;
     rep.rate_limited_429 = store.kind_count(session, "rate_limited")?;
+    attribution(c, session, &mut rep)?;
     Ok(rep)
+}
+
+/// Guards, executed-vs-quoted leg outputs and created accounts (`attribution`).
+fn attribution(c: &rusqlite::Connection, session: &str, rep: &mut Report) -> Result<(), StoreError> {
+    let mut st = c.prepare(
+        "SELECT guard, COUNT(*) FROM attribution WHERE session_id = ?1 AND guard IS NOT NULL GROUP BY 1 ORDER BY 2 DESC, 1",
+    )?;
+    rep.guards = st.query_map(params![session], |r| Ok((r.get(0)?, r.get(1)?)))?.collect::<Result<_, _>>()?;
+
+    let mut st = c.prepare(
+        "SELECT a.quoted_outs, a.actual_outs, s.ok FROM attribution a
+         JOIN simulations s ON s.session_id = a.session_id AND s.opportunity_id = a.opportunity_id
+         WHERE a.session_id = ?1 AND a.actual_outs IS NOT NULL",
+    )?;
+    let rows: Vec<(String, String, bool)> =
+        st.query_map(params![session], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?.collect::<Result<_, _>>()?;
+    let mut diffs: Vec<f64> = Vec::new();
+    for (q, a, ok) in rows {
+        let (Ok(q), Ok(a)) = (serde_json::from_str::<Vec<u64>>(&q), serde_json::from_str::<Vec<u64>>(&a)) else {
+            continue;
+        };
+        let (Some(&q0), Some(&a0)) = (q.first(), a.first()) else { continue };
+        if q.len() < 2 || q0 == 0 {
+            continue;
+        }
+        rep.first_leg_checked += 1;
+        diffs.push((a0 as f64 - q0 as f64) / q0 as f64 * 1e4);
+        if a0 < q0 {
+            rep.first_leg_short += 1;
+            if !ok {
+                rep.first_leg_short_failed += 1;
+            }
+        }
+    }
+    diffs.sort_by(|a, b| a.total_cmp(b));
+    let q = |p: f64| {
+        (!diffs.is_empty()).then(|| diffs[((p * diffs.len() as f64).ceil() as usize).clamp(1, diffs.len()) - 1])
+    };
+    rep.first_leg_median_bps = q(0.5);
+    rep.first_leg_p5_bps = q(0.05);
+
+    let mut st = c.prepare("SELECT created FROM attribution WHERE session_id = ?1 AND created IS NOT NULL")?;
+    let mut by: std::collections::BTreeMap<String, (i64, i64)> = Default::default();
+    for js in st.query_map(params![session], |r| r.get::<_, String>(0))? {
+        for (addr, lamports) in serde_json::from_str::<Vec<(String, u64)>>(&js?).unwrap_or_default() {
+            let e = by.entry(addr).or_default();
+            e.0 += 1;
+            e.1 = lamports as i64;
+        }
+    }
+    let mut v: Vec<(String, i64, i64)> = by.into_iter().map(|(a, (n, l))| (a, n, l)).collect();
+    v.sort_by_key(|e| std::cmp::Reverse(e.1));
+    v.truncate(8);
+    rep.created_accounts = v;
+    Ok(())
 }
 
 fn sol(l: i64) -> String {
@@ -403,6 +472,35 @@ pub fn render(r: &Report) -> String {
     o.push_str("\nSKIP REASONS\n");
     for (k, n) in &r.skip_reasons {
         line(&mut o, k, n.to_string());
+    }
+    if !r.guards.is_empty() {
+        o.push_str("\nPROFIT GUARD THAT FAILED (EDGE_TOO_SMALL covers these)\n");
+        for (g, n) in &r.guards {
+            line(&mut o, g, n.to_string());
+        }
+    }
+    if r.first_leg_checked > 0 {
+        o.push_str("\nEXECUTED vs QUOTED (first leg, from simulation logs)\n");
+        line(&mut o, "multi-leg simulations checked", r.first_leg_checked.to_string());
+        line(
+            &mut o,
+            "first leg below its quote",
+            format!(
+                "{} ({} of them failed: the next leg's input is fixed)",
+                r.first_leg_short, r.first_leg_short_failed
+            ),
+        );
+        line(
+            &mut o,
+            "executed − quoted, median / p5",
+            format!("{} / {}", obps(r.first_leg_median_bps), obps(r.first_leg_p5_bps)),
+        );
+    }
+    if !r.created_accounts.is_empty() {
+        o.push_str("\nACCOUNTS THE TRANSACTIONS CREATE (rent the payer deposits)\n");
+        for (a, n, l) in &r.created_accounts {
+            line(&mut o, &format!("{}…", &a[..a.len().min(12)]), format!("{n} sims · {} each", sol(*l)));
+        }
     }
     o.push_str("\nSTRATEGIES\n");
     o.push_str(&format!(

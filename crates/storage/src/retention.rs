@@ -87,13 +87,14 @@ fn mb(b: u64) -> String {
 
 /// Tables holding per-session rows, and their time column (None: no detail
 /// pruning by time).
-const TABLES: [(&str, Option<&str>); 15] = [
+const TABLES: [(&str, Option<&str>); 16] = [
     ("events", Some("ts")),
     ("event_blocks", Some("t1")),
     ("event_counts", None),
     ("samples", Some("ts")),
     ("opportunities", Some("detected_at")),
     ("quotes", Some("ts")),
+    ("attribution", Some("ts")),
     ("simulations", Some("ts")),
     ("risk_decisions", Some("ts")),
     ("executions", None),

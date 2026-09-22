@@ -534,6 +534,8 @@ impl ProfitConfig {
             expected_slippage_share: Ppm::from_bps(self.expected_slippage_share_bps),
             safety_buffer_lamports: self.safety_buffer_lamports,
             safety_buffer: Ppm::from_bps(self.safety_buffer_bps),
+            // replaced by the chain's current value at engine start
+            token_account_rent: crate::units::TOKEN_ACCOUNT_RENT_LAMPORTS,
         }
     }
 }

@@ -289,6 +289,9 @@ pub struct Opportunity {
     pub sol_price: Option<UsdPrice>,
     pub simulation: Option<SimulationResult>,
     pub risk: Option<RiskDecision>,
+    /// The profit guard that failed, when one did (EDGE_TOO_SMALL covers three).
+    #[serde(default)]
+    pub guard: Option<crate::profit::GuardFailure>,
 }
 
 impl Opportunity {
@@ -375,6 +378,14 @@ pub struct TxSim {
     pub err: Option<String>,
     /// Taker lamports before/after, when the node reports balances.
     pub taker_lamports: Option<(u64, u64)>,
+    /// What each Jupiter route instruction returned (its output amount,
+    /// `Program return`), in order: the executed amounts, not the quoted ones.
+    #[serde(default)]
+    pub leg_outputs: Vec<u64>,
+    /// Accounts this transaction leaves created (no lamports before, some
+    /// after) with the lamports now held in them — the deposit the payer funds.
+    #[serde(default)]
+    pub created: Vec<(Address, u64)>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]

@@ -52,6 +52,7 @@ fn opp(id: u64, key: &str, strategy: StrategyKind, ts: i64, gross: i64, status: 
         sol_price: Some(UsdPrice::new(105_000_000)),
         simulation: None,
         risk: None,
+        guard: None,
     }
 }
 
@@ -486,4 +487,82 @@ fn logs_written_before_compaction_existed_still_replay() {
     assert_eq!(s.load_events("L").unwrap(), evs);
     assert_eq!(s.list_sessions().unwrap()[0].events, evs.len() as i64, "counted row by row");
     assert_eq!(s.kind_count("L", "rate_limited").unwrap(), 1);
+}
+
+#[test]
+fn attribution_records_the_failed_guard_executed_outputs_and_created_accounts() {
+    use searcher_core::profit::GuardFailure;
+    let leg = |out: u64| Leg {
+        index: 0,
+        input_mint: Address([1; 32]),
+        output_mint: Address([2; 32]),
+        in_amount: 1,
+        out_amount: out,
+        min_out: out,
+        slippage_bps: 0,
+        slippage_spec: SlippageSpec::Fixed(0),
+        price_impact: Ppm::ZERO,
+        hops: vec![],
+        mode: RoutingMode::Normal,
+        dex_filter: DexFilter::Any,
+        quoted_at: Ts(1),
+        latency_ms: 1,
+        cu_price_micro: None,
+        last_valid_block_height: 1,
+        request_id: None,
+    };
+    let tx = |ok: bool, outs: Vec<u64>, created: Vec<(Address, u64)>| TxSim {
+        index: 0,
+        ok,
+        units_consumed: 200_000,
+        cu_limit: 240_000,
+        cu_price_micro: 1_000,
+        fee: Some(5_000),
+        size_bytes: 900,
+        accounts: 30,
+        logs: vec![],
+        err: None,
+        taker_lamports: None,
+        leg_outputs: outs,
+        created,
+    };
+    // #1: first leg short of its quote → the second leg failed (Jupiter 6024)
+    let mut a = opp(1, "xd:A>B", StrategyKind::CrossDex, 2_000_000, -20_000, OppStatus::Skipped(SkipReason::SimFailed));
+    a.route = Route { legs: vec![leg(11_568_000), leg(99_970_000)] };
+    a.simulation =
+        Some(SimulationResult { txs: vec![tx(false, vec![11_567_999], vec![])], ..sim(1, 2_100_000, false) });
+    // #2: both legs delivered; the route created a 2,440-byte account
+    let created = Address([9; 32]);
+    let mut b =
+        opp(2, "xd:A>C", StrategyKind::CrossDex, 3_000_000, -23_000, OppStatus::Skipped(SkipReason::EdgeTooSmall));
+    b.route = Route { legs: vec![leg(10_796_000), leg(100_003_099)] };
+    b.simulation = Some(SimulationResult {
+        txs: vec![tx(true, vec![10_796_647, 99_988_662], vec![(created, 13_045_440)])],
+        ..sim(2, 3_100_000, true)
+    });
+    b.guard = Some(GuardFailure::Lamports { net: -13_156_025, min: 10_000 });
+    // #3: priced only, the USD guard failed
+    let mut c = opp(3, "rt", StrategyKind::RoundTrip, 4_000_000, -9_000, OppStatus::Skipped(SkipReason::EdgeTooSmall));
+    c.guard = Some(GuardFailure::Usd {
+        net_usd: searcher_core::units::UsdMicros(-900),
+        min: searcher_core::units::UsdMicros(2_000),
+    });
+
+    let mut st = Store::open_in_memory().unwrap();
+    st.begin_session(&session("S1")).unwrap();
+    let evs = vec![
+        Event::Simulation(Box::new(a.simulation.clone().unwrap())),
+        Event::Opportunity(Box::new(a)),
+        Event::Simulation(Box::new(b.simulation.clone().unwrap())),
+        Event::Opportunity(Box::new(b)),
+        Event::Opportunity(Box::new(c)),
+    ];
+    st.write_batch("S1", &batch(evs, 1)).unwrap();
+
+    let r = build_report(&st, "S1").unwrap();
+    assert_eq!(r.guards, vec![("lamports".to_string(), 1), ("usd".to_string(), 1)]);
+    assert_eq!((r.first_leg_checked, r.first_leg_short, r.first_leg_short_failed), (2, 1, 1));
+    assert_eq!(r.created_accounts, vec![(created.to_string(), 1, 13_045_440)]);
+    let text = render_report(&r);
+    assert!(text.contains("PROFIT GUARD THAT FAILED") && text.contains("ACCOUNTS THE TRANSACTIONS CREATE"), "{text}");
 }

@@ -359,6 +359,7 @@ impl Store {
                         if notable(o) { serde_json::to_string(o)? } else { String::new() },
                     ],
                 )?;
+                Self::attribution(tx, session, o)?;
                 // raw quotes: kept for notable opportunities, dropped once a
                 // plain one reaches its verdict
                 if notable(o) {
@@ -482,6 +483,36 @@ impl Store {
             }
             _ => {}
         }
+        Ok(())
+    }
+
+    fn attribution(tx: &Transaction<'_>, session: &str, o: &Opportunity) -> Result<(), StoreError> {
+        use searcher_core::profit::GuardFailure;
+        let guard = o.guard.as_ref().map(|g| match g {
+            GuardFailure::Lamports { .. } => "lamports",
+            GuardFailure::Edge { .. } => "edge",
+            GuardFailure::Usd { .. } => "usd",
+            GuardFailure::PriceUnavailable => "price_unavailable",
+        });
+        // executed leg outputs are in the logs even when a later leg failed
+        let sim = o.simulation.as_ref().filter(|s| s.txs.len() == 1).map(|s| &s.txs[0]);
+        let quoted: Vec<u64> = o.route.legs.iter().map(|l| l.out_amount).collect();
+        tx.execute(
+            "INSERT OR REPLACE INTO attribution(session_id, opportunity_id, ts, guard, sol_usd_micros, cost_source,
+                quoted_outs, actual_outs, created, created_lamports) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                session,
+                o.id.0 as i64,
+                o.updated_at.0,
+                guard,
+                o.sol_price.map(|p| p.micros_per_token as i64),
+                if o.eval.simulated_net.is_some() { "simulation" } else { "quote" },
+                serde_json::to_string(&quoted)?,
+                sim.filter(|t| !t.leg_outputs.is_empty()).map(|t| serde_json::to_string(&t.leg_outputs)).transpose()?,
+                sim.filter(|t| t.ok && !t.created.is_empty()).map(|t| serde_json::to_string(&t.created)).transpose()?,
+                sim.filter(|t| t.ok).map(|t| t.created.iter().map(|(_, l)| *l as i64).sum::<i64>()),
+            ],
+        )?;
         Ok(())
     }
 

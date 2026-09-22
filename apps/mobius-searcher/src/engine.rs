@@ -495,6 +495,21 @@ pub async fn start(cfg: Config, db_path: PathBuf) -> Result<Running> {
         }));
     }
 
+    // Token-account rent as the chain charges it now (it changes: 2,039,280
+    // lamports until rent was lowered, 1,488,440 on 2026-09-22).
+    let mut cost_params = cfg.profit.cost_params();
+    match rpc.minimum_balance_for_rent_exemption(165).await {
+        Ok(r) => cost_params.token_account_rent = r,
+        Err(e) => bus.emit(Event::Log {
+            ts: Ts::now(),
+            level: LogLevel::Warn,
+            message: format!(
+                "token account rent not read from the chain ({e}); using {} lamports",
+                cost_params.token_account_rent
+            ),
+        }),
+    }
+
     // Pipeline.
     let pcfg = PipelineConfig {
         mode,
@@ -504,7 +519,7 @@ pub async fn start(cfg: Config, db_path: PathBuf) -> Result<Running> {
         cu_price_percentile: cfg.jupiter.compute_unit_price_percentile.clone(),
         blockhash_slots_to_expiry: cfg.jupiter.blockhash_slots_to_expiry,
         for_jito_bundle: cfg.jupiter.for_jito_bundle,
-        cost_params: cfg.profit.cost_params(),
+        cost_params,
         guards: cfg.profit.guards().map_err(anyhow::Error::msg)?,
         protect_min_out: cfg.profit.protect_min_out,
         prefer_single_tx: cfg.execution.prefer_single_tx,

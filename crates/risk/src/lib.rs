@@ -294,6 +294,7 @@ mod tests {
             sol_price: Some(UsdPrice::new(100_000_000)),
             simulation: Some(sim(now, true, SimFidelity::Exact, 100)),
             risk: None,
+            guard: None,
         }
     }
 

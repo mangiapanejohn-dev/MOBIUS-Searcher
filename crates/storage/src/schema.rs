@@ -102,6 +102,20 @@ CREATE TABLE IF NOT EXISTS quotes (
     PRIMARY KEY (session_id, opportunity_id, leg)
 );
 
+-- Why each opportunity ended where it did: every opportunity, not only the
+-- notable ones (whose full JSON is in opportunities.snapshot).
+CREATE TABLE IF NOT EXISTS attribution (
+    session_id TEXT NOT NULL, opportunity_id INTEGER NOT NULL, ts INTEGER NOT NULL,
+    guard TEXT,                 -- the profit guard that failed: lamports | edge | usd | price_unavailable
+    sol_usd_micros INTEGER,     -- SOL/USD used for the USD figures
+    cost_source TEXT NOT NULL,  -- quote | simulation (which costs the verdict used)
+    quoted_outs TEXT NOT NULL,  -- JSON: each leg's quoted output
+    actual_outs TEXT,           -- JSON: each Jupiter route's executed output in simulation
+    created TEXT,               -- JSON [[address, lamports]]: accounts the tx leaves created
+    created_lamports INTEGER,
+    PRIMARY KEY (session_id, opportunity_id)
+);
+
 CREATE TABLE IF NOT EXISTS simulations (
     session_id TEXT NOT NULL, opportunity_id INTEGER NOT NULL, ts INTEGER NOT NULL,
     ok INTEGER NOT NULL, plan TEXT NOT NULL, fidelity TEXT NOT NULL,

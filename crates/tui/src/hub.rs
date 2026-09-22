@@ -360,6 +360,7 @@ mod tests {
             sol_price: None,
             simulation: None,
             risk: None,
+            guard: None,
         }
     }
 

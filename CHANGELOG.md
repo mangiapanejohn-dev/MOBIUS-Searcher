@@ -46,6 +46,14 @@ before 1.0 a minor version may change configuration or behaviour.
   executable Jupiter quote per episode, control samples at random times and
   CEX/pool markouts). `--research-report [RUN|latest|all]` prints whole
   distributions (sample counts next to positive counts).
+- Attribution for every opportunity (`attribution` table): which profit guard
+  failed (EDGE_TOO_SMALL covers three), the SOL price used, whether the
+  verdict used quoted or simulated costs, each leg's quoted and executed
+  output (Jupiter `Program return`), and the accounts a simulated transaction
+  leaves created with their deposit. `--report` shows guard counts,
+  executed-vs-quoted first legs and created accounts. This explained the
+  0.013 SOL gap on HumidiFi-final routes: the route creates a 2,440-byte
+  account (13,045,440 lamports = its rent-exempt minimum) paid by the taker.
 - One process at a time uses the Jupiter budget: `--research` and trading
   sessions take `<data dir>/jupiter-budget.lock`; the second one is refused
   with the holder's name. On macOS `--research` keeps the machine awake
@@ -53,6 +61,15 @@ before 1.0 a minor version may change configuration or behaviour.
 
 ### Fixed
 
+- Token-account rent is read from the chain at startup
+  (`getMinimumBalanceForRentExemption`): mainnet lowered it from 2,039,280 to
+  1,488,440 lamports, and the old constant overcharged every route that
+  creates an account.
+- Jupiter's custom error 6024 is `InsufficientFunds` (from the program's
+  on-chain IDL) and is now classified as such instead of a generic program
+  error. In the recorded LIVE simulations it occurred exactly when the first
+  leg delivered less than its quote (136 of 136; 0 of 19 otherwise): the next
+  leg's input is fixed at the quoted amount.
 - Localhost and loopback Jupiter/RPC endpoints now bypass automatic system
   proxies and respect `NO_PROXY`, so local nodes and HTTP test servers are not
   routed through a macOS proxy.
