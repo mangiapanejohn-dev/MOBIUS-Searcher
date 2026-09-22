@@ -426,6 +426,27 @@ fn main() -> Result<()> {
             bail!("--canary needs the TUI: sending is approved with a keypress (y)");
         }
         let c = canary::prepare(&cfg)?;
+        // refuse up front when the wallet cannot fund it (instead of failing every simulation)
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        let funding: Result<String> = rt.block_on(async {
+            let rpc =
+                doctor::rpc_client(&c, &Arc::new(searcher_telemetry::Telemetry::new())).map_err(anyhow::Error::msg)?;
+            let pk: searcher_core::Address = match c.wallet.pubkey.as_deref() {
+                Some(p) => p.parse().map_err(|e| anyhow::anyhow!("wallet.pubkey: {e}"))?,
+                None => searcher_execution::Wallet::load(
+                    std::path::Path::new(c.wallet.keypair_path.as_deref().unwrap_or_default()),
+                    None,
+                )?
+                .pubkey(),
+            };
+            let sol = rpc.get_balance(&pk).await?;
+            let usdc_mint = c.tokens().get("USDC").map(|t| t.mint).context("USDC token")?;
+            let usdc = rpc.token_balance(&pk, &usdc_mint).await.unwrap_or(0);
+            let px = doctor::sol_price_from_pools(&c, &rpc).await;
+            canary::check_funding(&c, sol, usdc, px)
+        });
+        drop(rt);
+        println!("{}", funding?);
         println!(
             "CANARY · one SOL→USDC→SOL round trip of {} SOL through the LIVE path\n  \
              each candidate waits for y (n declines) · loss bound {} lamports (also the on-chain min-out)\n  \

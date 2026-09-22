@@ -258,7 +258,7 @@ fn from_env(env: &str) -> String {
     if std::env::var(env).is_ok_and(|v| !v.trim().is_empty()) { format!(" (${env})") } else { String::new() }
 }
 
-fn rpc_client(cfg: &Config, telemetry: &Arc<Telemetry>) -> Result<RpcClient, String> {
+pub fn rpc_client(cfg: &Config, telemetry: &Arc<Telemetry>) -> Result<RpcClient, String> {
     RpcClient::new(
         &cfg.rpc.resolved_url(),
         LimiterConfig::new(cfg.rpc.rps, cfg.rpc.burst),
@@ -473,19 +473,11 @@ pub async fn wallet_checks(cfg: &Config) -> Vec<Check> {
     checks
 }
 
-/// USDC inventory: how many worst-case first-leg shortfalls it covers (the
-/// next leg's input is fixed; the wallet's USDC makes up the difference).
-async fn inventory_check(cfg: &Config, pk: &Address) -> Option<Check> {
-    let rpc = rpc_client(cfg, &Arc::new(Telemetry::new())).ok()?;
+/// SOL/USD from the first configured SOL/USDC pool's mid (enough to size a
+/// reserve; not an executable price).
+pub async fn sol_price_from_pools(cfg: &Config, rpc: &RpcClient) -> Option<f64> {
     let tokens = cfg.tokens();
     let (sol, usdc) = (tokens.sol().clone(), tokens.get("USDC")?.clone());
-    let label = "inventory USDC";
-    let atoms = match rpc.token_balance(pk, &usdc.mint).await {
-        Ok(a) => a,
-        Err(e) => return Some(Check::new(false, label, pk.short(), e.to_string()).optional()),
-    };
-    // SOL price from the first configured SOL/USDC pool (mid; enough to size a reserve)
-    let mut price = None;
     for p in cfg.feeds.pools.iter().filter(|p| p.base == "SOL" && p.quote == "USDC") {
         let Ok(addr) = p.address.parse::<Address>() else { continue };
         if let Ok((_, datas)) = rpc.get_account_datas(&[addr]).await
@@ -493,13 +485,27 @@ async fn inventory_check(cfg: &Config, pk: &Address) -> Option<Check> {
         {
             let dec =
                 |m: &Address| (m == &sol.mint).then_some(sol.decimals).or((m == &usdc.mint).then_some(usdc.decimals));
-            price = searcher_market::accounts::decode_pool(p.kind, &data, dec)
+            let price = searcher_market::accounts::decode_pool(p.kind, &data, dec)
                 .and_then(|m| m.price_of(&sol.mint, &usdc.mint));
-        }
-        if price.is_some() {
-            break;
+            if price.is_some() {
+                return price;
+            }
         }
     }
+    None
+}
+
+/// USDC inventory: how many worst-case first-leg shortfalls it covers (the
+/// next leg's input is fixed; the wallet's USDC makes up the difference).
+async fn inventory_check(cfg: &Config, pk: &Address) -> Option<Check> {
+    let rpc = rpc_client(cfg, &Arc::new(Telemetry::new())).ok()?;
+    let usdc = cfg.tokens().get("USDC")?.clone();
+    let label = "inventory USDC";
+    let atoms = match rpc.token_balance(pk, &usdc.mint).await {
+        Ok(a) => a,
+        Err(e) => return Some(Check::new(false, label, pk.short(), e.to_string()).optional()),
+    };
+    let price = sol_price_from_pools(cfg, &rpc).await;
     let tol = cfg.jupiter.tolerance_bps(cfg.risk.max_slippage_bps);
     let trade = cfg.risk.max_trade_lamports;
     let k = price.and_then(|px| searcher_core::costs::inventory_coverage(atoms, trade, px, tol));

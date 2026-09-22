@@ -48,6 +48,57 @@ pub fn prepare(cfg: &Config) -> Result<Config> {
     Ok(c)
 }
 
+/// SOL the wallet must hold before a canary can pass the risk engine: the
+/// trade plus the fee reserve, and enough equity for the allowed trade share;
+/// plus headroom for the fee and tip.
+pub fn required_lamports(c: &Config) -> u64 {
+    let amount = c.strategies.round_trip.first().map(|s| s.amount_lamports).unwrap_or(0);
+    let by_reserve = amount.saturating_add(c.risk.min_wallet_sol_for_fees_lamports);
+    let pct = c.risk.max_trade_pct_of_equity_bps.max(1) as u128;
+    let by_equity = (amount as u128 * 10_000).div_ceil(pct) as u64;
+    by_reserve.max(by_equity).saturating_add(100_000)
+}
+
+/// USDC (atoms) that covers one worst-case first-leg shortfall.
+pub fn min_usdc_atoms(c: &Config, sol_usd: f64) -> u64 {
+    let amount = c.strategies.round_trip.first().map(|s| s.amount_lamports).unwrap_or(0);
+    let tol = c.jupiter.tolerance_bps(c.risk.max_slippage_bps) as f64;
+    (amount as f64 / 1e9 * sol_usd * tol / 1e4 * 1e6).ceil() as u64
+}
+
+/// Refuse to start when the wallet cannot fund the canary; say what is missing.
+pub fn check_funding(c: &Config, sol_lamports: u64, usdc_atoms: u64, sol_usd: Option<f64>) -> Result<String> {
+    let need = required_lamports(c);
+    let mut missing = Vec::new();
+    if sol_lamports < need {
+        missing.push(format!(
+            "SOL: the wallet holds {:.4}, the canary needs at least {:.4} (trade {:.4} + fee reserve, and a trade may be at most {}% of equity)",
+            sol_lamports as f64 / 1e9,
+            need as f64 / 1e9,
+            c.strategies.round_trip.first().map(|s| s.amount_lamports).unwrap_or(0) as f64 / 1e9,
+            c.risk.max_trade_pct_of_equity_bps as f64 / 100.0
+        ));
+    }
+    if let Some(px) = sol_usd {
+        let min = min_usdc_atoms(c, px);
+        if usdc_atoms < min {
+            missing.push(format!(
+                "USDC: the wallet holds ${:.2}; hold at least ${:.2} (one worst-case leg-1 shortfall; $2 is comfortable)",
+                usdc_atoms as f64 / 1e6,
+                min as f64 / 1e6
+            ));
+        }
+    }
+    if !missing.is_empty() {
+        bail!("the wallet cannot fund the canary yet:\n  {}", missing.join("\n  "));
+    }
+    Ok(format!(
+        "wallet {:.4} SOL · ${:.2} USDC: enough for the canary",
+        sol_lamports as f64 / 1e9,
+        usdc_atoms as f64 / 1e6
+    ))
+}
+
 #[derive(Clone, Debug, Serialize)]
 pub struct Line {
     pub what: String,
@@ -236,6 +287,23 @@ mod tests {
         assert!(p.profit.protect_min_out);
         assert_eq!(p.strategies.round_trip.len(), 1);
         assert!(p.strategies.cross_dex.iter().all(|s| !s.enabled));
+    }
+
+    #[test]
+    fn an_empty_or_small_wallet_is_refused_with_what_is_missing() {
+        let mut c = Config::default();
+        c.general.mode = Mode::Live;
+        c.execution.live_enabled = true;
+        c.wallet.keypair_path = Some("/k.json".into());
+        c.risk.max_trade_pct_of_equity_bps = 8_000;
+        c.strategies.round_trip[0].amount_lamports = 100_000_000;
+        let p = prepare(&c).unwrap();
+        // 0.1 SOL may be at most 80 % of equity → 0.125 SOL, plus headroom
+        assert_eq!(required_lamports(&p), 125_100_000);
+        let e = check_funding(&p, 0, 0, Some(118.0)).unwrap_err().to_string();
+        assert!(e.contains("SOL") && e.contains("USDC"), "{e}");
+        assert!(check_funding(&p, 120_000_000, 2_000_000, Some(118.0)).is_err(), "0.12 SOL is not enough");
+        assert!(check_funding(&p, 130_000_000, 2_000_000, Some(118.0)).is_ok());
     }
 
     #[test]
