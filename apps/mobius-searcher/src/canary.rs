@@ -83,7 +83,7 @@ pub fn check_funding(c: &Config, sol_lamports: u64, usdc_atoms: u64, sol_usd: Op
         let min = min_usdc_atoms(c, px);
         if usdc_atoms < min {
             missing.push(format!(
-                "USDC: the wallet holds ${:.2}; hold at least ${:.2} (one worst-case leg-1 shortfall; $2 is comfortable)",
+                "USDC: the wallet holds ${:.2}; hold at least ${:.4} (one worst-case leg-1 shortfall; a few times that is comfortable)",
                 usdc_atoms as f64 / 1e6,
                 min as f64 / 1e6
             ));
