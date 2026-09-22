@@ -188,3 +188,36 @@ mod tests {
         assert!(failure_from(0, &SimulateOutcome::default()).is_none());
     }
 }
+
+#[cfg(test)]
+mod chain_fixture_tests {
+    use super::*;
+
+    /// A successful mainnet Jupiter v0 transaction (lookup tables), fetched
+    /// with getTransaction 2026-09-22: the parser must line up every key with
+    /// its balances, and every lamport of the fee payer must be accounted for.
+    #[test]
+    fn real_v0_transaction_parses_and_the_payer_balance_is_explained() {
+        let v: serde_json::Value =
+            serde_json::from_str(include_str!("../../../fixtures/rpc/get_transaction_v0_jupiter.json")).unwrap();
+        let tx = searcher_market::rpc::parse_transaction(&v["result"]).unwrap();
+        assert!(tx.err.is_none());
+        assert!(tx.keys.len() > 11, "static + lookup-table keys");
+        assert_eq!(tx.keys.len(), tx.pre.len());
+        assert_eq!(tx.pre.len(), tx.post.len());
+        assert_eq!(jupiter_outputs(&tx.logs).len(), 1, "one route instruction");
+        // payer (key 0) paid the fee plus whatever it moved; nothing is created from nothing
+        let created: u64 = created_accounts(&tx.keys, &tx.pre, &tx.post).iter().map(|(_, l)| *l).sum();
+        let others: i128 = (1..tx.keys.len()).map(|i| tx.post[i] as i128 - tx.pre[i] as i128).sum();
+        let payer = tx.post[0] as i128 - tx.pre[0] as i128;
+        assert_eq!(payer + others, -(tx.fee as i128), "lamports are conserved except the fee (created {created})");
+        // ordering: programs keep their balance; token balances point at funded token accounts
+        let jup: Address = JUPITER_PROGRAM.parse().unwrap();
+        let j = tx.keys.iter().position(|k| *k == jup).expect("Jupiter program among the keys");
+        assert_eq!(tx.pre[j], tx.post[j]);
+        for t in tx.pre_tokens.iter().chain(&tx.post_tokens) {
+            assert!(t.index < tx.keys.len() && tx.keys[t.index] != jup);
+            assert!(tx.post[t.index] > 0 || tx.pre[t.index] > 0, "token account {} has lamports", t.index);
+        }
+    }
+}
