@@ -3,6 +3,8 @@
 //! exposes every value. Nothing is written before the final review, and a
 //! newly generated bot key stays in memory until then.
 
+use crate::doctor::Check;
+use crate::i18n::{self, Lang, tr};
 use crate::setup_ui::{self, MenuItem, TextPrompt, Validator};
 use anyhow::{Context, Result, bail};
 use searcher_core::config::{
@@ -102,6 +104,49 @@ pub struct Outcome {
     pub start_now: bool,
 }
 
+/// Answers for `--setup --yes`: nothing is asked, for servers, containers and
+/// scripts. Secrets are deliberately not flags (they would end up in shell
+/// history); pass them as environment variables when MØBIUS runs.
+#[derive(clap::Args, Clone, Debug, Default)]
+pub struct SetupOpts {
+    /// With --setup: take every answer from the flags below, ask nothing.
+    /// A first use becomes a PAPER research setup; an existing setup keeps
+    /// everything no flag changes.
+    #[arg(long, requires = "setup")]
+    pub yes: bool,
+    /// Bot wallet: new | keep | none | watch:<ADDRESS> | <keypair file>.
+    #[arg(long, value_name = "WALLET", requires = "yes")]
+    pub wallet: Option<String>,
+    /// Which opportunities to scan (default: core on first use, keep otherwise).
+    #[arg(long, value_enum, requires = "yes")]
+    pub strategies: Option<ScopeArg>,
+    /// Starting risk policy (default: guarded on first use, keep otherwise).
+    #[arg(long, value_enum, requires = "yes")]
+    pub safety: Option<SafetyArg>,
+    /// Setup language (default: MOBIUS_LANG, else the system locale).
+    #[arg(long, value_enum)]
+    pub lang: Option<Lang>,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum ScopeArg {
+    Keep,
+    /// Round-trips and cross-DEX price gaps.
+    Core,
+    /// Also triangular cycles.
+    All,
+    RoundTrip,
+}
+
+#[derive(clap::ValueEnum, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SafetyArg {
+    Keep,
+    /// Routes up to 1% of equity, pause after 3 failures, $2 daily stop.
+    Guarded,
+    /// Routes up to 2.5% of equity, pause after 5 failures, $5 daily stop.
+    Balanced,
+}
+
 pub fn is_cancelled(error: &anyhow::Error) -> bool {
     setup_ui::is_cancelled(error)
 }
@@ -120,12 +165,30 @@ struct CurrentWallet {
     keypair_path: Option<String>,
 }
 
-pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bool) -> Result<Outcome> {
+/// What every step may read but none changes.
+struct Ctx {
+    /// Credentials already stored somewhere (env files or process env).
+    present: Present,
+    /// The wallet in the settings setup started from.
+    current_wallet: Option<CurrentWallet>,
+    /// New bot keypairs go here: `wallets/` next to the user's config file.
+    wallet_dir: PathBuf,
+}
+
+pub fn run(
+    config_path: &Path,
+    env_path: &Path,
+    marker_path: &Path,
+    explicit: bool,
+    opts: &SetupOpts,
+) -> Result<Outcome> {
+    i18n::set(i18n::detect(opts.lang));
+    if opts.yes {
+        return run_unattended(config_path, env_path, marker_path, opts);
+    }
     // The effective settings come first: a file that does not load must be
     // fixed by hand, never silently replaced.
-    let layered = config::load_layered(Path::new(config::REPO_CONFIG_PATH), config_path)
-        .map_err(|e| anyhow::anyhow!("{e}"))
-        .context("reading the current settings (fix the file, or move it away to start fresh)")?;
+    let layered = load_current(config_path)?;
     let existing = config_path.exists();
     let session = setup_ui::Session::start(existing)?;
     if !session.visual() {
@@ -143,18 +206,9 @@ pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bo
     let ws_env = cfg.rpc.ws_url_env.clone();
     let jito_env = cfg.jito.uuid_env.clone();
     let pyth_env = cfg.feeds.pyth_api_key_env.clone();
-    let env_texts: Vec<String> = std::iter::once(env_path.to_path_buf())
-        .chain(crate::envfile::sources())
-        .map(|p| fs::read_to_string(p).unwrap_or_default())
-        .collect();
-    let has = |key: &str| std::env::var_os(key).is_some() || env_texts.iter().any(|text| env_has(text, key));
-    let present = Present {
-        jupiter: has(&jupiter_env),
-        rpc: has(&rpc_env),
-        ws: has(&ws_env),
-        jito: has(&jito_env),
-        pyth: has(&pyth_env),
-    };
+    let present = detect_present(&cfg, env_path);
+    let wallet_dir = wallet_dir(config_path);
+    let ctx = Ctx { present, current_wallet, wallet_dir };
 
     let mut env_answers = EnvAnswers::default();
     let mut pending_wallet = None;
@@ -172,11 +226,10 @@ pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bo
         )?;
         let changed = match action {
             0 => false,
-            1 => edit_sections(&mut cfg, &mut env_answers, &mut pending_wallet, present)?,
+            1 => edit_sections(&mut cfg, &mut env_answers, &mut pending_wallet, &ctx)?,
             _ => {
                 cfg = below.clone();
-                first_use_path =
-                    Some(first_use(&mut cfg, &mut env_answers, &mut pending_wallet, present, current_wallet.as_ref())?);
+                first_use_path = Some(first_use(&mut cfg, &mut env_answers, &mut pending_wallet, &ctx)?);
                 true
             }
         };
@@ -185,8 +238,7 @@ pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bo
             return Ok(Outcome { start_now: !explicit });
         }
     } else {
-        first_use_path =
-            Some(first_use(&mut cfg, &mut env_answers, &mut pending_wallet, present, current_wallet.as_ref())?);
+        first_use_path = Some(first_use(&mut cfg, &mut env_answers, &mut pending_wallet, &ctx)?);
     }
     cfg.validate().map_err(anyhow::Error::msg)?;
 
@@ -245,13 +297,126 @@ pub fn run(config_path: &Path, env_path: &Path, marker_path: &Path, explicit: bo
     Ok(Outcome { start_now })
 }
 
+fn load_current(config_path: &Path) -> Result<config::Layered> {
+    config::load_layered(Path::new(config::REPO_CONFIG_PATH), config_path)
+        .map_err(|e| anyhow::anyhow!("{e}"))
+        .context("reading the current settings (fix the file, or move it away to start fresh)")
+}
+
+/// New bot keypairs go to `wallets/` next to the user's config file.
+fn wallet_dir(config_path: &Path) -> PathBuf {
+    config_path.parent().unwrap_or(Path::new(".")).join("wallets")
+}
+
+/// Which credentials are already stored: the setup's own .env, the files the
+/// runtime reads, or the process environment.
+fn detect_present(cfg: &Config, env_path: &Path) -> Present {
+    let env_texts: Vec<String> = std::iter::once(env_path.to_path_buf())
+        .chain(crate::envfile::sources())
+        .map(|p| fs::read_to_string(p).unwrap_or_default())
+        .collect();
+    let has = |key: &str| std::env::var_os(key).is_some() || env_texts.iter().any(|text| env_has(text, key));
+    Present {
+        jupiter: has(&cfg.jupiter.api_key_env),
+        rpc: has(&cfg.rpc.url_env),
+        ws: has(&cfg.rpc.ws_url_env),
+        jito: has(&cfg.jito.uuid_env),
+        pyth: has(&cfg.feeds.pyth_api_key_env),
+    }
+}
+
+/// `--setup --yes`: the same building blocks as the wizard, driven by flags.
+/// Errors leave every file as it was.
+fn run_unattended(config_path: &Path, env_path: &Path, marker_path: &Path, opts: &SetupOpts) -> Result<Outcome> {
+    let layered = load_current(config_path)?;
+    let existing = config_path.exists();
+    let below = layered.below_user;
+    let mut cfg = layered.config;
+    let start = snapshot(&cfg);
+    if !existing {
+        // a first use without questions is always a research (PAPER) setup
+        cfg.general.mode = Mode::Paper;
+        cfg.execution.live_enabled = false;
+    }
+    let sends = cfg.general.mode.sends_transactions();
+    let mut pending = None;
+    match opts.wallet.as_deref().map(str::trim) {
+        None | Some("keep") => {}
+        Some("new") => {
+            let path = next_wallet_path(&wallet_dir(config_path));
+            let wallet = GeneratedWallet::new();
+            cfg.wallet.pubkey = Some(wallet.pubkey().to_string());
+            cfg.wallet.keypair_path = Some(path.display().to_string());
+            pending = Some(PendingWallet { path, wallet });
+        }
+        Some("none") => {
+            if sends {
+                bail!("--wallet none: {} mode needs a signing wallet", cfg.general.mode.label());
+            }
+            cfg.wallet.pubkey = None;
+            cfg.wallet.keypair_path = None;
+        }
+        Some(other) if other.starts_with("watch:") => {
+            if sends {
+                bail!("--wallet {other}: {} mode needs a signing wallet", cfg.general.mode.label());
+            }
+            let address: searcher_core::Address = other["watch:".len()..]
+                .trim()
+                .parse()
+                .map_err(|e| anyhow::anyhow!("--wallet {other}: not a Solana address: {e}"))?;
+            cfg.wallet.pubkey = Some(address.to_string());
+            cfg.wallet.keypair_path = None;
+        }
+        Some(path) => {
+            let path = expand_home_path(path);
+            let wallet = Wallet::load(&path, None).with_context(|| format!("--wallet {}", path.display()))?;
+            cfg.wallet.pubkey = Some(wallet.pubkey().to_string());
+            cfg.wallet.keypair_path = Some(path.display().to_string());
+        }
+    }
+    let scope = opts.strategies.unwrap_or(if existing { ScopeArg::Keep } else { ScopeArg::Core });
+    match scope {
+        ScopeArg::Keep => {}
+        ScopeArg::Core => apply_strategy_scope(&mut cfg, 0),
+        ScopeArg::All => apply_strategy_scope(&mut cfg, 1),
+        ScopeArg::RoundTrip => apply_strategy_scope(&mut cfg, 2),
+    }
+    let safety = opts.safety.unwrap_or(if existing { SafetyArg::Keep } else { SafetyArg::Guarded });
+    match safety {
+        SafetyArg::Keep => {}
+        SafetyArg::Guarded => apply_safety_policy(&mut cfg, 0),
+        SafetyArg::Balanced => apply_safety_policy(&mut cfg, 1),
+    }
+    cfg.validate().map_err(anyhow::Error::msg)?;
+
+    if existing && snapshot(&cfg) == start && pending.is_none() {
+        info(&format!("No changes: {} already has these settings.", display_path(config_path)))?;
+        return Ok(Outcome { start_now: false });
+    }
+    let present = detect_present(&cfg, env_path);
+    note("Setup", &review_rows(&cfg, &EnvAnswers::default(), present, pending.as_ref(), config_path, env_path))?;
+    let created_wallet = persist_pending_wallet(pending.as_ref())?;
+    if let Err(error) = write_config(config_path, &below, &cfg) {
+        if let Some(path) = &created_wallet {
+            let _ = fs::remove_file(path);
+        }
+        return Err(error);
+    }
+    write_marker(marker_path)?;
+    success(&format!("Settings saved to {}", display_path(config_path)))?;
+    if let Some(path) = &created_wallet {
+        success(&format!("Bot wallet saved to {} (0600)", display_path(path)))?;
+        warn("Back up the keypair file before funding it; a lost key cannot be recovered.")?;
+    }
+    Ok(Outcome { start_now: false })
+}
+
 /// The first-use flow: pick a goal, see its steps, walk them.
 fn first_use(
     cfg: &mut Config,
     env: &mut EnvAnswers,
     pending_wallet: &mut Option<PendingWallet>,
-    present: Present,
-    current_wallet: Option<&CurrentWallet>,
+    ctx: &Ctx,
 ) -> Result<SetupPath> {
     let path = match menu(
         "What should MØBIUS be ready to do?",
@@ -271,20 +436,19 @@ fn first_use(
         _ => SetupPath::Advanced,
     };
     let steps = path.steps();
-    let keys: Vec<String> = steps.iter().enumerate().map(|(i, (title, _))| format!("{:>2}  {title}", i + 1)).collect();
+    let keys: Vec<String> =
+        steps.iter().enumerate().map(|(i, (title, _))| format!("{:>2}  {}", i + 1, tr(title))).collect();
     let plan: Vec<(&str, String)> =
         keys.iter().zip(steps).map(|(key, (_, what))| (key.as_str(), (*what).to_string())).collect();
     outline(&format!("{} · {} steps", path.label(), steps.len()), &plan)?;
 
     match path {
-        SetupPath::Research | SetupPath::Assisted => {
-            configure_guided(cfg, env, pending_wallet, path, present, current_wallet)?
-        }
+        SetupPath::Research | SetupPath::Assisted => configure_guided(cfg, env, pending_wallet, path, ctx)?,
         SetupPath::Advanced => {
             // "keep the current values" should mean the recommended ones
             apply_strategy_scope(cfg, 0);
             apply_safety_policy(cfg, 0);
-            configure_advanced(cfg, env, pending_wallet, present, current_wallet)?;
+            configure_advanced(cfg, env, pending_wallet, ctx)?;
         }
     }
     Ok(path)
@@ -367,7 +531,11 @@ fn strategies_summary(cfg: &Config) -> String {
     if cfg.strategies.triangular.iter().any(|s| s.enabled) {
         on.push("triangular");
     }
-    if on.is_empty() { "none enabled".into() } else { on.join(", ") }
+    if on.is_empty() {
+        return "none enabled".into();
+    }
+    let separator = if i18n::current() == Lang::Zh { "、" } else { ", " };
+    on.iter().map(|name| tr(name).into_owned()).collect::<Vec<_>>().join(separator)
 }
 
 fn route_summary(cfg: &Config) -> String {
@@ -398,8 +566,9 @@ fn edit_sections(
     cfg: &mut Config,
     env: &mut EnvAnswers,
     pending_wallet: &mut Option<PendingWallet>,
-    present: Present,
+    ctx: &Ctx,
 ) -> Result<bool> {
+    let present = ctx.present;
     let start = snapshot(cfg);
     loop {
         let secrets_changed = env.jupiter_key.is_some()
@@ -445,9 +614,10 @@ fn edit_sections(
                     .clone()
                     .map(|pubkey| CurrentWallet { pubkey, keypair_path: cfg.wallet.keypair_path.clone() });
                 let signer = cfg.general.mode.sends_transactions();
-                configure_wallet(cfg, pending_wallet, signer, current.as_ref())?;
+                configure_wallet(cfg, pending_wallet, signer, current.as_ref(), ctx)?;
             }
             1 => {
+                let proxy = proxy_summary(cfg);
                 let update = menu(
                     "Network & API keys",
                     &[
@@ -457,6 +627,8 @@ fn edit_sections(
                             "Hidden input; Enter keeps each stored value, '-' clears it.",
                             None,
                         ),
+                        ("Change the proxy", &proxy, None),
+                        ("Test the connection", "Solana RPC, WebSocket, Jupiter, Jito and venues, from here.", None),
                     ],
                     0,
                 )?;
@@ -472,6 +644,12 @@ fn edit_sections(
                     keep(answers.ws_url, &mut env.ws_url);
                     keep(answers.jito_uuid, &mut env.jito_uuid);
                     keep(answers.pyth_key, &mut env.pyth_key);
+                }
+                if update == 2 {
+                    choose_proxy(cfg)?;
+                }
+                if update > 0 {
+                    network_check(cfg, env, present)?;
                 }
             }
             2 => edit_venues(cfg)?,
@@ -505,7 +683,7 @@ fn edit_sections(
                     success(&format!("Routes now start at {}", route_summary(cfg)))?;
                 }
             }
-            5 => edit_mode(cfg, pending_wallet)?,
+            5 => edit_mode(cfg, pending_wallet, ctx)?,
             6 => {
                 for (prompt, section) in [
                     ("Adjust API endpoints and rate limits?", 0),
@@ -558,7 +736,7 @@ fn edit_venues(cfg: &mut Config) -> Result<()> {
     Ok(())
 }
 
-fn edit_mode(cfg: &mut Config, pending_wallet: &mut Option<PendingWallet>) -> Result<()> {
+fn edit_mode(cfg: &mut Config, pending_wallet: &mut Option<PendingWallet>, ctx: &Ctx) -> Result<()> {
     let modes = [Mode::Paper, Mode::Confirm, Mode::Live];
     let now = modes.iter().position(|m| *m == cfg.general.mode).unwrap_or(0);
     let badge = |i: usize| (i == now).then_some("current");
@@ -582,7 +760,7 @@ fn edit_mode(cfg: &mut Config, pending_wallet: &mut Option<PendingWallet>) -> Re
     cfg.general.mode = picked;
     if cfg.wallet.keypair_path.is_none() {
         warn(&format!("{} needs a signing wallet.", picked.label()))?;
-        configure_wallet(cfg, pending_wallet, true, None)?;
+        configure_wallet(cfg, pending_wallet, true, None, ctx)?;
     }
     let phrase = format!("ENABLE {}", picked.label());
     let check = |value: &str| -> std::result::Result<(), String> {
@@ -605,9 +783,9 @@ fn configure_guided(
     env: &mut EnvAnswers,
     pending_wallet: &mut Option<PendingWallet>,
     path: SetupPath,
-    present: Present,
-    current_wallet: Option<&CurrentWallet>,
+    ctx: &Ctx,
 ) -> Result<()> {
+    let present = ctx.present;
     let assisted = path == SetupPath::Assisted;
     cfg.general.mode = if assisted { Mode::Confirm } else { Mode::Paper };
     cfg.execution.live_enabled = false;
@@ -619,7 +797,7 @@ fn configure_guided(
             "A new key stays in memory until you save, and is never shown or logged.",
         ],
     );
-    configure_wallet(cfg, pending_wallet, assisted, current_wallet)?;
+    configure_wallet(cfg, pending_wallet, assisted, ctx.current_wallet.as_ref(), ctx)?;
 
     path.step(
         2,
@@ -646,6 +824,7 @@ fn configure_guided(
     } else if present.jupiter || present.rpc {
         info("Credentials already in .env stay in use.")?;
     }
+    network_check(cfg, env, present)?;
 
     path.step(3, &["Route sizes come from the safety policy in the next step."]);
     let scope = menu(
@@ -725,6 +904,7 @@ fn configure_wallet(
     pending_wallet: &mut Option<PendingWallet>,
     require_signer: bool,
     current: Option<&CurrentWallet>,
+    ctx: &Ctx,
 ) -> Result<()> {
     let keep = current.filter(|c| !require_signer || c.keypair_path.is_some());
     let keep_title = keep.map(|c| format!("Keep {}", short_key(&c.pubkey)));
@@ -751,13 +931,14 @@ fn configure_wallet(
         let kept = keep.expect("the keep option is listed only with a current wallet");
         cfg.wallet.pubkey = Some(kept.pubkey.clone());
         cfg.wallet.keypair_path = kept.keypair_path.clone();
-        return success(&format!("Keeping wallet {}", kept.pubkey));
+        success(&format!("Keeping wallet {}", kept.pubkey))?;
+        return wallet_status(cfg, false);
     };
 
     *pending_wallet = None;
     match selection {
         0 => {
-            let path = next_wallet_path();
+            let path = next_wallet_path(&ctx.wallet_dir);
             let wallet = GeneratedWallet::new();
             cfg.wallet.pubkey = Some(wallet.pubkey().to_string());
             cfg.wallet.keypair_path = Some(path.display().to_string());
@@ -819,7 +1000,56 @@ fn configure_wallet(
             success(&format!("Virtual PAPER equity: {} SOL", format_sol(cfg.paper.equity_lamports)))?;
         }
     }
+    let fresh = pending_wallet.is_some();
+    wallet_status(cfg, fresh)
+}
+
+/// Balance of an existing wallet, and a funding QR code when this setup will
+/// send transactions from a wallet that cannot yet pay for them.
+fn wallet_status(cfg: &Config, fresh: bool) -> Result<()> {
+    let Some(address) = cfg.wallet.pubkey.clone() else { return Ok(()) };
+    let sends = cfg.general.mode.sends_transactions() && cfg.wallet.keypair_path.is_some();
+    let reserve = cfg.risk.min_wallet_sol_for_fees_lamports;
+    let balance = if fresh {
+        Some(0)
+    } else {
+        let balance = setup_ui::with_spinner("Reading the wallet balance…", || wallet_balance(cfg, &address));
+        match balance {
+            Some(b) => info(&format!("Balance {} SOL", format_sol(b)))?,
+            None => info("Balance unavailable right now; `mobius-searcher --doctor` shows it later.")?,
+        }
+        balance
+    };
+    if sends && balance.is_some_and(|b| b < reserve) {
+        let caption = format!(
+            "Fund it before sending: at least {} SOL for fees, plus what it may trade. Scan with a Solana wallet \
+             app or copy the address.",
+            format_sol(reserve)
+        );
+        qr(&format!("solana:{address}"), &address, &caption)?;
+    }
     Ok(())
+}
+
+/// `getBalance` through the configured RPC; `None` when it cannot answer.
+fn wallet_balance(cfg: &Config, address: &str) -> Option<u64> {
+    #[cfg(test)]
+    if script::active() {
+        return script::balance();
+    }
+    let address: searcher_core::Address = address.parse().ok()?;
+    let runtime = tokio::runtime::Builder::new_current_thread().enable_all().build().ok()?;
+    runtime.block_on(async {
+        let rpc = searcher_market::RpcClient::new(
+            &cfg.rpc.resolved_url(),
+            searcher_telemetry::LimiterConfig::new(cfg.rpc.rps, cfg.rpc.burst),
+            cfg.rpc.simulate_rps,
+            std::time::Duration::from_millis(cfg.rpc.timeout_ms),
+            std::sync::Arc::new(searcher_telemetry::Telemetry::new()),
+        )
+        .ok()?;
+        rpc.get_balance(&address).await.ok()
+    })
 }
 
 fn apply_strategy_scope(cfg: &mut Config, scope: usize) {
@@ -840,6 +1070,191 @@ fn apply_safety_policy(cfg: &mut Config, policy: usize) {
     cfg.profit.protect_min_out = true;
     let amount = cfg.paper.equity_lamports.saturating_mul(equity_bps as u64) / 10_000;
     apply_trade_size(cfg, amount.max(1_000_000));
+}
+
+fn proxy_summary(cfg: &Config) -> String {
+    match cfg.network.proxy.trim() {
+        "" | "auto" => format!("Automatic · {}", auto_proxy_now()),
+        "none" | "direct" => "No proxy · always connect directly".into(),
+        url => format!("HTTP proxy {url}"),
+    }
+}
+
+/// What `auto` resolves to on this machine right now.
+fn auto_proxy_now() -> String {
+    let env = ["HTTPS_PROXY", "https_proxy", "ALL_PROXY", "all_proxy"]
+        .into_iter()
+        .find_map(|k| std::env::var(k).ok().filter(|v| !v.is_empty()).map(|v| (k, v)));
+    match (env, searcher_telemetry::proxy::system_proxy(true)) {
+        (Some((k, v)), _) => format!("${k} {}", config::display_url(&v)),
+        (None, Some((host, port))) => format!("system proxy {host}:{port}"),
+        (None, None) => "no proxy found, connects directly".into(),
+    }
+}
+
+fn choose_proxy(cfg: &mut Config) -> Result<()> {
+    let now = match cfg.network.proxy.trim() {
+        "" | "auto" => 0,
+        "none" | "direct" => 1,
+        _ => 2,
+    };
+    let badge = |i: usize| (i == now).then_some("current");
+    let auto = format!("Environment variables, else the system settings. Now: {}.", auto_proxy_now());
+    let pick = menu(
+        "How should MØBIUS connect to the internet?",
+        &[
+            ("Detect the proxy automatically", &auto, badge(0)),
+            ("Connect directly", "Ignore every proxy setting.", badge(1)),
+            ("Use this HTTP proxy", "An http://host:port proxy for every connection.", badge(2)),
+        ],
+        now,
+    )?;
+    cfg.network.proxy = match pick {
+        0 => "auto".into(),
+        1 => "none".into(),
+        _ => {
+            let current = if now == 2 { cfg.network.proxy.clone() } else { String::new() };
+            let check = |v: &str| -> std::result::Result<(), String> {
+                if v.is_empty() && !current.is_empty() {
+                    return Ok(());
+                }
+                if !v.starts_with("http://") {
+                    return Err("Enter it as http://host:port".into());
+                }
+                searcher_telemetry::proxy::ProxySetting::parse(v).map(|_| ())
+            };
+            let placeholder = if current.is_empty() { "http://127.0.0.1:7890".to_string() } else { current.clone() };
+            let value = ask(&TextPrompt {
+                label: "HTTP proxy",
+                placeholder: &placeholder,
+                empty_answer: &current,
+                hidden: false,
+                validate: Some(&check),
+            })?;
+            if value.trim().is_empty() { current } else { value.trim().trim_end_matches('/').to_string() }
+        }
+    };
+    Ok(())
+}
+
+/// Tests the settings as they would be saved, then offers to fix what failed.
+/// A failure never blocks saving: the user may simply be offline right now.
+fn network_check(cfg: &mut Config, env: &mut EnvAnswers, present: Present) -> Result<()> {
+    loop {
+        let checks = setup_ui::with_spinner("Testing connections from this machine…", || probe(cfg, env))?;
+        for c in &checks {
+            check_line(c.ok, c.optional, &c.name, &format!("{} · {}", c.target, c.detail))?;
+        }
+        let failed: Vec<&str> = checks.iter().filter(|c| !c.ok && !c.optional).map(|c| c.name.as_str()).collect();
+        if failed.is_empty() {
+            return Ok(());
+        }
+        let proxy = proxy_summary(cfg);
+        let pick = menu(
+            &format!("{} did not answer. What now?", failed.join(", ")),
+            &[
+                ("Try another proxy setting", &proxy, None),
+                ("Re-enter keys and endpoints", "Hidden input; Enter keeps each stored value.", None),
+                ("Test again", "After fixing something outside MØBIUS.", None),
+                ("Continue anyway", "Save as is; `mobius-searcher --doctor` tests it again later.", None),
+            ],
+            0,
+        )?;
+        match pick {
+            0 => choose_proxy(cfg)?,
+            1 => {
+                let answers = configure_credentials(present, false)?;
+                for (new, old) in [
+                    (answers.jupiter_key, &mut env.jupiter_key),
+                    (answers.rpc_url, &mut env.rpc_url),
+                    (answers.ws_url, &mut env.ws_url),
+                ] {
+                    if new.is_some() {
+                        *old = new;
+                    }
+                }
+            }
+            2 => {}
+            _ => return warn("Saved without a working connection; `mobius-searcher --doctor` tests it again."),
+        }
+    }
+}
+
+/// Runs `mobius-searcher --doctor --json` as a child process on a temporary
+/// copy of the settings. The child gets the just-typed secrets in its own
+/// environment only (nothing is written) and a fresh proxy setting, which a
+/// running process cannot change.
+fn probe(cfg: &Config, env: &EnvAnswers) -> Result<Vec<Check>> {
+    #[cfg(test)]
+    if let Some(checks) = script::probe() {
+        return checks;
+    }
+    use std::process::{Command, Stdio};
+    let mut settings = cfg.clone();
+    // streams take seconds to deliver a first message; the RPC, WebSocket,
+    // Jupiter, Jito and venue checks cover what setup can fix
+    settings.feeds.enabled = false;
+    settings.scheduler.kind = SchedulerKind::RoundRobin;
+    settings.general.mode = Mode::Paper;
+    let dir = std::env::temp_dir().join(format!(
+        "mobius-setup-probe-{}-{}",
+        std::process::id(),
+        std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH).map_or(0, |d| d.as_nanos())
+    ));
+    fs::create_dir_all(&dir)?;
+    let file = dir.join("config.toml");
+    let result = (|| -> Result<Vec<Check>> {
+        fs::write(&file, toml::to_string(&settings).context("serializing the probe settings")?)?;
+        let mut command = Command::new(std::env::current_exe().context("locating mobius-searcher")?);
+        command.args(["--doctor", "--json", "--config"]).arg(&file);
+        for (name, change) in [
+            (&cfg.jupiter.api_key_env, &env.jupiter_key),
+            (&cfg.rpc.url_env, &env.rpc_url),
+            (&cfg.rpc.ws_url_env, &env.ws_url),
+            (&cfg.jito.uuid_env, &env.jito_uuid),
+            (&cfg.feeds.pyth_api_key_env, &env.pyth_key),
+        ] {
+            match change {
+                Some(Some(value)) => {
+                    command.env(name, value);
+                }
+                // cleared: an empty value hides the stored one from the child
+                Some(None) => {
+                    command.env(name, "");
+                }
+                None => {}
+            }
+        }
+        let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::null()).spawn()?;
+        let mut stdout = child.stdout.take().context("child stdout")?;
+        let reader = std::thread::spawn(move || {
+            let mut out = String::new();
+            let _ = io::Read::read_to_string(&mut stdout, &mut out);
+            out
+        });
+        let deadline = std::time::Instant::now() + std::time::Duration::from_secs(45);
+        while child.try_wait()?.is_none() {
+            if std::time::Instant::now() > deadline {
+                let _ = child.kill();
+                let _ = child.wait();
+                bail!("the connection test did not finish within 45 s");
+            }
+            std::thread::sleep(std::time::Duration::from_millis(100));
+        }
+        let out = reader.join().unwrap_or_default();
+        let report: serde_json::Value = out
+            .lines()
+            .rev()
+            .find_map(|line| serde_json::from_str(line).ok())
+            .context("the connection test printed no report")?;
+        report
+            .get("checks")
+            .and_then(|c| c.as_array())
+            .map(|checks| checks.iter().filter_map(Check::from_json).collect())
+            .context("the connection test report has no checks")
+    })();
+    let _ = fs::remove_dir_all(&dir);
+    result
 }
 
 fn configure_credentials(present: Present, include_optional: bool) -> Result<EnvAnswers> {
@@ -879,11 +1294,7 @@ fn secret(label: &str, placeholder: &str, validate: Option<Validator<'_>>) -> Re
     })
 }
 
-fn next_wallet_path() -> PathBuf {
-    let root = std::env::var_os("HOME")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from("."))
-        .join(".config/mobius/wallets");
+fn next_wallet_path(root: &Path) -> PathBuf {
     let first = root.join("bot-keypair.json");
     if !first.exists() {
         return first;
@@ -934,12 +1345,12 @@ fn configure_advanced(
     cfg: &mut Config,
     env: &mut EnvAnswers,
     pending_wallet: &mut Option<PendingWallet>,
-    present: Present,
-    current_wallet: Option<&CurrentWallet>,
+    ctx: &Ctx,
 ) -> Result<()> {
+    let present = ctx.present;
     let path = SetupPath::Advanced;
     path.step(1, &["LIVE and CONFIRM send real transactions and need a signing wallet and a typed phrase."]);
-    configure_profile(cfg, pending_wallet, current_wallet)?;
+    configure_profile(cfg, pending_wallet, ctx)?;
 
     path.step(2, &["All optional. Values are hidden while typed and stored only in .env (0600)."]);
     *env = configure_credentials(present, true)?;
@@ -948,6 +1359,7 @@ fn configure_advanced(
     if customize("Adjust API endpoints and rate limits?")? {
         configure_network(cfg)?;
     }
+    network_check(cfg, env, present)?;
 
     path.step(4, &["Each strategy can be switched on or off; amounts are in SOL."]);
     configure_strategies(cfg)?;
@@ -990,11 +1402,7 @@ fn customize(prompt: &str) -> Result<bool> {
     )? == 1)
 }
 
-fn configure_profile(
-    cfg: &mut Config,
-    pending_wallet: &mut Option<PendingWallet>,
-    current_wallet: Option<&CurrentWallet>,
-) -> Result<()> {
+fn configure_profile(cfg: &mut Config, pending_wallet: &mut Option<PendingWallet>, ctx: &Ctx) -> Result<()> {
     let default = match cfg.general.mode {
         Mode::Paper => 0,
         Mode::Confirm => 1,
@@ -1016,14 +1424,14 @@ fn configure_profile(
 
     if cfg.general.mode == Mode::Paper {
         lock_to_paper(cfg);
-        configure_wallet(cfg, pending_wallet, false, current_wallet)?;
+        configure_wallet(cfg, pending_wallet, false, ctx.current_wallet.as_ref(), ctx)?;
         cfg.paper.equity_lamports = prompt_sol("Virtual PAPER equity", cfg.paper.equity_lamports)?;
         return Ok(());
     }
 
     cfg.execution.live_enabled = false;
     cfg.paper.simulation_taker = None;
-    configure_wallet(cfg, pending_wallet, true, current_wallet)?;
+    configure_wallet(cfg, pending_wallet, true, ctx.current_wallet.as_ref(), ctx)?;
     warn("This mode can send real transactions. The key itself is never copied into the config.")?;
     let phrase = format!("ENABLE {}", cfg.general.mode.label());
     let check = |value: &str| -> std::result::Result<(), String> {
@@ -1278,69 +1686,150 @@ fn configure_ui_and_execution(cfg: &mut Config) -> Result<()> {
 // ------------------------------------------------- prompts (visual or plain)
 
 fn step(current: usize, total: usize, title: &str, details: &[&str]) {
+    #[cfg(test)]
+    if script::active() {
+        let details: Vec<String> = details.iter().map(|d| tr(d).into_owned()).collect();
+        return script::log(format!("step {current}/{total} {} :: {}", tr(title), details.join(" / ")));
+    }
     if setup_ui::active() {
         setup_ui::step(current, total, title, details);
     } else {
-        let heading = format!("{current}/{total}  {title}");
+        let heading = format!("{current}/{total}  {}", tr(title));
         println!("\n{heading}\n{}", "─".repeat(heading.chars().count()));
         for detail in details {
-            println!("{detail}");
+            println!("{}", tr(detail));
         }
     }
 }
 
 fn note(title: &str, rows: &[(&str, String)]) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        let body: Vec<String> = rows.iter().map(|(k, v)| format!("{}={}", tr(k), tr(v))).collect();
+        script::log(format!("note {}: {}", tr(title), body.join(" | ")));
+        return Ok(());
+    }
     if setup_ui::active() {
         return setup_ui::note(title, rows);
     }
-    println!("\n{title}");
-    let width = rows.iter().map(|(k, _)| k.chars().count()).max().unwrap_or(0);
-    for (key, value) in rows {
+    println!("\n{}", tr(title));
+    let rows: Vec<(String, String)> = rows.iter().map(|(k, v)| (tr(k).into_owned(), tr(v).into_owned())).collect();
+    let width = rows.iter().map(|(k, _)| unicode_width::UnicodeWidthStr::width(k.as_str())).max().unwrap_or(0);
+    for (key, value) in &rows {
         if key.is_empty() {
             println!("  {value}");
         } else {
-            println!("  {key:<width$}  {value}");
+            let pad = width - unicode_width::UnicodeWidthStr::width(key.as_str());
+            println!("  {key}{}  {value}", " ".repeat(pad));
         }
     }
     Ok(())
 }
 
 fn outline(title: &str, rows: &[(&str, String)]) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        return note(title, rows);
+    }
     if setup_ui::active() {
         return setup_ui::outline(title, rows);
     }
     note(title, rows)
 }
 
+fn qr(data: &str, address: &str, caption: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!("qr {data}"));
+        return Ok(());
+    }
+    if setup_ui::active() {
+        return setup_ui::qr(data, address, caption);
+    }
+    println!("  {}\n  {address}", tr(caption));
+    Ok(())
+}
+
+fn check_line(ok: bool, optional: bool, name: &str, detail: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!(
+            "check {} {name} {detail}",
+            if ok {
+                "ok"
+            } else if optional {
+                "warn"
+            } else {
+                "FAIL"
+            }
+        ));
+        return Ok(());
+    }
+    if setup_ui::active() {
+        return setup_ui::check_line(ok, optional, name, detail);
+    }
+    println!(
+        "  {} {name:<17} {detail}",
+        if ok {
+            "ok  "
+        } else if optional {
+            "warn"
+        } else {
+            "FAIL"
+        }
+    );
+    Ok(())
+}
+
 fn success(message: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!("success {}", tr(message)));
+        return Ok(());
+    }
     if setup_ui::active() {
         return setup_ui::success(message);
     }
-    println!("✓ {message}");
+    println!("✓ {}", tr(message));
     Ok(())
 }
 
 fn info(message: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!("info {}", tr(message)));
+        return Ok(());
+    }
     if setup_ui::active() {
         return setup_ui::info(message);
     }
-    println!("  {message}");
+    println!("  {}", tr(message));
     Ok(())
 }
 
 fn warn(message: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!("warn {}", tr(message)));
+        return Ok(());
+    }
     if setup_ui::active() {
         return setup_ui::warn(message);
     }
-    println!("! {message}");
+    println!("! {}", tr(message));
     Ok(())
 }
 
 fn finish(title: &str, hint: &str) -> Result<()> {
+    #[cfg(test)]
+    if script::active() {
+        script::log(format!("finish {} :: {}", tr(title), tr(hint)));
+        return Ok(());
+    }
     if setup_ui::active() {
         return setup_ui::finish(title, hint);
     }
-    println!("\n{title} · {hint}");
+    println!("\n{} · {}", tr(title), tr(hint));
     Ok(())
 }
 
@@ -1351,15 +1840,19 @@ fn menu(prompt: &str, items: &[(&str, &str, Option<&str>)], default: usize) -> R
 }
 
 fn menu_items(prompt: &str, items: &[MenuItem<'_>], default: usize) -> Result<usize> {
+    #[cfg(test)]
+    if let Some(answer) = script::menu(prompt, items, default) {
+        return answer;
+    }
     if let Some(value) = setup_ui::prompt_menu(prompt, items, default)? {
         return Ok(value);
     }
-    println!("\n{prompt}");
+    println!("\n{}", tr(prompt));
     for (index, item) in items.iter().enumerate() {
-        let badge = item.badge.map_or(String::new(), |value| format!(" ({value})"));
-        println!("  {}. {}{badge}", index + 1, item.title);
+        let badge = item.badge.map_or(String::new(), |value| format!(" ({})", tr(value)));
+        println!("  {}. {}{badge}", index + 1, tr(item.title));
         if !item.description.is_empty() {
-            println!("     {}", item.description);
+            println!("     {}", tr(item.description));
         }
     }
     loop {
@@ -1382,12 +1875,16 @@ fn choice(prompt: &str, values: &[&str], default: usize) -> Result<usize> {
 }
 
 fn confirm(prompt: &str, default: bool) -> Result<bool> {
+    #[cfg(test)]
+    if let Some(answer) = script::confirm(prompt, default) {
+        return answer;
+    }
     if let Some(value) = setup_ui::prompt_bool(prompt, default)? {
         return Ok(value);
     }
     loop {
         let hint = if default { "Y/n" } else { "y/N" };
-        let value = read_plain(&format!("{prompt} [{hint}]: "), false)?;
+        let value = read_plain(&format!("{} [{hint}]: ", tr(prompt)), false)?;
         match value.trim().to_ascii_lowercase().as_str() {
             "" => return Ok(default),
             "y" | "yes" => return Ok(true),
@@ -1399,15 +1896,19 @@ fn confirm(prompt: &str, default: bool) -> Result<bool> {
 
 /// One line of text; validation errors re-ask instead of failing.
 fn ask(spec: &TextPrompt<'_>) -> Result<String> {
+    #[cfg(test)]
+    if let Some(answer) = script::text(spec) {
+        return answer;
+    }
     if let Some(value) = setup_ui::prompt_text(spec)? {
         return Ok(value);
     }
-    let hint = if spec.placeholder.is_empty() { String::new() } else { format!(" [{}]", spec.placeholder) };
+    let hint = if spec.placeholder.is_empty() { String::new() } else { format!(" [{}]", tr(spec.placeholder)) };
     loop {
-        let value = read_plain(&format!("{}{hint}: ", spec.label), spec.hidden)?;
+        let value = read_plain(&format!("{}{hint}: ", tr(spec.label)), spec.hidden)?;
         match spec.validate.map_or(Ok(()), |validate| validate(value.trim())) {
             Ok(()) => return Ok(value),
-            Err(reason) => println!("{reason}"),
+            Err(reason) => println!("{}", tr(&reason)),
         }
     }
 }
@@ -1719,6 +2220,155 @@ fn trim_newline(mut s: String) -> String {
     s
 }
 
+/// Scripted answers for driving whole setup flows in tests: every prompt
+/// takes the next answer (menus match an option by the start of its title),
+/// every line of output is logged instead of printed.
+#[cfg(test)]
+mod script {
+    use super::*;
+    use std::cell::RefCell;
+    use std::collections::VecDeque;
+
+    #[derive(Clone, Debug)]
+    pub enum A {
+        /// Pick the first option whose title starts with this.
+        Pick(&'static str),
+        /// Accept the highlighted default (menu or yes/no).
+        Default,
+        Yes,
+        No,
+        /// Type this and press Enter ("" = keep the shown value).
+        Text(&'static str),
+        /// What the next connection test reports.
+        Checks(Vec<Check>),
+        Esc,
+    }
+
+    struct Script {
+        answers: VecDeque<A>,
+        log: Vec<String>,
+    }
+
+    thread_local! {
+        static SCRIPT: RefCell<Option<Script>> = const { RefCell::new(None) };
+        static BALANCE: RefCell<Option<u64>> = const { RefCell::new(None) };
+    }
+
+    /// What `getBalance` answers in this test (default: unavailable).
+    pub fn set_balance(lamports: Option<u64>) {
+        BALANCE.with(|b| *b.borrow_mut() = lamports);
+    }
+
+    pub fn balance() -> Option<u64> {
+        BALANCE.with(|b| *b.borrow())
+    }
+
+    pub fn install(answers: Vec<A>) {
+        SCRIPT.with(|s| *s.borrow_mut() = Some(Script { answers: answers.into(), log: Vec::new() }));
+    }
+
+    /// Ends the script; every answer must have been used.
+    pub fn take() -> Vec<String> {
+        let script = SCRIPT.with(|s| s.borrow_mut().take()).expect("a script was installed");
+        assert!(script.answers.is_empty(), "unused answers {:?}\nlog:\n{}", script.answers, script.log.join("\n"));
+        script.log
+    }
+
+    pub fn active() -> bool {
+        SCRIPT.with(|s| s.borrow().is_some())
+    }
+
+    pub fn log(line: String) {
+        SCRIPT.with(|s| {
+            if let Some(script) = s.borrow_mut().as_mut() {
+                script.log.push(line);
+            }
+        });
+    }
+
+    fn next(prompt: &str) -> A {
+        SCRIPT.with(|s| {
+            let mut s = s.borrow_mut();
+            let script = s.as_mut().expect("script active");
+            script
+                .answers
+                .pop_front()
+                .unwrap_or_else(|| panic!("script ran out of answers at {prompt:?}\nlog:\n{}", script.log.join("\n")))
+        })
+    }
+
+    pub fn menu(prompt: &str, items: &[MenuItem<'_>], default: usize) -> Option<Result<usize>> {
+        if !active() {
+            return None;
+        }
+        let pick = match next(prompt) {
+            A::Esc => return Some(Err(setup_ui::cancelled())),
+            A::Default => default,
+            A::Pick(start) => items.iter().position(|i| i.title.starts_with(start)).unwrap_or_else(|| {
+                let titles: Vec<&str> = items.iter().map(|i| i.title).collect();
+                panic!("{prompt:?} has no option starting with {start:?}: {titles:?}")
+            }),
+            other => panic!("{prompt:?} is a menu, the script has {other:?}"),
+        };
+        let shown: Vec<String> = items
+            .iter()
+            .map(|i| format!("{} {} {}", tr(i.title), tr(i.description), i.badge.map(tr).unwrap_or_default()))
+            .collect();
+        log(format!("menu {} -> {} [{}]", tr(prompt), tr(items[pick].title), shown.join(" | ")));
+        Some(Ok(pick))
+    }
+
+    pub fn confirm(prompt: &str, default: bool) -> Option<Result<bool>> {
+        if !active() {
+            return None;
+        }
+        let yes = match next(prompt) {
+            A::Esc => return Some(Err(setup_ui::cancelled())),
+            A::Default => default,
+            A::Yes => true,
+            A::No => false,
+            other => panic!("{prompt:?} is yes/no, the script has {other:?}"),
+        };
+        log(format!("confirm {} -> {yes}", tr(prompt)));
+        Some(Ok(yes))
+    }
+
+    pub fn probe() -> Option<Result<Vec<Check>>> {
+        if !active() {
+            return None;
+        }
+        match next("connection test") {
+            A::Checks(checks) => {
+                log(format!("probe {} checks", checks.len()));
+                Some(Ok(checks))
+            }
+            other => panic!("a connection test runs here, the script has {other:?}"),
+        }
+    }
+
+    pub fn text(spec: &TextPrompt<'_>) -> Option<Result<String>> {
+        if !active() {
+            return None;
+        }
+        loop {
+            let value = match next(spec.label) {
+                A::Esc => return Some(Err(setup_ui::cancelled())),
+                A::Default => "",
+                A::Text(value) => value,
+                other => panic!("{:?} is a text prompt, the script has {other:?}", spec.label),
+            };
+            match spec.validate.map_or(Ok(()), |validate| validate(value.trim())) {
+                Ok(()) => {
+                    let shown = if spec.hidden && !value.is_empty() { "<hidden>" } else { value };
+                    log(format!("text {} [{}] -> {shown}", tr(spec.label), tr(spec.placeholder)));
+                    return Some(Ok(value.to_string()));
+                }
+                Err(reason) => log(format!("rejected {} -> {}", tr(spec.label), tr(&reason))),
+            }
+        }
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1818,5 +2468,700 @@ mod tests {
         assert_eq!(cfg.risk.max_open_executions, 1);
         assert!(cfg.profit.protect_min_out);
         cfg.validate().unwrap();
+    }
+
+    // ---------------------------------------------------------- whole flows
+
+    use super::script::A::{self, *};
+    use crate::doctor::Check;
+
+    fn check(name: &str, ok: bool) -> Check {
+        Check { ok, optional: false, name: name.into(), target: "https://x".into(), detail: "d".into() }
+    }
+
+    /// A connection test where everything answers.
+    fn ok() -> A {
+        Checks(vec![check("Solana RPC", true), check("Solana WebSocket", true), check("Jupiter", true)])
+    }
+
+    /// A connection test where Jupiter does not answer.
+    fn jupiter_down() -> A {
+        Checks(vec![check("Solana RPC", true), check("Solana WebSocket", true), check("Jupiter", false)])
+    }
+
+    /// A throwaway user directory: config, secrets, marker and wallets all
+    /// live here, never in the real ~/.config.
+    struct Sandbox {
+        dir: PathBuf,
+        lang: Lang,
+    }
+
+    impl Sandbox {
+        fn new(name: &str) -> Self {
+            let dir = std::env::temp_dir().join(format!("mobius-flow-{name}-{}", std::process::id()));
+            let _ = fs::remove_dir_all(&dir);
+            fs::create_dir_all(&dir).unwrap();
+            Self { dir, lang: Lang::En }
+        }
+        fn chinese(mut self) -> Self {
+            self.lang = Lang::Zh;
+            self
+        }
+        fn config(&self) -> PathBuf {
+            self.dir.join("config.toml")
+        }
+        fn env(&self) -> PathBuf {
+            self.dir.join(".env")
+        }
+        fn marker(&self) -> PathBuf {
+            self.dir.join("setup-complete")
+        }
+        fn with_config(self, text: &str) -> Self {
+            fs::write(self.config(), text).unwrap();
+            self
+        }
+        fn run(&self, answers: Vec<A>) -> (Result<Outcome>, Vec<String>) {
+            script::install(answers);
+            let opts = SetupOpts { lang: Some(self.lang), ..SetupOpts::default() };
+            let outcome = run(&self.config(), &self.env(), &self.marker(), true, &opts);
+            i18n::set(Lang::En);
+            (outcome, script::take())
+        }
+        fn unattended(&self, args: &[&str]) -> (Result<Outcome>, Vec<String>) {
+            use clap::Parser;
+            #[derive(Parser)]
+            struct Cli {
+                #[arg(long)]
+                setup: bool,
+                #[command(flatten)]
+                opts: SetupOpts,
+            }
+            let mut cli = Cli::try_parse_from(["mobius-searcher", "--setup", "--yes"].iter().chain(args)).unwrap();
+            cli.opts.lang.get_or_insert(self.lang);
+            script::install(Vec::new());
+            let outcome = run(&self.config(), &self.env(), &self.marker(), true, &cli.opts);
+            i18n::set(Lang::En);
+            (outcome, script::take())
+        }
+        fn effective(&self) -> Config {
+            config::load_layered(Path::new(config::REPO_CONFIG_PATH), &self.config()).unwrap().config
+        }
+        fn files(&self) -> Vec<String> {
+            let mut out = Vec::new();
+            let mut stack = vec![self.dir.clone()];
+            while let Some(dir) = stack.pop() {
+                for entry in fs::read_dir(dir).unwrap().flatten() {
+                    if entry.path().is_dir() {
+                        stack.push(entry.path());
+                    } else {
+                        out.push(entry.path().strip_prefix(&self.dir).unwrap().display().to_string());
+                    }
+                }
+            }
+            out.sort();
+            out
+        }
+    }
+
+    impl Drop for Sandbox {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.dir);
+        }
+    }
+
+    /// Owner/group/other bits on Unix; Windows has no such mode.
+    fn assert_private(path: &Path) {
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            assert_eq!(fs::metadata(path).unwrap().permissions().mode() & 0o777, 0o600, "{}", path.display());
+        }
+        #[cfg(not(unix))]
+        assert!(path.exists());
+    }
+
+    #[test]
+    fn research_first_use_creates_a_wallet_and_saves_only_a_delta() {
+        let sb = Sandbox::new("research");
+        let (outcome, log) =
+            sb.run(vec![Pick("Research"), Pick("Create"), Pick("Public"), ok(), Pick("Core"), Pick("Guarded"), Yes]);
+        assert!(!outcome.unwrap().start_now, "--setup never starts the engine");
+        let cfg = sb.effective();
+        assert_eq!(cfg.general.mode, Mode::Paper);
+        assert!(!cfg.execution.live_enabled);
+        let keypair = PathBuf::from(cfg.wallet.keypair_path.clone().unwrap());
+        assert_eq!(keypair, sb.dir.join("wallets/bot-keypair.json"), "wallets live next to the config");
+        assert_private(&keypair);
+        let wallet = Wallet::load(&keypair, None).unwrap();
+        assert_eq!(cfg.wallet.pubkey.as_deref(), Some(wallet.pubkey().to_string().as_str()));
+        assert_eq!(cfg.risk.max_trade_lamports, 10_000_000);
+        assert!(cfg.strategies.cross_dex[0].enabled && !cfg.strategies.triangular[0].enabled);
+        let text = fs::read_to_string(sb.config()).unwrap();
+        assert!(text.contains("[wallet]") && !text.contains("[jupiter]"), "only the delta: {text}");
+        assert!(sb.marker().exists());
+        assert!(!sb.env().exists(), "no secrets were entered, so no .env");
+        assert!(log.iter().any(|l| l.starts_with("warn Back up")), "{log:#?}");
+    }
+
+    #[test]
+    fn cancelling_or_declining_writes_nothing() {
+        for answers in [
+            vec![Esc],
+            vec![Pick("Research"), Esc],
+            vec![Pick("Research"), Pick("Create"), Pick("Public"), ok(), Pick("Core"), Esc],
+            vec![
+                Pick("Assisted"),
+                Pick("Create"),
+                Pick("Public"),
+                ok(),
+                Pick("Core"),
+                Pick("Guarded"),
+                Pick("Unlock"),
+                Esc,
+            ],
+        ] {
+            let sb = Sandbox::new("cancel");
+            let (outcome, _) = sb.run(answers.clone());
+            assert!(is_cancelled(&outcome.err().expect("cancelled")), "{answers:?}");
+            assert!(sb.files().is_empty(), "{answers:?} wrote {:?}", sb.files());
+        }
+        let sb = Sandbox::new("decline");
+        let (outcome, log) =
+            sb.run(vec![Pick("Research"), Pick("Create"), Pick("Public"), ok(), Pick("Core"), Pick("Guarded"), No]);
+        assert!(!outcome.unwrap().start_now);
+        assert!(sb.files().is_empty(), "declined save wrote {:?}", sb.files());
+        assert!(log.iter().any(|l| l == "info Nothing was written."), "{log:#?}");
+    }
+
+    #[test]
+    fn assisted_unlocks_confirm_only_with_the_exact_phrase() {
+        let sb = Sandbox::new("assisted");
+        let (outcome, log) = sb.run(vec![
+            Pick("Assisted"),
+            Pick("Create"),
+            Pick("Public"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Pick("Unlock"),
+            Text("enable confirm"),
+            Text("ENABLE CONFIRM"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("rejected Type ENABLE CONFIRM")), "{log:#?}");
+        let cfg = sb.effective();
+        assert_eq!(cfg.general.mode, Mode::Confirm);
+        assert!(cfg.execution.live_enabled);
+        assert!(Path::new(cfg.wallet.keypair_path.as_deref().unwrap()).exists());
+    }
+
+    #[test]
+    fn assisted_can_stay_in_paper_and_keep_the_new_wallet() {
+        let sb = Sandbox::new("assisted-paper");
+        let answers = vec![
+            Pick("Assisted"),
+            Pick("Create"),
+            Pick("Public"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Pick("Stay"),
+            Yes,
+        ];
+        sb.run(answers).0.unwrap();
+        let cfg = sb.effective();
+        assert_eq!(cfg.general.mode, Mode::Paper);
+        assert!(!cfg.execution.live_enabled);
+        assert!(cfg.wallet.keypair_path.is_some(), "the wallet is kept for later");
+    }
+
+    #[test]
+    fn an_existing_keypair_or_a_watched_address_is_checked_before_it_is_used() {
+        let sb = Sandbox::new("existing-keypair");
+        let keypair = sb.dir.join("mine.json");
+        let generated = GeneratedWallet::new();
+        generated.write_new(&keypair).unwrap();
+        let leaked = keypair.display().to_string().leak();
+        let (outcome, log) = sb.run(vec![
+            Pick("Research"),
+            Pick("Use an existing"),
+            Text("/no/such/keypair.json"),
+            Text(leaked),
+            Pick("Public"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("rejected Keypair file")), "{log:#?}");
+        let cfg = sb.effective();
+        assert_eq!(cfg.wallet.pubkey, Some(generated.pubkey().to_string()));
+        assert_eq!(cfg.wallet.keypair_path.as_deref(), Some(leaked as &str));
+
+        let sb = Sandbox::new("watch");
+        let address = "So11111111111111111111111111111111111111112";
+        let answers = vec![
+            Pick("Research"),
+            Pick("Watch"),
+            Text("not-an-address"),
+            Text(address),
+            Pick("Public"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ];
+        let (outcome, log) = sb.run(answers);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("rejected Wallet address")), "{log:#?}");
+        let cfg = sb.effective();
+        assert_eq!(cfg.wallet.pubkey.as_deref(), Some(address));
+        assert!(cfg.wallet.keypair_path.is_none(), "watch only");
+    }
+
+    #[test]
+    fn advanced_first_use_keeps_the_recommended_values_on_enter() {
+        let sb = Sandbox::new("advanced");
+        let mut answers = vec![Pick("Advanced"), Pick("PAPER"), Pick("No wallet"), Text("2.5")];
+        answers.extend([Default, Default, Default, Default, Default]); // five optional secrets
+        answers.extend([Pick("Keep"), ok()]); // network limits, then the connection test
+        answers.extend([Default, Default, Default, Default]); // round-trip: on, quote, amount, weight
+        answers.extend([Default, Default, Default, Default, Default]); // cross-DEX: on, quote, amount, dexes, weight
+        answers.push(Default); // triangular stays off
+        answers.extend([Pick("Keep"), Pick("Keep"), Pick("Keep"), Pick("Keep"), Pick("Keep"), Yes]);
+        sb.run(answers).0.unwrap();
+        let cfg = sb.effective();
+        assert_eq!(cfg.paper.equity_lamports, 2_500_000_000);
+        assert_eq!(cfg.risk.max_trade_pct_of_equity_bps, 100, "guarded until customised");
+        assert!(cfg.wallet.pubkey.is_none());
+        assert!(!cfg.strategies.triangular[0].enabled);
+    }
+
+    const EXISTING: &str = "[execution]\nlive_enabled = true\n\n[risk]\nmax_trade_pct_of_equity_bps = 1000\n\n\
+                            [wallet]\npubkey = \"So11111111111111111111111111111111111111112\"\n\
+                            keypair_path = \"/somewhere/hot-wallet.json\"\n";
+
+    #[test]
+    fn keeping_an_existing_setup_writes_nothing() {
+        let sb = Sandbox::new("keep").with_config(EXISTING);
+        let (outcome, log) = sb.run(vec![Pick("Keep")]);
+        outcome.unwrap();
+        assert_eq!(fs::read_to_string(sb.config()).unwrap(), EXISTING);
+        assert_eq!(sb.files(), vec!["config.toml".to_string()]);
+        assert!(log[0].contains("Wallet=So1111") && log[0].contains("hot-wallet.json"), "shown first: {}", log[0]);
+    }
+
+    #[test]
+    fn changing_one_part_leaves_everything_else_untouched() {
+        let sb = Sandbox::new("edit").with_config(EXISTING);
+        let before = sb.effective();
+        let answers = vec![Pick("Change"), Pick("Markets"), Pick("okx"), No, Pick("Review"), Yes];
+        sb.run(answers).0.unwrap();
+        let mut after = sb.effective();
+        assert!(!after.venues["okx"].enabled);
+        after.venues.get_mut("okx").unwrap().enabled = true;
+        assert_eq!(snapshot(&after), snapshot(&before), "only the venue switch changed");
+        assert_eq!(fs::read_to_string(sb.dir.join("config.toml.bak")).unwrap(), EXISTING);
+        assert!(!sb.env().exists());
+    }
+
+    #[test]
+    fn nothing_to_change_in_the_hub_writes_nothing() {
+        let sb = Sandbox::new("hub-noop").with_config(EXISTING);
+        let answers = vec![Pick("Change"), Pick("Wallet"), Pick("Keep"), Pick("Safety"), Pick("Keep"), Pick("Nothing")];
+        sb.run(answers).0.unwrap();
+        assert_eq!(fs::read_to_string(sb.config()).unwrap(), EXISTING);
+        assert_eq!(sb.files(), vec!["config.toml".to_string()]);
+    }
+
+    #[test]
+    fn switching_to_live_needs_the_exact_phrase() {
+        let sb = Sandbox::new("to-live").with_config(EXISTING);
+        let (outcome, log) = sb.run(vec![
+            Pick("Change"),
+            Pick("Mode"),
+            Pick("LIVE"),
+            Text("ENABLE CONFIRM"),
+            Text("ENABLE LIVE"),
+            Pick("Review"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("rejected Type ENABLE LIVE")), "{log:#?}");
+        let cfg = sb.effective();
+        assert_eq!(cfg.general.mode, Mode::Live);
+        assert!(cfg.execution.live_enabled);
+        assert_eq!(cfg.wallet.keypair_path.as_deref(), Some("/somewhere/hot-wallet.json"));
+    }
+
+    #[test]
+    fn starting_over_offers_to_keep_the_current_wallet() {
+        let sb = Sandbox::new("start-over").with_config(EXISTING);
+        let answers = vec![
+            Pick("Start over"),
+            Pick("Research"),
+            Pick("Keep"),
+            Pick("Public"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ];
+        sb.run(answers).0.unwrap();
+        let cfg = sb.effective();
+        assert_eq!(cfg.wallet.pubkey.as_deref(), Some("So11111111111111111111111111111111111111112"));
+        assert_eq!(cfg.wallet.keypair_path.as_deref(), Some("/somewhere/hot-wallet.json"));
+        assert_eq!(cfg.general.mode, Mode::Paper);
+        assert!(!cfg.execution.live_enabled, "research mode locks sending");
+        assert!(sb.dir.join("config.toml.bak").exists());
+    }
+
+    #[test]
+    fn secrets_go_only_to_the_private_env_file_and_never_to_the_screen() {
+        let sb = Sandbox::new("secrets");
+        let (outcome, log) = sb.run(vec![
+            Pick("Research"),
+            Pick("Create"),
+            Pick("My own"),
+            Text("jup-secret-123456"),
+            Text("ftp://rpc.example"),
+            Text("https://rpc.example/rpc-secret-789"),
+            Default,
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("rejected Private RPC URL")), "{log:#?}");
+        let all = log.join("\n");
+        assert!(!all.contains("jup-secret") && !all.contains("rpc-secret"), "a secret reached the output:\n{all}");
+        let cfg = sb.effective();
+        let env = fs::read_to_string(sb.env()).unwrap();
+        assert!(env.contains(&format!("{}='jup-secret-123456'", cfg.jupiter.api_key_env)), "{env}");
+        assert!(env.contains("rpc-secret-789"));
+        assert_private(&sb.env());
+        let config_text = fs::read_to_string(sb.config()).unwrap();
+        assert!(
+            !config_text.contains("jup-secret") && !config_text.contains("rpc-secret"),
+            "secrets never go into the config: {config_text}"
+        );
+    }
+
+    // ------------------------------------------------------ --setup --yes
+
+    #[test]
+    fn yes_flags_parse_only_together_with_setup() {
+        use clap::Parser;
+        #[derive(Parser)]
+        struct Cli {
+            #[arg(long)]
+            setup: bool,
+            #[command(flatten)]
+            opts: SetupOpts,
+        }
+        assert!(Cli::try_parse_from(["m", "--yes"]).is_err(), "--yes needs --setup");
+        assert!(Cli::try_parse_from(["m", "--setup", "--wallet", "new"]).is_err(), "--wallet needs --yes");
+        assert!(Cli::try_parse_from(["m", "--setup", "--yes", "--safety", "reckless"]).is_err());
+        let cli = Cli::try_parse_from(["m", "--setup", "--yes", "--strategies", "round-trip", "--safety", "balanced"])
+            .unwrap();
+        assert_eq!((cli.opts.strategies, cli.opts.safety), (Some(ScopeArg::RoundTrip), Some(SafetyArg::Balanced)));
+    }
+
+    #[test]
+    fn unattended_first_use_is_a_research_setup_without_a_wallet() {
+        let sb = Sandbox::new("yes-first");
+        let (outcome, log) = sb.unattended(&[]);
+        assert!(!outcome.unwrap().start_now);
+        let cfg = sb.effective();
+        assert_eq!(cfg.general.mode, Mode::Paper);
+        assert!(cfg.wallet.pubkey.is_none() && cfg.wallet.keypair_path.is_none(), "no wallet unless asked");
+        assert_eq!(cfg.risk.max_trade_pct_of_equity_bps, 100);
+        assert!(cfg.strategies.cross_dex[0].enabled && !cfg.strategies.triangular[0].enabled);
+        assert_eq!(sb.files(), vec!["config.toml".to_string(), "setup-complete".to_string()]);
+        assert!(log.iter().any(|l| l.starts_with("note Setup:")), "{log:#?}");
+    }
+
+    #[test]
+    fn unattended_new_wallet_is_created_private() {
+        let sb = Sandbox::new("yes-wallet");
+        sb.unattended(&["--wallet", "new", "--strategies", "all"]).0.unwrap();
+        let cfg = sb.effective();
+        let keypair = PathBuf::from(cfg.wallet.keypair_path.unwrap());
+        assert_private(&keypair);
+        assert!(cfg.strategies.triangular[0].enabled);
+    }
+
+    #[test]
+    fn unattended_on_an_existing_setup_changes_only_what_is_asked() {
+        let sb = Sandbox::new("yes-noop").with_config(EXISTING);
+        let (outcome, log) = sb.unattended(&[]);
+        outcome.unwrap();
+        assert_eq!(fs::read_to_string(sb.config()).unwrap(), EXISTING);
+        assert_eq!(sb.files(), vec!["config.toml".to_string()]);
+        assert!(log.iter().any(|l| l.starts_with("info No changes")), "{log:#?}");
+
+        let sb = Sandbox::new("yes-safety").with_config(EXISTING);
+        let before = sb.effective();
+        sb.unattended(&["--safety", "balanced"]).0.unwrap();
+        let after = sb.effective();
+        assert_eq!(after.risk.max_trade_pct_of_equity_bps, 250);
+        assert_eq!(after.wallet.pubkey, before.wallet.pubkey);
+        assert_eq!(after.execution.live_enabled, before.execution.live_enabled);
+        assert_eq!(strategies_summary(&after), strategies_summary(&before), "strategy choice kept");
+        assert_eq!(format!("{:?}", after.venues), format!("{:?}", before.venues));
+    }
+
+    #[test]
+    fn unattended_errors_leave_every_file_alone() {
+        let live = format!("{EXISTING}\n[general]\nmode = \"live\"\n");
+        for args in [
+            vec!["--wallet", "none"],
+            vec!["--wallet", "watch:So11111111111111111111111111111111111111112"],
+            vec!["--wallet", "/no/such/keypair.json"],
+        ] {
+            let sb = Sandbox::new("yes-err").with_config(&live);
+            let (outcome, _) = sb.unattended(&args);
+            assert!(outcome.is_err(), "{args:?} should fail");
+            assert_eq!(fs::read_to_string(sb.config()).unwrap(), live, "{args:?}");
+            assert_eq!(sb.files(), vec!["config.toml".to_string()], "{args:?}");
+        }
+        let sb = Sandbox::new("yes-bad-watch");
+        assert!(sb.unattended(&["--wallet", "watch:nope"]).0.is_err());
+        assert!(sb.files().is_empty());
+    }
+
+    // ------------------------------------------------ connection test (phase 3)
+
+    #[test]
+    fn a_failed_connection_offers_another_proxy_and_tests_again() {
+        let sb = Sandbox::new("proxy");
+        let (outcome, log) = sb.run(vec![
+            Pick("Research"),
+            Pick("Create"),
+            Pick("Public"),
+            jupiter_down(),
+            Pick("Try another proxy"),
+            Pick("Use this HTTP proxy"),
+            Text("socks5://127.0.0.1:7897"),
+            Text("http://127.0.0.1:7897"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l == "check FAIL Jupiter https://x · d"), "{log:#?}");
+        assert!(log.iter().any(|l| l.starts_with("menu Jupiter did not answer")), "{log:#?}");
+        assert!(log.iter().any(|l| l.starts_with("rejected HTTP proxy")), "{log:#?}");
+        assert_eq!(sb.effective().network.proxy, "http://127.0.0.1:7897");
+    }
+
+    #[test]
+    fn continuing_without_a_connection_still_saves_and_says_so() {
+        let sb = Sandbox::new("offline");
+        let answers = vec![
+            Pick("Research"),
+            Pick("No wallet"),
+            Pick("Public"),
+            jupiter_down(),
+            Pick("Continue"),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ];
+        let (outcome, log) = sb.run(answers);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l.starts_with("warn Saved without a working connection")), "{log:#?}");
+        assert!(sb.config().exists());
+    }
+
+    #[test]
+    fn the_hub_can_test_the_connection_without_changing_anything() {
+        let sb = Sandbox::new("hub-test").with_config(EXISTING);
+        let answers = vec![Pick("Change"), Pick("Network"), Pick("Test"), ok(), Pick("Nothing")];
+        let (outcome, log) = sb.run(answers);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l == "probe 3 checks"), "{log:#?}");
+        assert_eq!(fs::read_to_string(sb.config()).unwrap(), EXISTING);
+    }
+
+    #[test]
+    fn doctor_checks_survive_the_json_round_trip() {
+        let c = Check {
+            ok: false,
+            optional: true,
+            name: "Jito tip stream".into(),
+            target: "wss://…".into(),
+            detail: "x".into(),
+        };
+        assert_eq!(Check::from_json(&c.to_json()), Some(c));
+        assert_eq!(Check::from_json(&serde_json::json!({"ok": true})), None);
+    }
+
+    // ------------------------------------------------ wallet status (phase 4)
+
+    #[test]
+    fn a_new_signing_wallet_gets_a_funding_qr_code() {
+        let sb = Sandbox::new("qr");
+        let answers = vec![
+            Pick("Assisted"),
+            Pick("Create"),
+            Pick("Public"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Pick("Stay"),
+            Yes,
+        ];
+        let (outcome, log) = sb.run(answers);
+        outcome.unwrap();
+        let pubkey = sb.effective().wallet.pubkey.unwrap();
+        assert!(log.iter().any(|l| *l == format!("qr solana:{pubkey}")), "{log:#?}");
+    }
+
+    #[test]
+    fn research_wallets_show_their_balance_but_need_no_funding() {
+        let sb = Sandbox::new("balance");
+        let keypair = sb.dir.join("mine.json");
+        GeneratedWallet::new().write_new(&keypair).unwrap();
+        script::set_balance(Some(500_000_000));
+        let path = keypair.display().to_string().leak();
+        let answers = vec![
+            Pick("Research"),
+            Pick("Use an existing"),
+            Text(path),
+            Pick("Public"),
+            ok(),
+            Pick("Core"),
+            Pick("Guarded"),
+            Yes,
+        ];
+        let (outcome, log) = sb.run(answers);
+        script::set_balance(None);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l == "info Balance 0.5 SOL"), "{log:#?}");
+        assert!(!log.iter().any(|l| l.starts_with("qr ")), "PAPER needs no funding: {log:#?}");
+    }
+
+    #[test]
+    fn a_live_wallet_below_the_fee_reserve_is_asked_to_be_funded() {
+        let live = format!("{EXISTING}\n[general]\nmode = \"live\"\n");
+        let sb = Sandbox::new("underfunded").with_config(&live);
+        script::set_balance(Some(1_000));
+        let (outcome, log) = sb.run(vec![Pick("Change"), Pick("Wallet"), Pick("Keep"), Pick("Nothing")]);
+        script::set_balance(None);
+        outcome.unwrap();
+        assert!(log.iter().any(|l| l == "info Balance 0.000001 SOL"), "{log:#?}");
+        assert!(log.iter().any(|l| l == "qr solana:So11111111111111111111111111111111111111112"), "{log:#?}");
+        assert_eq!(fs::read_to_string(sb.config()).unwrap(), live, "looking at the wallet changes nothing");
+    }
+
+    // ------------------------------------------------------ 中文 (phase 5)
+
+    /// English left in a Chinese log line: two English words in a row that
+    /// are not names, units or commands. Paths, URLs, numbers and the log's
+    /// own prefix are ignored.
+    fn untranslated(line: &str) -> Option<String> {
+        const KEEP: &[&str] = &[
+            "mobius", "searcher", "setup", "doctor", "mode", "lang", "confirm", "live", "paper", "env", "rtse", "bps",
+            "sol", "micro", "lamports", "bundle", "slot", "base", "dont", "front", "block", "engine", "tip", "floor",
+            "ctrl", "esc", "key", "okx", "true", "false", "enable", "http", "https",
+        ];
+        let words: Vec<&str> = line
+            .split_whitespace()
+            .skip(1) // menu / note / text / step …
+            .filter(|w| !w.contains(['/', '.', '$', ':', '=', '-', '_']) && !w.chars().any(|c| c.is_ascii_digit()))
+            .collect();
+        // capitalised words are names (Solana RPC, Jupiter API, Solana CLI)
+        let english: Vec<&str> = words.iter().flat_map(|w| w.split(|c: char| !c.is_ascii_alphabetic())).collect();
+        english
+            .windows(2)
+            .find(|pair| {
+                pair.iter().all(|w| w.len() >= 3 && w.chars().all(|c| c.is_ascii_lowercase()) && !KEEP.contains(w))
+            })
+            .map(|pair| pair.join(" "))
+    }
+
+    fn assert_all_chinese(log: &[String]) {
+        let left: Vec<String> = log.iter().filter_map(|l| untranslated(l).map(|w| format!("{w:?} in {l}"))).collect();
+        assert!(left.is_empty(), "untranslated text:\n{}", left.join("\n"));
+    }
+
+    #[test]
+    fn the_untranslated_check_itself_works() {
+        assert!(untranslated("note 核对: 模式=PAPER · 只模拟，发送锁定").is_none());
+        assert_eq!(untranslated("info Nothing was written here").as_deref(), Some("was written"));
+        assert!(untranslated("text 私钥文件 [/private/var/folders/x.json] -> /tmp/a").is_none());
+    }
+
+    #[test]
+    fn a_chinese_first_use_is_fully_translated() {
+        for answers in [
+            vec![Pick("Research"), Pick("Create"), Pick("Public"), ok(), Pick("Core"), Pick("Guarded"), Yes],
+            vec![
+                Pick("Assisted"),
+                Pick("Create"),
+                Pick("My own"),
+                Text("jup-secret-123456"),
+                Default,
+                Default,
+                jupiter_down(),
+                Pick("Try another proxy"),
+                Pick("Use this HTTP proxy"),
+                Text("socks5://127.0.0.1:1"),
+                Text("http://127.0.0.1:7897"),
+                ok(),
+                Pick("Everything"),
+                Pick("Balanced"),
+                Pick("Unlock"),
+                Text("enable"),
+                Text("ENABLE CONFIRM"),
+                Yes,
+            ],
+        ] {
+            let sb = Sandbox::new("zh").chinese();
+            let (outcome, log) = sb.run(answers);
+            outcome.unwrap();
+            assert_all_chinese(&log);
+            assert!(log.iter().any(|l| l.starts_with("finish 设置完成")), "{log:#?}");
+        }
+    }
+
+    #[test]
+    fn a_chinese_edit_of_an_existing_setup_is_fully_translated() {
+        let sb = Sandbox::new("zh-hub").with_config(EXISTING).chinese();
+        let (outcome, log) = sb.run(vec![
+            Pick("Change"),
+            Pick("Network"),
+            Pick("Test"),
+            ok(),
+            Pick("Markets"),
+            Pick("okx"),
+            No,
+            Pick("Safety"),
+            Pick("Guarded"),
+            Pick("Mode"),
+            Pick("PAPER"),
+            Pick("Review"),
+            Yes,
+        ]);
+        outcome.unwrap();
+        assert_all_chinese(&log);
+        // the unlock phrase and product names stay as typed
+        assert!(log.iter().any(|l| l.contains("当前设置")), "{log:#?}");
+    }
+
+    #[test]
+    fn chinese_unattended_output_is_translated_and_english_stays_english() {
+        let sb = Sandbox::new("zh-yes").chinese();
+        let (outcome, log) = sb.unattended(&["--wallet", "new"]);
+        outcome.unwrap();
+        assert_all_chinese(&log);
+        let sb = Sandbox::new("en-yes");
+        let (_, log) = sb.unattended(&[]);
+        assert!(log.iter().any(|l| l.starts_with("success Settings saved to")), "{log:#?}");
     }
 }
