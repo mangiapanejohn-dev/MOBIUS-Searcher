@@ -31,10 +31,14 @@ wallet to `~/.config/mobius/wallets/` (`0600`) — never into the repository.
 | **CONFIRM** | real | yes | only after you press `y` for each one | `execution.live_enabled = true` + `wallet.keypair_path` + `--mode confirm` |
 | **LIVE** | real | yes | automatically, when simulation and risk pass | same as CONFIRM + `--mode live` |
 
-In every mode a transaction is only considered when its simulation shows a
-profit after all costs, and the risk engine can refuse it (size, daily loss,
-fee reserve, staleness, kill switch). **`K` stops new submissions from any
-page.** Read [LIVE_CHECKLIST.md](LIVE_CHECKLIST.md) before CONFIRM or LIVE.
+In every mode a transaction is only considered when its simulation meets
+the profit thresholds after all costs, and the risk engine can refuse it
+(size, daily loss, fee reserve, staleness, kill switch). The thresholds are
+yours to set (see [Thresholds](#thresholds)); by default a landed trade
+cannot lose money, because the final leg's on-chain minimum output covers
+the input, every cost and the minimum profit. **`K` stops new submissions
+from any page.** Read [LIVE_CHECKLIST.md](LIVE_CHECKLIST.md) before CONFIRM
+or LIVE, and run the [canary](#canary-the-first-real-trade) once first.
 
 ## Command line
 
@@ -51,6 +55,11 @@ page.** Read [LIVE_CHECKLIST.md](LIVE_CHECKLIST.md) before CONFIRM or LIVE.
 | `mobius-searcher --report latest` | statistics of a session (`--json` for JSON) |
 | `mobius-searcher --replay latest` | the same UI over a recorded session |
 | `mobius-searcher --replay ID --snapshot 120x40 --out DIR` | render pages of a session to `.txt` / `.html` |
+| `mobius-searcher --research [--duration N]` | measurements only: size ladder, cross-chain spreads, DEX lag ([Research](#research)) |
+| `mobius-searcher --research-report [RUN\|latest\|all]` | what the research runs recorded, as whole distributions (`--json`) |
+| `mobius-searcher --canary` | one real, loss-bounded trade through the LIVE path, then a reconciliation ([Canary](#canary-the-first-real-trade)) |
+| `mobius-searcher --quote WETH/USDC --size 0.5` | price a market on every enabled venue that lists it |
+| `mobius-searcher --migrate-config` | move the Solana sections of your config under `[venues.solana]` (asks first) |
 | `mobius-searcher --db-info` | database size per session |
 | `mobius-searcher --prune` | apply the retention policy now ([STORAGE.md](STORAGE.md)) |
 
@@ -94,6 +103,7 @@ Display options: `--glyphs unicode|ascii`, `--color truecolor|ansi256|none`,
 | `f` | filter opportunities (all · gross>0 · executable · skipped) |
 | `p` · `t` · `o` | Markets page: next pair · quote book / last trades · bottom tabs |
 | `y` / `n` | approve / decline a pending CONFIRM transaction |
+| `T` | thresholds panel: stage · review · apply ([Thresholds](#thresholds)) |
 | `?` | keys (with the logo) |
 | `q` | quit (graceful; the recording is flushed) |
 
@@ -109,6 +119,72 @@ dragging, or run with `--no-mouse`.
 The UI works in any modern terminal. Terminals with an image protocol (kitty
 graphics, iTerm2 or sixel) show the real logo; others get a character-cell
 rendering of it. See [INSTALL.md](INSTALL.md#terminals) for recommendations.
+
+## Thresholds
+
+`T` opens the thresholds panel (keyboard only): minimum profit in lamports,
+bp and USD, the on-chain minimum output, slippage reserve, safety buffer,
+largest deposit per trade, slippage tolerance, largest trade and daily loss
+limit. `⏎` edits the selected value and stages it, `a` shows every staged
+change as old → new, `⏎` applies it. The engine checks the change again,
+applies it at once, writes a log line per value and saves only those keys in
+your config file (comments stay; the previous file is kept as `.bak`).
+
+Settings under which a landed trade *can* lose money — the on-chain minimum
+output switched off, or a minimum profit below zero — need you to type
+`ALLOW LOSS`. The header then shows **LOSS ALLOWED** on every page until you
+change them back.
+
+Deposits — rent locked in accounts a trade leaves created, such as a token
+account for a new token — are capital, not a cost: they are shown but not
+subtracted from profit, and `profit.max_new_deposit_lamports` caps them.
+
+## Research
+
+```bash
+mobius-searcher --research
+```
+
+Measurements that decide what is worth building, recorded to
+`<data dir>/research.sqlite`. Nothing is signed or sent. It holds the Jupiter
+budget while it runs: a trading session started meanwhile is refused, and the
+other way round. On macOS it keeps the machine awake (on AC power).
+
+| Measurement | Question |
+|---|---|
+| Size ladder | the configured routes quoted at 0.01–2 SOL: does a bigger trade change the edge? |
+| Cross-chain | ETH and cbBTC bought and sold on Solana (Jupiter) vs Base/Arbitrum (Uniswap v3), after swap fees, Solana fees and gas |
+| DEX lag | pool mids vs the OKX/Binance best bid/ask; a gap over `lag_trigger_bps` gets one executable Jupiter quote on that DEX, and control quotes at random times show whether the trigger beats chance |
+
+```bash
+mobius-searcher --research-report
+```
+
+The report prints whole distributions with the number of samples next to the
+number of positive ones, and the caveats next to the numbers: quotes are not
+fills, bridging and inventory moves between chains are not included, pool
+mids are not executable.
+
+## Canary: the first real trade
+
+```bash
+mobius-searcher --canary
+```
+
+Before anything else is trusted with money, send **one** trade through the
+real LIVE path and check every lamport of it. The canary runs the normal
+engine in CONFIRM mode — each candidate waits for `y` — with one route
+(SOL → USDC → SOL), and replaces the profit thresholds with a loss bound
+(`canary.max_loss_lamports`, default 0.0005 SOL) that is also written into the
+transaction's on-chain minimum output. After the first landed trade the
+session ends, the transaction is fetched, and the taker's SOL and USDC
+changes are explained by the executed leg outputs, the fee, the tip and any
+deposits. The report is printed and kept under `<data dir>/canary/`.
+
+It needs `execution.live_enabled = true`, a keypair, SOL for the trade and
+fees, and some USDC: the second leg spends exactly what the first leg was
+quoted, and the wallet's USDC covers any difference (`--doctor` shows how
+many worst-case differences it covers).
 
 ## Recording, reports and replay
 
