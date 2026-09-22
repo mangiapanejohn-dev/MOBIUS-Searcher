@@ -286,9 +286,10 @@ CI 在 Linux、macOS、Windows 上编译和测试。连接真实服务的冒烟�
 
 ## 路线图
 
-以下是计划中、**0.1.0 尚未实现**的内容：OKX 下单连接器、Binance、EVM 链上的 DEX，
-以及把 Solana 相关配置移到 `[venues.solana]` 下。本版本包含哪些内容见
-[CHANGELOG](CHANGELOG.md)。
+0.2 用 `--research` 测量利润可能来自哪里，并用一笔限定亏损、逐账户对账的真实交易
+（`--canary`）验证执行链路。0.3 根据测量结果行动：Solana 和 EVM 链上的下单，以及从数据
+里选出的策略；如果没有方向经得起数据检验，就不做。OKX 和 Binance 继续只作为行情参考价。
+详见 [ROADMAP.md](ROADMAP.md) 和 [CHANGELOG](CHANGELOG.md)。
 
 ## 许可证
 

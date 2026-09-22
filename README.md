@@ -288,9 +288,12 @@ OKX) are `#[ignore]`d and run with `-- --ignored`.
 
 ## Roadmap
 
-Planned, **not implemented** in 0.1.0: an OKX order connector, Binance, EVM-chain
-DEXes, and moving the Solana stack under `[venues.solana]`. See the
-[CHANGELOG](CHANGELOG.md) for what is in this release.
+0.2 measures where an edge could come from (`--research`) and proves the
+execution path with one loss-bounded, reconciled trade (`--canary`). 0.3 acts on
+what the measurements show: on-chain order entry on Solana and EVM chains and a
+strategy chosen from the data — or none, if no direction survives. OKX and
+Binance stay market data (reference prices). See [ROADMAP.md](ROADMAP.md) and
+the [CHANGELOG](CHANGELOG.md).
 
 ## License
 
