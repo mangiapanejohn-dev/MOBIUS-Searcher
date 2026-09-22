@@ -195,7 +195,8 @@ pub fn required_final_out(opp: &Opportunity, guards: &ProfitGuards) -> u64 {
     // input is fixed, so the difference comes out of the wallet's inventory.
     // The final leg has to pay that back too for the trade to stay above water.
     let shortfall = intermediate_shortfall_value(&opp.route.legs);
-    (opp.input as i128 + non_slippage as i128 + shortfall as i128 + guards.min_profit_lamports.max(0) as i128)
+    // a negative minimum profit (the operator accepted losses) lowers the floor
+    (opp.input as i128 + non_slippage as i128 + shortfall as i128 + guards.min_profit_lamports as i128)
         .clamp(0, u64::MAX as i128) as u64
 }
 

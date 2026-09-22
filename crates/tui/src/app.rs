@@ -233,6 +233,8 @@ pub struct App {
     pub picker: Option<usize>,
     pub help: bool,
     pub kill_release_prompt: bool,
+    /// Threshold panel (`T`), when open.
+    pub thresholds: Option<crate::thresholds::Panel>,
     pub status: Option<(String, Instant)>,
     pub quit: bool,
     /// The logo as a real image when the terminal has a graphics protocol
@@ -275,6 +277,7 @@ impl App {
             picker: None,
             help: false,
             kill_release_prompt: false,
+            thresholds: None,
             status: None,
             quit: false,
             logo_image: None,
@@ -376,6 +379,24 @@ impl App {
             self.kill_release_prompt = false;
             return out;
         }
+        if let Some(p) = &mut self.thresholds {
+            use crate::thresholds::Outcome;
+            match p.on_key(k, vm) {
+                Outcome::Stay => {}
+                Outcome::Close(msg) => {
+                    self.thresholds = None;
+                    if let Some(m) = msg {
+                        self.flash(m);
+                    }
+                }
+                Outcome::Send(cmd, msg) => {
+                    self.thresholds = None;
+                    out.push(cmd);
+                    self.flash(msg);
+                }
+            }
+            return out;
+        }
         if let Some(sel) = self.picker {
             let n = MetricId::ALL.len();
             match k.code {
@@ -432,6 +453,8 @@ impl App {
                 }
             }
             KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('T') if vm.replay => self.flash("thresholds can be changed in a live session only"),
+            KeyCode::Char('T') => self.thresholds = Some(crate::thresholds::Panel::default()),
             KeyCode::Char(c @ '1'..='8') => self.goto(Page::ALL[(c as u8 - b'1') as usize]),
             KeyCode::Tab | KeyCode::BackTab => {
                 let f = self.page.focuses();

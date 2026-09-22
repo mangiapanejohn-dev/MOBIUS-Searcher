@@ -507,3 +507,27 @@ fn kill_switch_click_engages_but_release_stays_on_the_keyboard() {
     assert!(a.on_mouse(mouse(MouseEventKind::Down(MouseButton::Left), (60, 20)), &vm).is_empty());
     assert!(!a.kill_release_prompt);
 }
+
+#[test]
+fn threshold_panel_renders_and_warns_before_allowing_losses() {
+    use searcher_tui::thresholds::{Mode, Panel};
+    let mut vm = ViewModel::new(false);
+    vm.thresholds = searcher_core::thresholds::values(&searcher_core::config::Config::default());
+    let mut a = app(false);
+    let mut p = Panel::default();
+    p.staged.insert("profit.protect_min_out".into(), "false".into());
+    a.thresholds = Some(p.clone());
+    for (w, h) in [(120, 40), (80, 24)] {
+        let out = buffer_text(&snapshot(&mut a, &vm, w, h));
+        assert!(out.contains("Thresholds"), "{w}x{h}:\n{out}");
+        assert!(out.contains("true  →  false"), "staged change shown at {w}x{h}:\n{out}");
+    }
+    p.mode = Mode::Review;
+    a.thresholds = Some(p);
+    let out = buffer_text(&snapshot(&mut a, &vm, 120, 40));
+    assert!(out.contains("LOSE money"), "{out}");
+    // once allowed, the header says so on every page
+    vm.loss_possible = true;
+    a.thresholds = None;
+    assert!(buffer_text(&snapshot(&mut a, &vm, 120, 40)).contains("LOSS ALLOWED"));
+}

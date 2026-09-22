@@ -91,7 +91,7 @@ pub struct RiskContext {
 }
 
 pub struct RiskEngine {
-    limits: RiskLimits,
+    limits: parking_lot::RwLock<RiskLimits>,
     state: Mutex<RiskState>,
     kill: std::sync::Arc<KillSwitch>,
 }
@@ -102,11 +102,16 @@ fn utc_day(ts: Ts) -> i64 {
 
 impl RiskEngine {
     pub fn new(limits: RiskLimits, kill: std::sync::Arc<KillSwitch>) -> Self {
-        Self { limits, state: Mutex::new(RiskState::default()), kill }
+        Self { limits: parking_lot::RwLock::new(limits), state: Mutex::new(RiskState::default()), kill }
     }
 
-    pub fn limits(&self) -> &RiskLimits {
-        &self.limits
+    pub fn limits(&self) -> RiskLimits {
+        self.limits.read().clone()
+    }
+
+    /// Replace the limits (operator change while running).
+    pub fn set_limits(&self, limits: RiskLimits) {
+        *self.limits.write() = limits;
     }
 
     pub fn kill_switch(&self) -> &std::sync::Arc<KillSwitch> {
@@ -129,7 +134,7 @@ impl RiskEngine {
 
     /// Evaluate an opportunity that has been priced (and ideally simulated).
     pub fn evaluate(&self, o: &Opportunity, ctx: &RiskContext) -> RiskDecision {
-        let l = &self.limits;
+        let l = &self.limits();
         let mut v = Vec::new();
         let st = self.state(ctx.now);
 

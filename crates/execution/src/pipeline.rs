@@ -167,8 +167,20 @@ pub struct Pipeline {
     pub live: Option<(SendPermit, Wallet, RealBackend)>,
     /// Scheduler-independent latency probes.
     pub probe: Arc<Probe>,
+    /// Guards, cost parameters and min-out protection in effect; the operator
+    /// can replace them while running (`cfg` holds the values at start).
+    thresholds: parking_lot::RwLock<Arc<Thresholds>>,
     next_id: AtomicU64,
     last_decision: Mutex<HashMap<String, Instant>>,
+}
+
+/// The operator-adjustable part of the pipeline configuration.
+#[derive(Clone, Debug)]
+pub struct Thresholds {
+    pub guards: ProfitGuards,
+    pub cost_params: CostParams,
+    pub protect_min_out: bool,
+    pub slippage: SlippageSpec,
 }
 
 const SIM_CU_LIMIT: u32 = MAX_COMPUTE_UNITS_PER_TX;
@@ -191,8 +203,15 @@ impl Pipeline {
         telemetry: Arc<searcher_telemetry::Telemetry>,
         probe: Arc<Probe>,
     ) -> Self {
+        let thresholds = parking_lot::RwLock::new(Arc::new(Thresholds {
+            guards: cfg.guards.clone(),
+            cost_params: cfg.cost_params.clone(),
+            protect_min_out: cfg.protect_min_out,
+            slippage: cfg.slippage,
+        }));
         Self {
             cfg,
+            thresholds,
             tokens,
             jupiter,
             rpc,
@@ -285,7 +304,7 @@ impl Pipeline {
     /// The `/build` request for `spec` at `amount` with the configured taker
     /// and slippage (what the scanner and the scheduler both send).
     pub fn request_for(&self, spec: &LegSpec, amount: u64) -> BuildRequest {
-        self.build_request(spec, amount, self.cfg.taker.unwrap_or(Address([1; 32])), self.cfg.slippage)
+        self.build_request(spec, amount, self.cfg.taker.unwrap_or(Address([1; 32])), self.thresholds().slippage)
     }
 
     fn build_request(&self, spec: &LegSpec, amount: u64, taker: Address, slippage: SlippageSpec) -> BuildRequest {
@@ -345,8 +364,17 @@ impl Pipeline {
         self.metric(MetricId::JupiterLatency, leg.latency_ms as f64);
     }
 
-    fn pricing_env<'a>(&'a self, tip: &'a dyn Fn(i64) -> TipInfo) -> PricingEnv<'a> {
-        PricingEnv { cost_params: &self.cfg.cost_params, guards: &self.cfg.guards, tip }
+    fn pricing_env<'a>(t: &'a Thresholds, tip: &'a dyn Fn(i64) -> TipInfo) -> PricingEnv<'a> {
+        PricingEnv { cost_params: &t.cost_params, guards: &t.guards, tip }
+    }
+
+    /// Thresholds in effect now.
+    pub fn thresholds(&self) -> Arc<Thresholds> {
+        self.thresholds.read().clone()
+    }
+
+    pub fn set_thresholds(&self, t: Thresholds) {
+        *self.thresholds.write() = Arc::new(t);
     }
 
     // ───────────────────────────── scanner ─────────────────────────────
@@ -385,7 +413,7 @@ impl Pipeline {
         let mut observes: Vec<Observes> = Vec::with_capacity(plan.legs.len());
         let mut amount = plan.amount;
         for (i, spec) in plan.legs.iter().enumerate() {
-            let req = self.build_request(spec, amount, taker, self.cfg.slippage);
+            let req = self.build_request(spec, amount, taker, self.thresholds().slippage);
             match self.jupiter.build(&req, i as u8).await {
                 Ok(b) => {
                     observes.push(self.observe_leg(&req, &b));
@@ -480,7 +508,7 @@ impl Pipeline {
         }
 
         // On-chain profit floor for real candidates.
-        if opp.status == OppStatus::Quoted && self.cfg.protect_min_out {
+        if opp.status == OppStatus::Quoted && self.thresholds().protect_min_out {
             self.protect(plan, opp, built).await;
         }
 
@@ -585,7 +613,8 @@ impl Pipeline {
         atas: u8,
     ) -> Opportunity {
         let tip = |p: i64| self.tip_for(p);
-        let env = self.pricing_env(&tip);
+        let th = self.thresholds();
+        let env = Self::pricing_env(&th, &tip);
         let now = Ts::now();
         price(
             PricingInput {
@@ -606,7 +635,7 @@ impl Pipeline {
     async fn protect(&self, plan: &CandidatePlan, opp: &mut Opportunity, built: &mut [BuiltLeg]) {
         let id = opp.id;
         let Some(last) = built.last() else { return };
-        let required = required_final_out(opp, &self.cfg.guards);
+        let required = required_final_out(opp, &self.thresholds().guards);
         let Some(bps) = protective_slippage_bps(last.leg.out_amount, required) else {
             opp.status = OppStatus::Skipped(SkipReason::Slippage);
             self.stage(
@@ -784,7 +813,8 @@ impl Pipeline {
             let cu_used: Vec<u32> = sim.txs.iter().map(|t| t.units_consumed).collect();
             let shape = if job.plan == PlanKind::Bundle { TxShape::bundle(job.txs.len()) } else { TxShape::SINGLE };
             let tip = |p: i64| self.tip_for(p);
-            let env = self.pricing_env(&tip);
+            let th = self.thresholds();
+            let env = Self::pricing_env(&th, &tip);
             let status_before = job.opp.status.clone();
             let base_dec = self.tokens.sol().decimals;
             reprice_after_simulation(
@@ -881,7 +911,7 @@ impl Pipeline {
 
     async fn simulate_txs(&self, job: &SimJob) -> (SimulationResult, Option<(Vec<u64>, Vec<u64>)>) {
         let started = std::time::Instant::now();
-        let margin = self.cfg.cost_params.cu_margin;
+        let margin = self.thresholds().cost_params.cu_margin;
         let mut txs = Vec::with_capacity(job.txs.len());
         let mut failure = None;
         let mut context_slot = None;

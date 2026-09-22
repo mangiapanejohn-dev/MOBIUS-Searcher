@@ -9,6 +9,7 @@ pub mod metrics;
 pub mod model;
 pub mod profit;
 pub mod series;
+pub mod thresholds;
 pub mod time;
 pub mod token;
 pub mod units;

@@ -71,3 +71,54 @@ async fn live_gate_with_missing_keypair_fails_before_any_network_use() {
     let err = mobius_searcher::engine::start(cfg, db()).await.err().expect("must fail");
     assert!(format!("{err:#}").contains("hot wallet"), "{err:#}");
 }
+
+#[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+async fn operator_threshold_changes_apply_live_and_are_saved_with_comments_kept() {
+    use searcher_core::event::Command;
+    let dir = std::env::temp_dir().join(format!("mobius-thr-e2e-{}", rand_suffix()));
+    std::fs::create_dir_all(&dir).unwrap();
+    let user = dir.join("config.toml");
+    std::fs::write(&user, "# mine\n[profit]\nsafety_buffer_lamports = 5000   # keep this note\n").unwrap();
+    let running =
+        mobius_searcher::engine::start_with(offline_config(""), db(), Some(user.clone())).await.expect("start");
+    let wait = || tokio::time::sleep(std::time::Duration::from_millis(400));
+    wait().await;
+    assert!(!running.vm.read().thresholds.is_empty(), "thresholds published at start");
+
+    // loosening into losses without the acknowledgement: refused, nothing written
+    running
+        .commands
+        .send(Command::SetThresholds {
+            changes: vec![("profit.protect_min_out".into(), "false".into())],
+            allow_loss: false,
+        })
+        .unwrap();
+    wait().await;
+    assert!(!running.vm.read().loss_possible);
+    assert!(std::fs::read_to_string(&user).unwrap().contains("safety_buffer_lamports = 5000"));
+
+    // a safe change plus the acknowledged one
+    running
+        .commands
+        .send(Command::SetThresholds {
+            changes: vec![
+                ("profit.safety_buffer_lamports".into(), "0".into()),
+                ("profit.protect_min_out".into(), "false".into()),
+            ],
+            allow_loss: true,
+        })
+        .unwrap();
+    wait().await;
+    {
+        let vm = running.vm.read();
+        assert!(vm.loss_possible);
+        assert!(vm.thresholds.contains(&("profit.safety_buffer_lamports".into(), "0".into())));
+        assert!(vm.logs.iter().any(|l| l.message.contains("threshold profit.safety_buffer_lamports: 5000 → 0")));
+    }
+    let saved = std::fs::read_to_string(&user).unwrap();
+    assert!(saved.contains("safety_buffer_lamports = 0   # keep this note"), "{saved}");
+    assert!(saved.contains("protect_min_out = false") && saved.contains("# mine"), "{saved}");
+    assert!(dir.join("config.toml.bak").exists());
+    running.stop().await;
+    let _ = std::fs::remove_dir_all(&dir);
+}

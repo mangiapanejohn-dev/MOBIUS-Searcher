@@ -67,6 +67,9 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, vm: &ViewModel) {
         app.hit(outer(inner), Hit::Overlay);
         wrap_text(buf, inner, &d.body, th.text().bg(th.select_bg));
     }
+    if let Some(p) = &app.thresholds {
+        thresholds_overlay(buf, area, app, vm, p);
+    }
     if app.kill_release_prompt {
         let inner = overlay(buf, area, 56, 5, "Release kill switch?", &th, &app.glyphs);
         text(
@@ -106,6 +109,17 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, compact:
     x += text(buf, x, y0, if live { g.live } else { g.off }, 1, if live { mode_style } else { th.faint() }) + 3;
     if vm.replay {
         x += text(buf, x, y0, " REPLAY ", 8, th.text().add_modifier(Modifier::REVERSED)) + 3;
+    }
+    if vm.loss_possible {
+        // thresholds under which a landed trade can lose money (typed ALLOW LOSS)
+        x += text(
+            buf,
+            x,
+            y0,
+            " LOSS ALLOWED ",
+            14,
+            Style::new().fg(th.loss).add_modifier(Modifier::REVERSED | Modifier::BOLD),
+        ) + 3;
     }
     if let Some(s) = vm.slot.map(|s| format!("slot {s}")).filter(|s| x + width(s) <= limit) {
         x += text(buf, x, y0, &s, 16, th.muted()) + 3;
@@ -822,6 +836,82 @@ fn page_logs(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
 
 // ───────────────────────────── overlays ─────────────────────────────
 
+fn thresholds_overlay(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, p: &crate::thresholds::Panel) {
+    use crate::thresholds::{ACK, Mode};
+    use searcher_core::thresholds::THRESHOLDS;
+    let th = &app.theme;
+    let bg = th.text().bg(th.select_bg);
+    let rows = THRESHOLDS.len() as u16;
+    let inner = overlay(buf, area, 96, rows + 9, "Thresholds  (keyboard only)", th, &app.glyphs);
+    app.hit(outer(inner), Hit::Overlay);
+    let mut y = inner.y;
+    let now = if vm.loss_possible {
+        "landed trades CAN lose money (ALLOW LOSS given)"
+    } else {
+        "landed trades cannot lose (on-chain min-out)"
+    };
+    text(
+        buf,
+        inner.x,
+        y,
+        &format!("now: {now}"),
+        inner.width,
+        if vm.loss_possible { th.warn() } else { th.muted().bg(th.select_bg) },
+    );
+    y += 2;
+    let review = matches!(p.mode, Mode::Review | Mode::Ack(_));
+    for (i, t) in THRESHOLDS.iter().enumerate() {
+        let cur = vm.thresholds.iter().find(|(k, _)| k == t.key).map(|(_, v)| v.as_str()).unwrap_or("?");
+        let staged = p.staged.get(t.key);
+        if review && staged.is_none() {
+            continue;
+        }
+        let value = match (&p.mode, staged) {
+            (Mode::Edit(buf), _) if i == p.selected => format!("{cur}  →  {buf}▏"),
+            (_, Some(new)) => format!("{cur}  →  {new}"),
+            _ => cur.to_string(),
+        };
+        let line = format!(" {:<34} {}", t.label, value);
+        let st = if i == p.selected && !review {
+            th.accent_bold().bg(th.select_bg)
+        } else if staged.is_some() {
+            th.warn().bg(th.select_bg)
+        } else {
+            bg
+        };
+        text(buf, inner.x, y, &line, inner.width, st);
+        y += 1;
+    }
+    y = inner.y + rows + 3;
+    let sel = &THRESHOLDS[p.selected.min(THRESHOLDS.len() - 1)];
+    let (hint, extra) = match &p.mode {
+        Mode::Browse => {
+            ("↑↓ select · ⏎ edit · x unstage · a review & apply · Esc close (discards)", sel.help.to_string())
+        }
+        Mode::Edit(_) => ("type the new value · ⏎ stage · Esc cancel", sel.help.to_string()),
+        Mode::Review if p.opens_loss(vm) => (
+            "⏎ continue · Esc back",
+            "These settings let a landed trade LOSE money. Next you must type ALLOW LOSS.".to_string(),
+        ),
+        Mode::Review => {
+            ("⏎ apply now (saved to your config, .bak kept) · Esc back", "review the changes above".to_string())
+        }
+        Mode::Ack(buf) => ("type the words exactly, then ⏎ · Esc back", format!("type {ACK}:  {buf}▏")),
+    };
+    text(
+        buf,
+        inner.x,
+        y,
+        &format!(" {extra}"),
+        inner.width,
+        if matches!(p.mode, Mode::Ack(_)) { th.warn() } else { bg },
+    );
+    if let Some(e) = &p.error {
+        text(buf, inner.x, y + 1, &format!(" {e}"), inner.width, th.warn());
+    }
+    text(buf, inner.x, y + 3, &format!(" {hint}"), inner.width, th.muted().bg(th.select_bg));
+}
+
 fn help_overlay(buf: &mut Buffer, area: Rect, app: &App) {
     let th = &app.theme;
     let (lw, lh) = crate::brand::logo_size();
@@ -856,6 +946,7 @@ Markets    [ ] bar 1s–1D · p pair · t book/trades · o tabs · ←→ candle
 Shift+↑/↓  reorder graphs     c line/candle     s box/braille line
 f          filter opportunities (all · gross>0 · executable · skipped)
 y / n      approve / decline a pending CONFIRM transaction
+T          thresholds: stage · review · apply (losses need typed ALLOW LOSS)
 click      tabs · rows (again: inspect) · graph = cursor, drag to scrub
 wheel      scroll lists · zoom graphs      right-click graph  mark A, B
 q          quit (graceful; recording is flushed)";

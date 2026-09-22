@@ -70,6 +70,15 @@ before 1.0 a minor version may change configuration or behaviour.
   price every minute (`inventory` table); `--report` splits the change of the
   wallet's value into trade PnL, deposits, SOL price change on holdings, and
   whatever is left unexplained (printed, not absorbed).
+- Threshold panel in the TUI (`T`, keyboard only): minimum profit (lamports,
+  bp, USD), on-chain min-out, slippage reserve, safety buffer, max deposit,
+  slippage tolerance, max trade size, max daily loss. Changes are staged,
+  reviewed old → new and applied with Enter; the engine validates them,
+  applies them live, logs every change and writes only the changed keys into
+  your config file (comments kept, previous file as `.bak`). Settings under
+  which a landed trade can lose money (min-out off, negative minimum profit)
+  need the typed words `ALLOW LOSS`, and the header then shows
+  `LOSS ALLOWED`.
 - One process at a time uses the Jupiter budget: `--research` and trading
   sessions take `<data dir>/jupiter-budget.lock`; the second one is refused
   with the holder's name. On macOS `--research` keeps the machine awake

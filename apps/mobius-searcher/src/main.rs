@@ -443,7 +443,8 @@ async fn run(cli: Cli, cfg: Config, db_path: PathBuf) -> Result<()> {
     let mode = cfg.general.mode;
     let _budget = budget::acquire(&cfg.data_dir(), &format!("{} session", mode.label()))?;
     let opts = tui_opts(&cfg, None);
-    let running = engine::start(cfg, db_path).await?;
+    let user_config = Some(user_config_path(&cli));
+    let running = engine::start_with(cfg, db_path, user_config).await?;
     let session = running.session_id.clone();
     let mut shutdown_rx = running.shutdown_tx.subscribe();
 

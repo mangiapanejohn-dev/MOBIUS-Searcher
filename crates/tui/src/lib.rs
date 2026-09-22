@@ -12,6 +12,7 @@ pub mod markets;
 pub mod panels;
 pub mod run;
 pub mod theme;
+pub mod thresholds;
 pub mod timeline;
 pub mod ui;
 pub mod workspace;

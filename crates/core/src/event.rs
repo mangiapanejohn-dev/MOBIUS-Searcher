@@ -160,6 +160,12 @@ pub enum Event {
         lamports: u64,
         source: String,
     },
+    /// Thresholds in effect (at start and after every change).
+    Thresholds {
+        ts: Ts,
+        values: Vec<(String, String)>,
+        loss_possible: bool,
+    },
     /// Wallet inventory (sending modes): SOL and USDC balances and the SOL
     /// price, so trade PnL and revaluation can be told apart.
     Inventory {
@@ -196,6 +202,7 @@ impl Event {
             | Event::KillSwitch { ts, .. }
             | Event::Equity { ts, .. }
             | Event::Inventory { ts, .. }
+            | Event::Thresholds { ts, .. }
             | Event::Log { ts, .. }
             | Event::RawQuote { ts, .. } => *ts,
             Event::Sample(s) => s.ts,
@@ -231,6 +238,7 @@ impl Event {
             Event::Network(_) => "network",
             Event::Equity { .. } => "equity",
             Event::Inventory { .. } => "inventory",
+            Event::Thresholds { .. } => "thresholds",
             Event::Log { .. } => "log",
             Event::RawQuote { .. } => "raw_quote",
         }
@@ -247,7 +255,19 @@ impl Event {
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "snake_case", tag = "cmd")]
 pub enum Command {
-    KillSwitch { engage: bool, reason: String },
-    Confirm { opportunity: OpportunityId, approve: bool },
+    KillSwitch {
+        engage: bool,
+        reason: String,
+    },
+    Confirm {
+        opportunity: OpportunityId,
+        approve: bool,
+    },
+    /// Change thresholds (key → operator text). `allow_loss`: the operator
+    /// typed the acknowledgement for settings under which a trade can lose.
+    SetThresholds {
+        changes: Vec<(String, String)>,
+        allow_loss: bool,
+    },
     Shutdown,
 }

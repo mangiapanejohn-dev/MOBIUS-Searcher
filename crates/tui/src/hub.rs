@@ -82,6 +82,9 @@ pub struct ViewModel {
     pub equity_lamports: Option<(u64, String)>,
     /// Latest wallet inventory (sending modes): SOL lamports, USDC atoms.
     pub inventory: Option<(u64, Option<u64>)>,
+    /// Thresholds in effect (key → value) and whether a landed trade can lose.
+    pub thresholds: Vec<(String, String)>,
+    pub loss_possible: bool,
     pub sol_price: Option<UsdPrice>,
     pub quotes: Vec<Quote>,
     pub price_samples: HashMap<(String, String), TimeSeries>,
@@ -324,6 +327,10 @@ impl ViewModel {
                 }
             }
             Event::Inventory { sol_lamports, usdc_atoms, .. } => self.inventory = Some((*sol_lamports, *usdc_atoms)),
+            Event::Thresholds { values, loss_possible, .. } => {
+                self.thresholds = values.clone();
+                self.loss_possible = *loss_possible;
+            }
             Event::Log { ts, level, message } => self.log(*ts, *level, "engine", message.clone()),
         }
     }

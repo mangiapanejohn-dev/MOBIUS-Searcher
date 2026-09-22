@@ -112,6 +112,12 @@ pub fn retention(cfg: &Config) -> searcher_storage::Retention {
 }
 
 pub async fn start(cfg: Config, db_path: PathBuf) -> Result<Running> {
+    start_with(cfg, db_path, None).await
+}
+
+/// `user_config`: where operator threshold changes are saved (None: they
+/// last for this session only).
+pub async fn start_with(cfg: Config, db_path: PathBuf, user_config: Option<PathBuf>) -> Result<Running> {
     let mode = cfg.general.mode;
     let session_id = searcher_storage::new_session_id();
     let telemetry = Arc::new(Telemetry::new());
@@ -626,15 +632,39 @@ pub async fn start(cfg: Config, db_path: PathBuf) -> Result<Running> {
     tasks.push(tokio::spawn(pipeline.clone().run_simulator(sim_rx, shutdown_rx.clone())));
 
     // Operator commands (TUI → engine).
+    bus.emit(Event::Thresholds {
+        ts: Ts::now(),
+        values: searcher_core::thresholds::values(&cfg),
+        loss_possible: searcher_core::thresholds::loss_possible(&cfg),
+    });
     let (cmd_tx, mut cmd_rx) = mpsc::unbounded_channel::<Command>();
     {
         let bus = bus.clone();
         let kill = kill.clone();
         let pipeline = pipeline.clone();
+        let risk = risk.clone();
         let shutdown_tx = shutdown_tx.clone();
+        let mut current = cfg.clone();
         tasks.push(tokio::spawn(async move {
             while let Some(c) = cmd_rx.recv().await {
                 match c {
+                    Command::SetThresholds { changes, allow_loss } => {
+                        let log = |level, message: String| bus.emit(Event::Log { ts: Ts::now(), level, message });
+                        match set_thresholds(&current, &changes, allow_loss, &pipeline, &risk, user_config.as_deref()) {
+                            Ok((next, lines)) => {
+                                for l in lines {
+                                    log(LogLevel::Warn, l);
+                                }
+                                bus.emit(Event::Thresholds {
+                                    ts: Ts::now(),
+                                    values: searcher_core::thresholds::values(&next),
+                                    loss_possible: searcher_core::thresholds::loss_possible(&next),
+                                });
+                                current = next;
+                            }
+                            Err(e) => log(LogLevel::Warn, format!("threshold change refused: {e}")),
+                        }
+                    }
                     Command::KillSwitch { engage, reason } => {
                         let changed = if engage { kill.engage(&reason) } else { kill.release() };
                         if changed {
@@ -653,6 +683,51 @@ pub async fn start(cfg: Config, db_path: PathBuf) -> Result<Running> {
     }
 
     Ok(Running { session_id, telemetry, probe, vm, commands: cmd_tx, shutdown_tx, bus, recorder, tasks, db_path })
+}
+
+/// Validate and apply an operator threshold change: live (pipeline, risk
+/// engine), then in the user's config file. Returns the new configuration
+/// and the log lines describing the change.
+fn set_thresholds(
+    current: &Config,
+    changes: &[(String, String)],
+    allow_loss: bool,
+    pipeline: &Pipeline,
+    risk: &RiskEngine,
+    user_config: Option<&std::path::Path>,
+) -> Result<(Config, Vec<String>)> {
+    let change = searcher_core::thresholds::apply(current, changes).map_err(anyhow::Error::msg)?;
+    if change.opens_loss && !allow_loss {
+        bail!("these settings let a landed trade lose money; type ALLOW LOSS to confirm");
+    }
+    let c = &change.config;
+    let live = pipeline.thresholds();
+    let mut cost_params = c.profit.cost_params();
+    cost_params.token_account_rent = live.cost_params.token_account_rent; // read from the chain at start
+    pipeline.set_thresholds(searcher_execution::pipeline::Thresholds {
+        guards: c.profit.guards().map_err(anyhow::Error::msg)?,
+        cost_params,
+        protect_min_out: c.profit.protect_min_out,
+        slippage: c.jupiter.slippage_spec().map_err(anyhow::Error::msg)?,
+    });
+    risk.set_limits(RiskLimits::from_config(&c.risk).map_err(anyhow::Error::msg)?);
+    let mut lines: Vec<String> =
+        change.diff.iter().map(|(k, old, new)| format!("threshold {k}: {old} → {new} (operator)")).collect();
+    if change.opens_loss {
+        lines.push("ALLOW LOSS acknowledged: landed trades can now lose money".into());
+    }
+    match user_config {
+        Some(path) => match crate::thresholds_file::write(path, &change.values) {
+            Ok(bak) => lines.push(format!(
+                "saved to {}{}",
+                path.display(),
+                bak.map(|b| format!(" (previous file: {})", b.display())).unwrap_or_default()
+            )),
+            Err(e) => lines.push(format!("NOT saved ({e:#}); the change lasts for this session only")),
+        },
+        None => lines.push("not saved (no user config file); the change lasts for this session only".into()),
+    }
+    Ok((change.config, lines))
 }
 
 impl Running {
