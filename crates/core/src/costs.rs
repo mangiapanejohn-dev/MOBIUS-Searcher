@@ -104,6 +104,18 @@ impl Default for CostParams {
     }
 }
 
+/// How many worst-case leg shortfalls an inventory of the intermediate token
+/// covers: a SOL → USDC → SOL trade of `trade_lamports` whose first leg
+/// delivers `tolerance_bps` less than quoted takes that difference from the
+/// wallet's USDC. `None` without a price or a tolerance.
+pub fn inventory_coverage(usdc_atoms: u64, trade_lamports: u64, sol_usd: f64, tolerance_bps: u32) -> Option<f64> {
+    let worst_usdc = trade_lamports as f64 / 1e9 * sol_usd * tolerance_bps as f64 / 1e4;
+    (worst_usdc > 0.0 && sol_usd.is_finite()).then(|| usdc_atoms as f64 / 1e6 / worst_usdc)
+}
+
+/// Below this many covered shortfalls the operator is warned.
+pub const INVENTORY_MIN_COVERAGE: f64 = 20.0;
+
 /// How the cycle will be packaged into transactions.
 #[derive(Copy, Clone, Debug, PartialEq, Eq)]
 pub struct TxShape {
@@ -186,6 +198,19 @@ pub fn expected_slippage(legs: &[Leg], share: Ppm) -> u64 {
 pub fn safety_buffer(input: u64, p: &CostParams) -> u64 {
     let prop = (input as u128 * p.safety_buffer.0.max(0) as u128).div_ceil(PPM_ONE as u128) as u64;
     p.safety_buffer_lamports.saturating_add(prop)
+}
+
+#[cfg(test)]
+mod coverage_tests {
+    use super::*;
+
+    #[test]
+    fn five_dollars_cover_hundreds_of_worst_case_shortfalls() {
+        // 0.1 SOL at $110, 10 bp tolerance → $0.011 worst case per trade
+        let k = inventory_coverage(5_000_000, 100_000_000, 110.0, 10).unwrap();
+        assert!((k - 454.5).abs() < 0.1, "{k}");
+        assert_eq!(inventory_coverage(5_000_000, 100_000_000, 110.0, 0), None);
+    }
 }
 
 #[cfg(test)]

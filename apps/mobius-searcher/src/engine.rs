@@ -468,6 +468,9 @@ pub async fn start_with(cfg: Config, db_path: PathBuf, user_config: Option<PathB
             if mode.sends_transactions() { taker } else { cfg.wallet.pubkey.as_deref().and_then(|p| p.parse().ok()) };
         let paper_equity = cfg.paper.equity_lamports;
         let usdc_mint = cfg.tokens().get("USDC").map(|t| t.mint).unwrap_or_default();
+        let max_trade = cfg.risk.max_trade_lamports;
+        let tolerance = cfg.jupiter.tolerance_bps(cfg.risk.max_slippage_bps);
+        let mut last_low: Option<std::time::Instant> = None;
         let mut sd = shutdown_rx.clone();
         tasks.push(tokio::spawn(async move {
             let mut tick = tokio::time::interval(Duration::from_secs(2));
@@ -494,12 +497,30 @@ pub async fn start_with(cfg: Config, db_path: PathBuf, user_config: Option<PathB
                                         // inventory ledger: every minute
                                         if n % 30 == 1 {
                                             let usdc = rpc.token_balance(&pk, &usdc_mint).await.ok();
+                                            let px = view.sol_price(now, 60_000);
                                             bus.emit(Event::Inventory {
                                                 ts: now,
                                                 sol_lamports: b,
                                                 usdc_atoms: usdc,
-                                                sol_usd_micros: view.sol_price(now, 60_000).map(|p| p.micros_per_token),
+                                                sol_usd_micros: px.map(|p| p.micros_per_token),
                                             });
+                                            // the next leg's input is fixed: USDC covers first-leg shortfalls
+                                            let k = usdc.zip(px).and_then(|(u, p)| {
+                                                searcher_core::costs::inventory_coverage(u, max_trade, p.f64(), tolerance)
+                                            });
+                                            if let Some(k) = k.filter(|k| *k < searcher_core::costs::INVENTORY_MIN_COVERAGE)
+                                                && last_low.is_none_or(|t: std::time::Instant| t.elapsed() > Duration::from_secs(600))
+                                            {
+                                                last_low = Some(std::time::Instant::now());
+                                                bus.emit(Event::Log {
+                                                    ts: now,
+                                                    level: LogLevel::Warn,
+                                                    message: format!(
+                                                        "USDC inventory ${:.2} covers only ~{k:.0} worst-case leg shortfalls: add USDC or trades will be refused (INVENTORY_LOW)",
+                                                        usdc.unwrap_or(0) as f64 / 1e6
+                                                    ),
+                                                });
+                                            }
                                         }
                                     }
                                 }

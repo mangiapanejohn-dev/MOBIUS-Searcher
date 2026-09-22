@@ -330,6 +330,15 @@ impl Default for JupiterConfig {
 }
 
 impl JupiterConfig {
+    /// Tolerance a leg may use, in bp: the fixed setting, else (`rtse`) the
+    /// risk cap `max_slippage_bps` as the bound.
+    pub fn tolerance_bps(&self, risk_cap_bps: u16) -> u32 {
+        match self.slippage_spec() {
+            Ok(SlippageSpec::Fixed(b)) => b as u32,
+            _ => risk_cap_bps as u32,
+        }
+    }
+
     pub fn slippage_spec(&self) -> Result<SlippageSpec, String> {
         let s = self.slippage.trim();
         if s.eq_ignore_ascii_case("rtse") {

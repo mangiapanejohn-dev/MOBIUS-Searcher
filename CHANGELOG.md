@@ -61,6 +61,10 @@ before 1.0 a minor version may change configuration or behaviour.
   the rest of the route's quoted rate); protection adds the intermediate
   legs' worst-case shortfall to the final leg's minimum output. When the
   inventory cannot cover a shortfall the skip reason is `INVENTORY_LOW`.
+- USDC inventory reminder: `--doctor` shows how many worst-case first-leg
+  shortfalls the wallet's USDC covers (trade size × slippage tolerance), and
+  a running session warns in the log below 20. Only SOL-based cycles trade in
+  this release; USDC-based cycles are planned with the cross-venue work.
 - Deposits (rent of accounts a trade leaves created) are capital, not a trade
   cost: excluded from net PnL, shown separately, and capped by
   `profit.max_new_deposit_lamports` (default 0.003 SOL, two token accounts;

@@ -463,11 +463,54 @@ pub async fn wallet_checks(cfg: &Config) -> Vec<Check> {
                 },
                 Err(e) => Check::new(false, "wallet balance", pk.short(), e),
             });
+            if let Some(c) = inventory_check(cfg, &pk).await {
+                checks.push(c);
+            }
         }
         // the error names the problem, never the key material
         Err(e) => checks.push(Check::new(false, "wallet keypair", "wallet.keypair_path", e.to_string())),
     }
     checks
+}
+
+/// USDC inventory: how many worst-case first-leg shortfalls it covers (the
+/// next leg's input is fixed; the wallet's USDC makes up the difference).
+async fn inventory_check(cfg: &Config, pk: &Address) -> Option<Check> {
+    let rpc = rpc_client(cfg, &Arc::new(Telemetry::new())).ok()?;
+    let tokens = cfg.tokens();
+    let (sol, usdc) = (tokens.sol().clone(), tokens.get("USDC")?.clone());
+    let label = "inventory USDC";
+    let atoms = match rpc.token_balance(pk, &usdc.mint).await {
+        Ok(a) => a,
+        Err(e) => return Some(Check::new(false, label, pk.short(), e.to_string()).optional()),
+    };
+    // SOL price from the first configured SOL/USDC pool (mid; enough to size a reserve)
+    let mut price = None;
+    for p in cfg.feeds.pools.iter().filter(|p| p.base == "SOL" && p.quote == "USDC") {
+        let Ok(addr) = p.address.parse::<Address>() else { continue };
+        if let Ok((_, datas)) = rpc.get_account_datas(&[addr]).await
+            && let Some(Some((_, data))) = datas.into_iter().next()
+        {
+            let dec =
+                |m: &Address| (m == &sol.mint).then_some(sol.decimals).or((m == &usdc.mint).then_some(usdc.decimals));
+            price = searcher_market::accounts::decode_pool(p.kind, &data, dec)
+                .and_then(|m| m.price_of(&sol.mint, &usdc.mint));
+        }
+        if price.is_some() {
+            break;
+        }
+    }
+    let tol = cfg.jupiter.tolerance_bps(cfg.risk.max_slippage_bps);
+    let trade = cfg.risk.max_trade_lamports;
+    let k = price.and_then(|px| searcher_core::costs::inventory_coverage(atoms, trade, px, tol));
+    let detail = format!(
+        "${:.2} · covers {} worst-case leg shortfalls ({:.2} SOL × {tol} bp)",
+        atoms as f64 / 1e6,
+        k.map(|k| format!("~{k:.0}")).unwrap_or_else(|| "?".into()),
+        trade as f64 / 1e9
+    );
+    let ok = k.is_some_and(|k| k >= searcher_core::costs::INVENTORY_MIN_COVERAGE);
+    Some(Check::new(ok, label, pk.short(), detail).optional())
 }
 
 pub async fn run(l: &Layered, env_files: &[(PathBuf, Vec<String>)], json: bool) -> bool {
