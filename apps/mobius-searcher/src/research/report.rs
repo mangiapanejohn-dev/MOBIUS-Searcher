@@ -4,7 +4,7 @@
 
 use searcher_storage::ResearchStore;
 use searcher_storage::StoreError;
-use searcher_storage::research::{Episode, LadderRow, LagTick, ScaleRow, XchainRow};
+use searcher_storage::research::{Episode, ExitRow, FeedRow, LadderRow, LagTick, ScaleRow, XchainRow};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -70,8 +70,15 @@ pub struct Report {
     /// Wide-gap episodes quoted at several sizes: size (lamports) → (after fixed cost, vs touch, errors).
     pub lag_scale: BTreeMap<u64, (Dist, Dist, usize)>,
     pub lag_scale_trigger_bps: Option<f64>,
+    /// "kind dex" → delay (s) → (round trip after two transactions' fixed cost, lateness ms p50, errors)
+    pub lag_exit: BTreeMap<String, BTreeMap<u32, ExitStats>>,
+    /// dex → slots behind the chain head when a pool notification arrived
+    pub lag_feed: BTreeMap<String, Dist>,
     pub trigger_bps: Option<f64>,
 }
+
+/// Round trip after fixed costs, lateness p50 (ms), errors.
+pub type ExitStats = (Dist, Option<f64>, usize);
 
 #[derive(Serialize, Default, Debug)]
 pub struct EpisodeStats {
@@ -119,7 +126,45 @@ pub fn build(store: &ResearchStore, runs: &[String]) -> Result<Report, StoreErro
     let episodes = store.episodes(runs)?;
     lag(&mut r, &store.lag_ticks(runs)?, &episodes);
     lag_scale(&mut r, &episodes, &store.scale(runs)?);
+    lag_exit(&mut r, &episodes, &store.exits(runs)?);
+    lag_feed(&mut r, &store.feed(runs)?);
     Ok(r)
+}
+
+/// The on-chain way back, grouped like the episodes. Costs: two transactions
+/// (entry and exit), each at the fixed cost, in bp of the episode's size.
+fn lag_exit(r: &mut Report, eps: &[Episode], exits: &[ExitRow]) {
+    let by_id: BTreeMap<i64, &Episode> = eps.iter().map(|e| (e.id, e)).collect();
+    type Acc = (Vec<f64>, Vec<f64>, usize);
+    let mut acc: BTreeMap<String, BTreeMap<u32, Acc>> = BTreeMap::new();
+    for x in exits {
+        let Some(e) = by_id.get(&x.episode) else { continue };
+        let cost = bps(2 * FIXED_LAMPORTS, e.size.unwrap_or(0).max(1));
+        for key in [format!("{} (all)", e.kind), format!("{} {}", e.kind, e.dex)] {
+            let a = acc.entry(key).or_default().entry(x.after_s).or_default();
+            match x.rt_bps {
+                Some(v) => a.0.push(v - cost),
+                None => a.2 += 1,
+            }
+            if let Some(ms) = x.late_ms {
+                a.1.push(ms as f64);
+            }
+        }
+    }
+    r.lag_exit = acc
+        .into_iter()
+        .map(|(k, m)| {
+            (k, m.into_iter().map(|(s, (v, late, err))| (s, (Dist::of(v), Dist::of(late).p50, err))).collect())
+        })
+        .collect();
+}
+
+fn lag_feed(r: &mut Report, rows: &[FeedRow]) {
+    let mut by: BTreeMap<String, Vec<f64>> = BTreeMap::new();
+    for f in rows {
+        by.entry(f.dex.clone()).or_default().push(f.head_slot.saturating_sub(f.slot) as f64);
+    }
+    r.lag_feed = by.into_iter().map(|(k, v)| (k, Dist::of(v))).collect();
 }
 
 /// The episodes that got bigger-size quotes, with their own 0.1 SOL quote as
@@ -377,6 +422,9 @@ pub fn render(r: &Report) -> String {
         if s.duration_s.n > 0 {
             let _ = writeln!(o, "      duration s     {}", dist_cols(&s.duration_s));
         }
+        if s.quote_ms.n > 0 {
+            let _ = writeln!(o, "      quote ms       {}", dist_cols(&s.quote_ms));
+        }
         for (sec, (c, p, n)) in &s.markouts {
             let _ = writeln!(
                 o,
@@ -394,6 +442,36 @@ pub fn render(r: &Report) -> String {
         for (size, (a, t, err)) in &r.lag_scale {
             let _ = writeln!(o, "   {:>8} − fixed   {}   errors {err}", *size as f64 / 1e9, dist_cols(a));
             let _ = writeln!(o, "   {:>8} vs touch  {}", "", dist_cols(t));
+        }
+    }
+    if !r.lag_exit.is_empty() {
+        let _ = writeln!(
+            o,
+            "\n   On-chain round trip: the entry above, then what it delivered swapped back (any route) after"
+        );
+        let _ = writeln!(
+            o,
+            "   the delay; bp of the entry input after two transactions' fixed cost. +0 s = the spread alone."
+        );
+        let _ = writeln!(o, "   Compare trigger with control at the same delay.");
+        let _ = writeln!(o, "   group / delay                {HEAD}   late p50");
+        for (k, m) in &r.lag_exit {
+            let _ = writeln!(o, "   {k}");
+            for (sec, (d, late, err)) in m {
+                let _ = writeln!(
+                    o,
+                    "      +{sec:>2} s                  {}   {} ms   errors {err}",
+                    dist_cols(d),
+                    late.map(|l| format!("{l:.0}")).unwrap_or("-".into())
+                );
+            }
+        }
+    }
+    if !r.lag_feed.is_empty() {
+        let _ = writeln!(o, "\n   Pool feed: slots behind the chain head when a notification arrived (1 slot ≈ 0.4 s)");
+        let _ = writeln!(o, "   dex                     {HEAD}");
+        for (dex, d) in &r.lag_feed {
+            let _ = writeln!(o, "   {dex:<20}    {}", dist_cols(d));
         }
     }
     let _ = writeln!(
@@ -445,6 +523,43 @@ mod tests {
         assert!((r.lag_scale[&100_000_000].0.p50.unwrap() - (9.0 - 0.6)).abs() < 1e-9);
         assert!((r.lag_scale[&1_000_000_000].0.p50.unwrap() - (4.0 - 0.06)).abs() < 1e-9);
         assert!(render(&r).contains("does the edge survive size"));
+    }
+
+    #[test]
+    fn exits_pay_two_transactions_and_group_by_kind() {
+        let s = ResearchStore::open_in_memory().unwrap();
+        s.begin_run("r", 0, "0.2.0", r#"{"research":{"lag_trigger_bps":4.0}}"#).unwrap();
+        let ep = |id: i64, kind: &str| Episode {
+            id,
+            kind: kind.into(),
+            dex: "Whirlpool".into(),
+            size: Some(100_000_000),
+            ..Default::default()
+        };
+        s.upsert_episode("r", &ep(1, "trigger")).unwrap();
+        s.upsert_episode("r", &ep(2, "control")).unwrap();
+        let x = |episode: i64, after_s: u32, rt: Option<f64>| ExitRow {
+            run_id: "r".into(),
+            episode,
+            after_s,
+            rt_bps: rt,
+            late_ms: Some(300),
+            err: rt.is_none().then(|| "boom".into()),
+            ..Default::default()
+        };
+        s.insert_exit(&x(1, 5, Some(3.0))).unwrap();
+        s.insert_exit(&x(1, 30, None)).unwrap();
+        s.insert_exit(&x(2, 5, Some(-2.0))).unwrap();
+        s.insert_feed("r", &FeedRow { ts: 0, dex: "Whirlpool".into(), slot: 100, head_slot: 103 }).unwrap();
+        let r = build(&s, &["r".to_string()]).unwrap();
+        // two transactions at 6,000 lamports on 0.1 SOL = 1.2 bp
+        let t = &r.lag_exit["trigger (all)"];
+        assert!((t[&5].0.p50.unwrap() - 1.8).abs() < 1e-9);
+        assert_eq!(t[&30].2, 1, "the failed exit is an error, not a sample");
+        assert!((r.lag_exit["control Whirlpool"][&5].0.p50.unwrap() + 3.2).abs() < 1e-9);
+        assert_eq!(r.lag_feed["Whirlpool"].p50, Some(3.0));
+        let text = render(&r);
+        assert!(text.contains("On-chain round trip") && text.contains("slots behind"), "{text}");
     }
 
     #[test]

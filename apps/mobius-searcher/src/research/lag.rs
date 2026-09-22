@@ -8,6 +8,11 @@
 //!   pool mids are recorded afterwards (markouts: who moved, DEX or CEX).
 //! * Every `lag_control_every_s` the same quote is taken without a trigger:
 //!   the control sample tells whether the trigger finds anything chance does not.
+//! * After a successful entry quote, the reverse swap (any route) is quoted at
+//!   [`EXIT_AFTER_S`] for exactly what the entry delivered: the on-chain round
+//!   trip "buy the lagging pool, sell once it caught up" (CEX only a reference).
+//! * Every pool notification's slot is recorded against the chain head it
+//!   arrived at: how stale the pool prices are.
 //!
 //! Pool mids are not executable and the public RPC pushes pool changes only
 //! every few seconds; both limits are recorded with each sample (pool age).
@@ -21,7 +26,7 @@ use searcher_core::model::DexFilter;
 use searcher_core::{Event, Ts};
 use searcher_market::hot::HotTick;
 use searcher_market::{ChainState, RpcClient, feed};
-use searcher_storage::research::{Episode, LagTick};
+use searcher_storage::research::{Episode, ExitRow, FeedRow, LagTick};
 use searcher_telemetry::{LimiterConfig, Telemetry};
 use std::collections::BTreeMap;
 use std::sync::Arc;
@@ -33,6 +38,9 @@ const CEX_MAX_AGE: Duration = Duration::from_secs(3);
 /// An episode ends when the gap falls below half the trigger, flips sign, or
 /// after this long.
 const EPISODE_MAX: Duration = Duration::from_secs(300);
+/// Delays after the entry quote at which the way back is quoted (s). 0 is the
+/// immediate round trip: what the pool has to move just to break even.
+pub const EXIT_AFTER_S: [u32; 4] = [0, 5, 15, 30];
 
 #[derive(Clone, Copy, Debug)]
 pub struct Top {
@@ -119,7 +127,19 @@ struct Confirmed {
     id: i64,
     ts: i64,
     ms: i64,
-    result: Result<(f64, String), String>,
+    result: Result<Entry, String>,
+}
+
+/// An executable quote on one DEX.
+#[derive(Clone, Debug)]
+struct Entry {
+    /// USDC per SOL
+    px: f64,
+    dexes: String,
+    input: searcher_core::Address,
+    output: searcher_core::Address,
+    in_amount: u64,
+    out_amount: u64,
 }
 
 pub fn spawn(
@@ -173,8 +193,13 @@ pub fn spawn(
         telemetry.clone(),
     )?);
     let (tick_tx, tick_rx) = mpsc::channel::<(String, f64, Instant)>(1_024);
+    let feed_ctx = ctx.clone();
     let hot: searcher_market::hot::HotSink = Arc::new(move |t| {
-        if let HotTick::Pool { dex, mid, received, .. } = t {
+        if let HotTick::Pool { dex, mid, received, slot, head_slot, .. } = t {
+            if let (Some(slot), Some(head_slot)) = (slot, head_slot) {
+                let row = FeedRow { ts: Ts::now().0, dex: dex.to_string(), slot, head_slot };
+                feed_ctx.record("lag feed", |s| s.insert_feed(&feed_ctx.run, &row));
+            }
             let _ = tick_tx.try_send((dex.to_string(), mid, received));
         }
     });
@@ -227,7 +252,7 @@ async fn evaluate(
                     o.ep.confirm_ms = Some(c.ms);
                     let fair = cex.lock().fair(Instant::now());
                     match c.result {
-                        Ok((px, dexes)) => {
+                        Ok(Entry { px, dexes, .. }) => {
                             let buy = o.ep.side == "buy_on_dex";
                             o.ep.exec_px = Some(px);
                             o.ep.exec_dexes = Some(dexes);
@@ -372,14 +397,8 @@ async fn evaluate(
 }
 
 /// One Jupiter quote restricted to `dex` for `lamports` of SOL: buy SOL with
-/// USDC or sell SOL for USDC. Returns (latency ms, (USDC per SOL, DEX labels)).
-async fn quote_on_dex(
-    ctx: &Ctx,
-    dex: &str,
-    buy: bool,
-    cex_mid: f64,
-    lamports: u64,
-) -> (i64, Result<(f64, String), String>) {
+/// USDC or sell SOL for USDC. Returns (latency ms, the quote).
+async fn quote_on_dex(ctx: &Ctx, dex: &str, buy: bool, cex_mid: f64, lamports: u64) -> (i64, Result<Entry, String>) {
     let tokens = ctx.cfg.tokens();
     let (sol, usdc) = (tokens.sol().mint, tokens.get("USDC").map(|t| t.mint).unwrap_or_default());
     let spec = searcher_strategy::LegSpec {
@@ -399,14 +418,62 @@ async fn quote_on_dex(
         if sol_amt == 0 {
             return Err("zero output".into());
         }
-        Ok((usdc_amt as f64 / 1e6 / (sol_amt as f64 / 1e9), b.leg.dex_labels().join("+")))
+        Ok(Entry {
+            px: usdc_amt as f64 / 1e6 / (sol_amt as f64 / 1e9),
+            dexes: b.leg.dex_labels().join("+"),
+            input: spec.input,
+            output: spec.output,
+            in_amount: amount,
+            out_amount: b.leg.out_amount,
+        })
     });
     (ms, result)
 }
 
 async fn confirm(ctx: Arc<Ctx>, id: i64, dex: String, buy: bool, cex_mid: f64, tx: mpsc::Sender<Confirmed>) {
     let (ms, result) = quote_on_dex(&ctx, &dex, buy, cex_mid, ctx.cfg.research.lag_confirm_lamports).await;
+    let entered = Instant::now();
+    let entry = result.as_ref().ok().cloned();
     let _ = tx.send(Confirmed { id, ts: Ts::now().0, ms, result }).await;
+    if let Some(entry) = entry {
+        exits(&ctx, id, &entry, entered).await;
+    }
+}
+
+/// On-chain round trip in the entry's input token (bp), before transaction costs.
+pub fn round_trip_bps(entry_in: u64, exit_out: u64) -> f64 {
+    (exit_out as f64 - entry_in as f64) / entry_in.max(1) as f64 * 1e4
+}
+
+/// The way back: what the entry delivered, swapped back on any route at each
+/// delay in [`EXIT_AFTER_S`] after the entry quote answered.
+async fn exits(ctx: &Ctx, id: i64, entry: &Entry, entered: Instant) {
+    for after_s in EXIT_AFTER_S {
+        let due = entered + Duration::from_secs(after_s as u64);
+        tokio::time::sleep_until(due.into()).await;
+        let req = ctx.request(entry.output, entry.input, entry.out_amount, None);
+        let r = ctx.gate.build(req, Priority::High).await;
+        let mut row = ExitRow {
+            run_id: ctx.run.clone(),
+            episode: id,
+            after_s,
+            ts: Ts::now().0,
+            late_ms: Some(Instant::now().saturating_duration_since(due).as_millis() as i64),
+            entry_in: Some(entry.in_amount),
+            entry_out: Some(entry.out_amount),
+            ..Default::default()
+        };
+        match r {
+            Ok(b) => {
+                row.exit_out = Some(b.leg.out_amount);
+                row.rt_bps = Some(round_trip_bps(entry.in_amount, b.leg.out_amount));
+                row.dexes = Some(b.leg.dex_labels().join("+"));
+            }
+            Err(e) if e == "stopped" => return,
+            Err(e) => row.err = Some(e),
+        }
+        ctx.record("lag exit", |s| s.insert_exit(&row));
+    }
 }
 
 /// Wide gap: the same side quoted at the bigger sizes, measured against the
@@ -424,7 +491,7 @@ async fn scale(ctx: Arc<Ctx>, cex: Arc<Mutex<Cex>>, id: i64, dex: String, buy: b
             ..Default::default()
         };
         match result {
-            Ok((px, _)) => {
+            Ok(Entry { px, .. }) => {
                 row.exec_px = Some(px);
                 if let Some(f) = fair {
                     row.exec_gap_bps = Some(edge_bps(buy, px, f.top.mid()));
@@ -449,6 +516,14 @@ mod tests {
         assert_eq!(parse_okx(r#"{"event":"subscribe","arg":{"channel":"bbo-tbt","instId":"SOL-USDC"}}"#), None);
         let bn = r#"{"u":6857599072,"s":"SOLUSDC","b":"117.28000000","B":"11.52700000","a":"117.29000000","A":"22.18600000"}"#;
         assert_eq!(parse_binance(bn), Some((117.28, 117.29)));
+    }
+
+    #[test]
+    fn round_trips_are_measured_in_the_entry_input() {
+        // 11.7 USDC in, back 11.71 USDC: +8.55 bp; back 11.69: −8.55 bp
+        assert!((round_trip_bps(11_700_000, 11_710_000) - 8.547).abs() < 1e-3);
+        assert!((round_trip_bps(11_700_000, 11_690_000) + 8.547).abs() < 1e-3);
+        assert_eq!(round_trip_bps(100_000_000, 100_000_000), 0.0);
     }
 
     #[test]

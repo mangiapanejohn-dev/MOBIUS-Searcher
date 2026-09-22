@@ -85,6 +85,24 @@ CREATE TABLE IF NOT EXISTS lag_scale (
     exec_px REAL, exec_gap_bps REAL, exec_gap_touch_bps REAL, err TEXT,
     PRIMARY KEY (run_id, episode, size)
 );
+
+-- The way back: after an episode's entry quote, the reverse swap (any route)
+-- quoted at fixed delays for exactly what the entry delivered. rt_bps is the
+-- on-chain round trip in the entry's input token, before transaction costs.
+CREATE TABLE IF NOT EXISTS lag_exit (
+    run_id TEXT NOT NULL, episode INTEGER NOT NULL, after_s INTEGER NOT NULL,
+    ts INTEGER NOT NULL,
+    late_ms INTEGER,                -- quote answered this long after entry + after_s
+    entry_in INTEGER, entry_out INTEGER, exit_out INTEGER,
+    rt_bps REAL, dexes TEXT, err TEXT,
+    PRIMARY KEY (run_id, episode, after_s)
+);
+
+-- How far behind the chain head each pool notification arrived (slots).
+CREATE TABLE IF NOT EXISTS lag_feed (
+    run_id TEXT NOT NULL, ts INTEGER NOT NULL, dex TEXT NOT NULL,
+    slot INTEGER NOT NULL, head_slot INTEGER NOT NULL
+);
 "#;
 
 pub struct ResearchStore {
@@ -181,6 +199,29 @@ pub struct ScaleRow {
     pub exec_gap_bps: Option<f64>,
     pub exec_gap_touch_bps: Option<f64>,
     pub err: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ExitRow {
+    pub run_id: String,
+    pub episode: i64,
+    pub after_s: u32,
+    pub ts: i64,
+    pub late_ms: Option<i64>,
+    pub entry_in: Option<u64>,
+    pub entry_out: Option<u64>,
+    pub exit_out: Option<u64>,
+    pub rt_bps: Option<f64>,
+    pub dexes: Option<String>,
+    pub err: Option<String>,
+}
+
+#[derive(Clone, Debug)]
+pub struct FeedRow {
+    pub ts: i64,
+    pub dex: String,
+    pub slot: u64,
+    pub head_slot: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -382,6 +423,79 @@ impl ResearchStore {
                     exec_gap_bps: r.get(6)?,
                     exec_gap_touch_bps: r.get(7)?,
                     err: r.get(8)?,
+                })
+            })?;
+            out.extend(rows.collect::<Result<Vec<_>, _>>()?);
+        }
+        Ok(out)
+    }
+
+    pub fn insert_exit(&self, r: &ExitRow) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO lag_exit(run_id, episode, after_s, ts, late_ms, entry_in, entry_out, exit_out,
+                rt_bps, dexes, err) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+            params![
+                r.run_id,
+                r.episode,
+                r.after_s,
+                r.ts,
+                r.late_ms,
+                r.entry_in.map(|v| v as i64),
+                r.entry_out.map(|v| v as i64),
+                r.exit_out.map(|v| v as i64),
+                r.rt_bps,
+                r.dexes,
+                r.err
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn exits(&self, runs: &[String]) -> Result<Vec<ExitRow>, StoreError> {
+        let mut out = Vec::new();
+        for run in runs {
+            let mut st = self.conn.prepare(
+                "SELECT run_id, episode, after_s, ts, late_ms, entry_in, entry_out, exit_out, rt_bps, dexes, err
+                 FROM lag_exit WHERE run_id = ?1 ORDER BY episode, after_s",
+            )?;
+            let rows = st.query_map([run], |r| {
+                Ok(ExitRow {
+                    run_id: r.get(0)?,
+                    episode: r.get(1)?,
+                    after_s: r.get(2)?,
+                    ts: r.get(3)?,
+                    late_ms: r.get(4)?,
+                    entry_in: r.get::<_, Option<i64>>(5)?.map(|v| v as u64),
+                    entry_out: r.get::<_, Option<i64>>(6)?.map(|v| v as u64),
+                    exit_out: r.get::<_, Option<i64>>(7)?.map(|v| v as u64),
+                    rt_bps: r.get(8)?,
+                    dexes: r.get(9)?,
+                    err: r.get(10)?,
+                })
+            })?;
+            out.extend(rows.collect::<Result<Vec<_>, _>>()?);
+        }
+        Ok(out)
+    }
+
+    pub fn insert_feed(&self, run: &str, f: &FeedRow) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO lag_feed(run_id, ts, dex, slot, head_slot) VALUES (?1,?2,?3,?4,?5)",
+            params![run, f.ts, f.dex, f.slot as i64, f.head_slot as i64],
+        )?;
+        Ok(())
+    }
+
+    pub fn feed(&self, runs: &[String]) -> Result<Vec<FeedRow>, StoreError> {
+        let mut out = Vec::new();
+        for run in runs {
+            let mut st = self.conn.prepare("SELECT ts, dex, slot, head_slot FROM lag_feed WHERE run_id = ?1")?;
+            let rows = st.query_map([run], |r| {
+                Ok(FeedRow {
+                    ts: r.get(0)?,
+                    dex: r.get(1)?,
+                    slot: r.get::<_, i64>(2)? as u64,
+                    head_slot: r.get::<_, i64>(3)? as u64,
                 })
             })?;
             out.extend(rows.collect::<Result<Vec<_>, _>>()?);

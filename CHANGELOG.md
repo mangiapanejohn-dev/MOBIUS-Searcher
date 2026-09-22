@@ -45,7 +45,10 @@ before 1.0 a minor version may change configuration or behaviour.
   fees and gas), and DEX lag (pool mids vs OKX/Binance best bid/ask, with an
   executable Jupiter quote per episode, control samples at random times and
   CEX/pool markouts; gaps ≥ `lag_scale_trigger_bps` are also quoted at 0.5
-  and 1 SOL to see whether the edge survives size). `--research-report [RUN|latest|all]` prints whole
+  and 1 SOL to see whether the edge survives size; after each entry quote the
+  reverse swap is quoted at +0/5/15/30 s for exactly what the entry delivered,
+  the on-chain round trip; each pool notification's slot lag behind the chain
+  head is recorded). `--research-report [RUN|latest|all]` prints whole
   distributions (sample counts next to positive counts).
 - Attribution for every opportunity (`attribution` table): which profit guard
   failed (EDGE_TOO_SMALL covers three), the SOL price used, whether the
