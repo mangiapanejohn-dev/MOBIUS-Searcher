@@ -26,6 +26,9 @@ const SOLANA_SWAP_CU: u64 = 200_000;
 
 pub async fn run(ctx: Arc<Ctx>, mut shutdown: watch::Receiver<bool>) {
     let r = &ctx.cfg.research;
+    if r.xchain_every_s == 0 {
+        return;
+    }
     let mut tick = tokio::time::interval(Duration::from_secs(r.xchain_every_s));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     // (asset, venue) → market; loaded on first use, retried on failure

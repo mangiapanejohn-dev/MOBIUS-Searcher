@@ -9,7 +9,8 @@
 //!   and is the gap executable?
 //!
 //! Jupiter is the scarce resource. Every quote goes through one [`Gate`] in
-//! order (lag confirmations first); the rate limiter paces them.
+//! order (lag entries first, then lag exits, then the rest); the rate limiter
+//! paces them.
 
 pub mod ladder;
 pub mod lag;
@@ -34,6 +35,8 @@ use tokio::sync::{mpsc, oneshot, watch};
 pub enum Priority {
     /// Time-sensitive (a lag episode is open).
     High,
+    /// A lag exit: timed, but it must never delay an entry.
+    Exit,
     Normal,
 }
 
@@ -53,6 +56,7 @@ pub struct GateStats {
 #[derive(Clone)]
 pub struct Gate {
     hi: mpsc::Sender<Job>,
+    exit: mpsc::Sender<Job>,
     lo: mpsc::Sender<Job>,
     pub stats: Arc<GateStats>,
 }
@@ -60,6 +64,7 @@ pub struct Gate {
 impl Gate {
     pub fn spawn(jup: Arc<JupiterClient>, mut shutdown: watch::Receiver<bool>) -> (Gate, tokio::task::JoinHandle<()>) {
         let (hi, mut hi_rx) = mpsc::channel::<Job>(64);
+        let (exit, mut exit_rx) = mpsc::channel::<Job>(256);
         let (lo, mut lo_rx) = mpsc::channel::<Job>(64);
         let stats = Arc::new(GateStats::default());
         let s = stats.clone();
@@ -69,6 +74,7 @@ impl Gate {
                     biased;
                     _ = shutdown.changed() => return,
                     Some(j) = hi_rx.recv() => j,
+                    Some(j) = exit_rx.recv() => j,
                     Some(j) = lo_rx.recv() => j,
                     else => return,
                 };
@@ -83,12 +89,16 @@ impl Gate {
                 let _ = job.reply.send(r);
             }
         });
-        (Gate { hi, lo, stats }, task)
+        (Gate { hi, exit, lo, stats }, task)
     }
 
     pub async fn build(&self, req: BuildRequest, p: Priority) -> Result<BuiltLeg, String> {
         let (reply, rx) = oneshot::channel();
-        let tx = if p == Priority::High { &self.hi } else { &self.lo };
+        let tx = match p {
+            Priority::High => &self.hi,
+            Priority::Exit => &self.exit,
+            Priority::Normal => &self.lo,
+        };
         tx.send(Job { req, reply }).await.map_err(|_| "stopped".to_string())?;
         rx.await.map_err(|_| "stopped".to_string())?
     }

@@ -41,6 +41,9 @@ pub fn plans(cfg: &Config) -> Result<Vec<CandidatePlan>> {
 }
 
 pub async fn run(ctx: Arc<Ctx>, plans: Vec<CandidatePlan>, mut shutdown: watch::Receiver<bool>) {
+    if ctx.cfg.research.ladder_every_s == 0 {
+        return;
+    }
     let mut tick = tokio::time::interval(Duration::from_secs(ctx.cfg.research.ladder_every_s));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut round: i64 = 0;

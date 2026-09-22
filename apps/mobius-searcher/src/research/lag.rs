@@ -452,7 +452,7 @@ async fn exits(ctx: &Ctx, id: i64, entry: &Entry, entered: Instant) {
         let due = entered + Duration::from_secs(after_s as u64);
         tokio::time::sleep_until(due.into()).await;
         let req = ctx.request(entry.output, entry.input, entry.out_amount, None);
-        let r = ctx.gate.build(req, Priority::High).await;
+        let r = ctx.gate.build(req, Priority::Exit).await;
         let mut row = ExitRow {
             run_id: ctx.run.clone(),
             episode: id,

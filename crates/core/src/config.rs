@@ -965,10 +965,12 @@ pub struct ResearchConfig {
     /// Size ladder: every round quotes one configured route (the enabled
     /// strategies' cycles, in turn) at each of these input sizes.
     pub ladder_sizes_lamports: Vec<u64>,
+    /// 0 = off (frees the Jupiter budget for the lag measurement).
     pub ladder_every_s: u64,
     /// Cross-chain: the same asset on Solana (Jupiter) and on EVM chains
     /// (Uniswap v3 QuoterV2), bought and sold for this much USDC.
     pub xchain_notional_usd: Vec<u32>,
+    /// 0 = off.
     pub xchain_every_s: u64,
     pub xchain_assets: Vec<XchainAsset>,
     /// DEX lag: every pool mid from `[feeds]` against the CEX mid. A gap wider
@@ -1000,8 +1002,8 @@ impl ResearchConfig {
         if self.ladder_sizes_lamports.is_empty() || self.ladder_sizes_lamports.contains(&0) {
             return Err("research.ladder_sizes_lamports: at least one size, all > 0".into());
         }
-        if self.ladder_every_s < 5 || self.xchain_every_s < 5 {
-            return Err("research.*_every_s must be ≥ 5".into());
+        if [self.ladder_every_s, self.xchain_every_s].iter().any(|s| (1..5).contains(s)) {
+            return Err("research.*_every_s must be 0 (off) or ≥ 5".into());
         }
         if self.xchain_notional_usd.contains(&0) {
             return Err("research.xchain_notional_usd must be > 0".into());
@@ -1658,6 +1660,14 @@ mod solana_layout_tests {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn research_ladder_and_xchain_can_be_switched_off() {
+        let mut r = ResearchConfig { ladder_every_s: 0, xchain_every_s: 0, ..Default::default() };
+        assert!(r.validate().is_ok());
+        r.ladder_every_s = 3;
+        assert!(r.validate().is_err(), "1–4 s would flood Jupiter");
+    }
 
     #[test]
     fn default_is_paper_and_valid() {
