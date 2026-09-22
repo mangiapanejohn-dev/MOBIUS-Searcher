@@ -9,8 +9,8 @@
 //!   and is the gap executable?
 //!
 //! Jupiter is the scarce resource. Every quote goes through one [`Gate`] in
-//! order (lag entries first, then lag exits, then the rest); the rate limiter
-//! paces them.
+//! (lag entries first, then lag exits, then the rest), and lower classes
+//! leave rate-limit slots free for entries.
 
 pub mod ladder;
 pub mod lag;
@@ -43,6 +43,7 @@ pub enum Priority {
 struct Job {
     req: BuildRequest,
     reply: oneshot::Sender<Result<BuiltLeg, String>>,
+    queued: std::time::Instant,
 }
 
 #[derive(Default)]
@@ -52,12 +53,29 @@ pub struct GateStats {
     pub rate_limited: AtomicI64,
 }
 
-/// Serialises Jupiter requests, high priority first.
+/// Window slots a class of request must leave free when it starts: exits
+/// never take the last slot and the rest never take the last two, so a lag
+/// entry (which has to be quoted while its gap is still open) finds a slot
+/// at once even when the window is otherwise full.
+pub const RESERVE: [u32; 3] = [0, 1, 2];
+
+impl Priority {
+    fn class(self) -> usize {
+        match self {
+            Priority::High => 0,
+            Priority::Exit => 1,
+            Priority::Normal => 2,
+        }
+    }
+}
+
+/// Paces Jupiter requests: the highest-priority waiting request starts as
+/// soon as the rate-limit window has a slot for it (see [`RESERVE`]); a
+/// request that has its slot is sent at once, without waiting for the ones
+/// still in flight.
 #[derive(Clone)]
 pub struct Gate {
-    hi: mpsc::Sender<Job>,
-    exit: mpsc::Sender<Job>,
-    lo: mpsc::Sender<Job>,
+    tx: [mpsc::Sender<Job>; 3],
     pub stats: Arc<GateStats>,
 }
 
@@ -69,37 +87,79 @@ impl Gate {
         let stats = Arc::new(GateStats::default());
         let s = stats.clone();
         let task = tokio::spawn(async move {
+            let mut queues: [std::collections::VecDeque<Job>; 3] = Default::default();
             loop {
-                let job = tokio::select! {
+                while let Ok(j) = hi_rx.try_recv() {
+                    queues[0].push_back(j);
+                }
+                while let Ok(j) = exit_rx.try_recv() {
+                    queues[1].push_back(j);
+                }
+                while let Ok(j) = lo_rx.try_recv() {
+                    queues[2].push_back(j);
+                }
+                // the highest class with work; until it has a slot, wait for
+                // the slot or for new work (which may outrank it)
+                let wait = match queues.iter().position(|q| !q.is_empty()) {
+                    None => None,
+                    Some(c) => {
+                        // literal slots (the limiter's own reserve scales with the learned capacity)
+                        let slot = match jup.limiter().window() {
+                            Some(w) => {
+                                let now = std::time::Instant::now();
+                                if w.available(now, 0) > RESERVE[c] {
+                                    w.try_acquire(now, 0)
+                                } else {
+                                    Err(w.next_slot_n(now, 0, RESERVE[c] + 1).saturating_duration_since(now))
+                                }
+                            }
+                            None => Ok(()), // token bucket: JupiterClient::build waits itself
+                        };
+                        match slot {
+                            Ok(()) => {
+                                let job = queues[c].pop_front().expect("non-empty");
+                                let (jup, s, windowed) = (jup.clone(), s.clone(), jup.limiter().window().is_some());
+                                tokio::spawn(async move {
+                                    s.requests.fetch_add(1, Ordering::Relaxed);
+                                    let r = if windowed {
+                                        jup.build_with_slot(&job.req, 0, job.queued.elapsed()).await
+                                    } else {
+                                        jup.build(&job.req, 0).await
+                                    };
+                                    let r = r.map_err(|e| {
+                                        s.errors.fetch_add(1, Ordering::Relaxed);
+                                        if e.is_rate_limited() {
+                                            s.rate_limited.fetch_add(1, Ordering::Relaxed);
+                                        }
+                                        e.to_string()
+                                    });
+                                    let _ = job.reply.send(r);
+                                });
+                                continue;
+                            }
+                            Err(d) => Some(d),
+                        }
+                    }
+                };
+                let sleep = tokio::time::sleep(wait.unwrap_or(Duration::from_secs(3600)));
+                tokio::select! {
                     biased;
                     _ = shutdown.changed() => return,
-                    Some(j) = hi_rx.recv() => j,
-                    Some(j) = exit_rx.recv() => j,
-                    Some(j) = lo_rx.recv() => j,
+                    Some(j) = hi_rx.recv() => queues[0].push_back(j),
+                    Some(j) = exit_rx.recv() => queues[1].push_back(j),
+                    Some(j) = lo_rx.recv() => queues[2].push_back(j),
+                    _ = sleep, if wait.is_some() => {}
                     else => return,
-                };
-                s.requests.fetch_add(1, Ordering::Relaxed);
-                let r = jup.build(&job.req, 0).await.map_err(|e| {
-                    s.errors.fetch_add(1, Ordering::Relaxed);
-                    if e.is_rate_limited() {
-                        s.rate_limited.fetch_add(1, Ordering::Relaxed);
-                    }
-                    e.to_string()
-                });
-                let _ = job.reply.send(r);
+                }
             }
         });
-        (Gate { hi, exit, lo, stats }, task)
+        (Gate { tx: [hi, exit, lo], stats }, task)
     }
 
     pub async fn build(&self, req: BuildRequest, p: Priority) -> Result<BuiltLeg, String> {
         let (reply, rx) = oneshot::channel();
-        let tx = match p {
-            Priority::High => &self.hi,
-            Priority::Exit => &self.exit,
-            Priority::Normal => &self.lo,
-        };
-        tx.send(Job { req, reply }).await.map_err(|_| "stopped".to_string())?;
+        let job = Job { req, reply, queued: std::time::Instant::now() };
+        self.tx[p.class()].send(job).await.map_err(|_| "stopped".to_string())?;
         rx.await.map_err(|_| "stopped".to_string())?
     }
 }
