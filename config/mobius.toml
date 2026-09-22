@@ -188,6 +188,8 @@ prune_interval_min = 30   # while recording (also once at startup); --prune runs
 # lag_trigger_bps = 4.0         # pool mid vs CEX mid gap that opens an episode
 # lag_control_every_s = 120     # the same check at random times (control sample)
 # lag_confirm_lamports = 100000000
+# lag_scale_trigger_bps = 8.0     # gaps this wide are also quoted at the sizes below
+# lag_scale_lamports = [500000000, 1000000000]
 # keep_awake = true             # macOS: caffeinate while running
 
 # ── Execution gate ──────────────────────────────────────────────────────────

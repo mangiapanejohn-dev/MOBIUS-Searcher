@@ -44,7 +44,8 @@ before 1.0 a minor version may change configuration or behaviour.
   Solana via Jupiter vs Base/Arbitrum via Uniswap v3, after swap fees, Solana
   fees and gas), and DEX lag (pool mids vs OKX/Binance best bid/ask, with an
   executable Jupiter quote per episode, control samples at random times and
-  CEX/pool markouts). `--research-report [RUN|latest|all]` prints whole
+  CEX/pool markouts; gaps ≥ `lag_scale_trigger_bps` are also quoted at 0.5
+  and 1 SOL to see whether the edge survives size). `--research-report [RUN|latest|all]` prints whole
   distributions (sample counts next to positive counts).
 - Attribution for every opportunity (`attribution` table): which profit guard
   failed (EDGE_TOO_SMALL covers three), the SOL price used, whether the

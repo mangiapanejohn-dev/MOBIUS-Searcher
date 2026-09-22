@@ -344,7 +344,15 @@ async fn evaluate(
                     };
                     ctx.record("lag episode", |s| s.upsert_episode(&ctx.run, &ep));
                     last_confirm.insert(dex.clone(), now);
-                    tokio::spawn(confirm(ctx.clone(), next_id, dex, buy, f.top.mid(), confirm_tx.clone()));
+                    // the 0.1 SOL confirmation first (comparable with every other episode), then bigger sizes
+                    let wide = kind == "trigger"
+                        && r.lag_scale_trigger_bps > 0.0
+                        && g.abs() >= r.lag_scale_trigger_bps
+                        && !r.lag_scale_lamports.is_empty();
+                    tokio::spawn(confirm(ctx.clone(), next_id, dex.clone(), buy, f.top.mid(), confirm_tx.clone()));
+                    if wide {
+                        tokio::spawn(scale(ctx.clone(), cex.clone(), next_id, dex, buy, f.top.mid()));
+                    }
                     open.insert(next_id, Open {
                         ep,
                         started: now,
@@ -363,15 +371,21 @@ async fn evaluate(
     }
 }
 
-/// One Jupiter quote restricted to `dex`: buy SOL with USDC or sell SOL for USDC.
-async fn confirm(ctx: Arc<Ctx>, id: i64, dex: String, buy: bool, cex_mid: f64, tx: mpsc::Sender<Confirmed>) {
+/// One Jupiter quote restricted to `dex` for `lamports` of SOL: buy SOL with
+/// USDC or sell SOL for USDC. Returns (latency ms, (USDC per SOL, DEX labels)).
+async fn quote_on_dex(
+    ctx: &Ctx,
+    dex: &str,
+    buy: bool,
+    cex_mid: f64,
+    lamports: u64,
+) -> (i64, Result<(f64, String), String>) {
     let tokens = ctx.cfg.tokens();
     let (sol, usdc) = (tokens.sol().mint, tokens.get("USDC").map(|t| t.mint).unwrap_or_default());
-    let lamports = ctx.cfg.research.lag_confirm_lamports;
     let spec = searcher_strategy::LegSpec {
         input: if buy { usdc } else { sol },
         output: if buy { sol } else { usdc },
-        dex_filter: DexFilter::Only(vec![dex]),
+        dex_filter: DexFilter::Only(vec![dex.to_string()]),
         mode: Default::default(),
         max_accounts: None,
     };
@@ -387,7 +401,41 @@ async fn confirm(ctx: Arc<Ctx>, id: i64, dex: String, buy: bool, cex_mid: f64, t
         }
         Ok((usdc_amt as f64 / 1e6 / (sol_amt as f64 / 1e9), b.leg.dex_labels().join("+")))
     });
+    (ms, result)
+}
+
+async fn confirm(ctx: Arc<Ctx>, id: i64, dex: String, buy: bool, cex_mid: f64, tx: mpsc::Sender<Confirmed>) {
+    let (ms, result) = quote_on_dex(&ctx, &dex, buy, cex_mid, ctx.cfg.research.lag_confirm_lamports).await;
     let _ = tx.send(Confirmed { id, ts: Ts::now().0, ms, result }).await;
+}
+
+/// Wide gap: the same side quoted at the bigger sizes, measured against the
+/// CEX price when each answer arrives.
+async fn scale(ctx: Arc<Ctx>, cex: Arc<Mutex<Cex>>, id: i64, dex: String, buy: bool, cex_mid: f64) {
+    for &size in &ctx.cfg.research.lag_scale_lamports {
+        let (ms, result) = quote_on_dex(&ctx, &dex, buy, cex_mid, size).await;
+        let fair = cex.lock().fair(Instant::now());
+        let mut row = searcher_storage::research::ScaleRow {
+            run_id: ctx.run.clone(),
+            episode: id,
+            size,
+            ts: Ts::now().0,
+            confirm_ms: Some(ms),
+            ..Default::default()
+        };
+        match result {
+            Ok((px, _)) => {
+                row.exec_px = Some(px);
+                if let Some(f) = fair {
+                    row.exec_gap_bps = Some(edge_bps(buy, px, f.top.mid()));
+                    row.exec_gap_touch_bps = Some(edge_bps(buy, px, if buy { f.top.bid } else { f.top.ask }));
+                }
+            }
+            Err(e) if e == "stopped" => return,
+            Err(e) => row.err = Some(e),
+        }
+        ctx.record("lag scale", |s| s.insert_scale(&row));
+    }
 }
 
 #[cfg(test)]

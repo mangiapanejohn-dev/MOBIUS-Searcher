@@ -77,6 +77,14 @@ CREATE TABLE IF NOT EXISTS lag_episodes (
     markouts TEXT,                  -- JSON [{"s":1,"cex_mid":…,"pool_mid":…}]
     PRIMARY KEY (run_id, id)
 );
+
+-- Wide gaps: the same episode quoted at bigger sizes (does the edge scale?).
+CREATE TABLE IF NOT EXISTS lag_scale (
+    run_id TEXT NOT NULL, episode INTEGER NOT NULL, size INTEGER NOT NULL,
+    ts INTEGER NOT NULL, confirm_ms INTEGER,
+    exec_px REAL, exec_gap_bps REAL, exec_gap_touch_bps REAL, err TEXT,
+    PRIMARY KEY (run_id, episode, size)
+);
 "#;
 
 pub struct ResearchStore {
@@ -160,6 +168,19 @@ pub struct Episode {
     pub exec_dexes: Option<String>,
     pub confirm_err: Option<String>,
     pub markouts: Option<String>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub struct ScaleRow {
+    pub run_id: String,
+    pub episode: i64,
+    pub size: u64,
+    pub ts: i64,
+    pub confirm_ms: Option<i64>,
+    pub exec_px: Option<f64>,
+    pub exec_gap_bps: Option<f64>,
+    pub exec_gap_touch_bps: Option<f64>,
+    pub err: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -322,6 +343,50 @@ impl ResearchStore {
             ],
         )?;
         Ok(())
+    }
+
+    pub fn insert_scale(&self, r: &ScaleRow) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO lag_scale(run_id, episode, size, ts, confirm_ms, exec_px, exec_gap_bps,
+                exec_gap_touch_bps, err) VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9)",
+            params![
+                r.run_id,
+                r.episode,
+                r.size as i64,
+                r.ts,
+                r.confirm_ms,
+                r.exec_px,
+                r.exec_gap_bps,
+                r.exec_gap_touch_bps,
+                r.err
+            ],
+        )?;
+        Ok(())
+    }
+
+    pub fn scale(&self, runs: &[String]) -> Result<Vec<ScaleRow>, StoreError> {
+        let mut out = Vec::new();
+        for run in runs {
+            let mut st = self.conn.prepare(
+                "SELECT run_id, episode, size, ts, confirm_ms, exec_px, exec_gap_bps, exec_gap_touch_bps, err
+                 FROM lag_scale WHERE run_id = ?1 ORDER BY episode, size",
+            )?;
+            let rows = st.query_map([run], |r| {
+                Ok(ScaleRow {
+                    run_id: r.get(0)?,
+                    episode: r.get(1)?,
+                    size: r.get::<_, i64>(2)? as u64,
+                    ts: r.get(3)?,
+                    confirm_ms: r.get(4)?,
+                    exec_px: r.get(5)?,
+                    exec_gap_bps: r.get(6)?,
+                    exec_gap_touch_bps: r.get(7)?,
+                    err: r.get(8)?,
+                })
+            })?;
+            out.extend(rows.collect::<Result<Vec<_>, _>>()?);
+        }
+        Ok(out)
     }
 
     pub fn runs(&self) -> Result<Vec<RunRow>, StoreError> {

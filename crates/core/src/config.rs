@@ -983,6 +983,10 @@ pub struct ResearchConfig {
     pub lag_confirm_cooldown_s: u64,
     /// CEX prices after an episode starts (seconds): who moved, DEX or CEX.
     pub lag_markouts_s: Vec<u32>,
+    /// Gaps at least this wide also get quotes at `lag_scale_lamports`: does
+    /// the edge survive a bigger trade? 0 = off.
+    pub lag_scale_trigger_bps: f64,
+    pub lag_scale_lamports: Vec<u64>,
     pub lag_okx_ws_url: String,
     pub lag_okx_inst: String,
     /// Binance's public mirror (the main endpoint refuses some locations).
@@ -1009,6 +1013,12 @@ impl ResearchConfig {
         }
         if self.lag_trigger_bps.is_nan() || self.lag_trigger_bps <= 0.0 {
             return Err("research.lag_trigger_bps must be > 0".into());
+        }
+        if self.lag_scale_lamports.contains(&0)
+            || self.lag_scale_trigger_bps.is_nan()
+            || self.lag_scale_trigger_bps < 0.0
+        {
+            return Err("research.lag_scale_*: sizes > 0 and a trigger ≥ 0".into());
         }
         if self.lag_confirm_lamports == 0 {
             return Err("research.lag_confirm_lamports must be > 0".into());
@@ -1087,6 +1097,8 @@ impl Default for ResearchConfig {
             lag_confirm_lamports: 100_000_000,
             lag_confirm_cooldown_s: 10,
             lag_markouts_s: vec![1, 5, 30],
+            lag_scale_trigger_bps: 8.0,
+            lag_scale_lamports: vec![500_000_000, 1_000_000_000],
             lag_okx_ws_url: "wss://ws.okx.com:8443/ws/v5/public".into(),
             lag_okx_inst: "SOL-USDC".into(),
             lag_binance_ws_url: "wss://data-stream.binance.vision/ws/solusdc@bookTicker".into(),

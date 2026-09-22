@@ -4,7 +4,7 @@
 
 use searcher_storage::ResearchStore;
 use searcher_storage::StoreError;
-use searcher_storage::research::{Episode, LadderRow, LagTick, XchainRow};
+use searcher_storage::research::{Episode, LadderRow, LagTick, ScaleRow, XchainRow};
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
@@ -67,6 +67,9 @@ pub struct Report {
     pub lag_gap: BTreeMap<String, (Dist, f64, Option<f64>)>,
     /// "kind dex" → episodes
     pub lag_episodes: BTreeMap<String, EpisodeStats>,
+    /// Wide-gap episodes quoted at several sizes: size (lamports) → (after fixed cost, vs touch, errors).
+    pub lag_scale: BTreeMap<u64, (Dist, Dist, usize)>,
+    pub lag_scale_trigger_bps: Option<f64>,
     pub trigger_bps: Option<f64>,
 }
 
@@ -106,14 +109,47 @@ pub fn build(store: &ResearchStore, runs: &[String]) -> Result<Report, StoreErro
                     v["keep_awake"]
                 );
                 r.trigger_bps = r.trigger_bps.or(v["research"]["lag_trigger_bps"].as_f64());
+                r.lag_scale_trigger_bps = r.lag_scale_trigger_bps.or(v["research"]["lag_scale_trigger_bps"].as_f64());
                 r.setup.push(s);
             }
         }
     }
     ladder(&mut r, &store.ladder(runs)?);
     xchain(&mut r, &store.xchain(runs)?);
-    lag(&mut r, &store.lag_ticks(runs)?, &store.episodes(runs)?);
+    let episodes = store.episodes(runs)?;
+    lag(&mut r, &store.lag_ticks(runs)?, &episodes);
+    lag_scale(&mut r, &episodes, &store.scale(runs)?);
     Ok(r)
+}
+
+/// The episodes that got bigger-size quotes, with their own 0.1 SOL quote as
+/// the first row: the same moments, only the size differs.
+fn lag_scale(r: &mut Report, eps: &[Episode], scale: &[ScaleRow]) {
+    if scale.is_empty() {
+        return;
+    }
+    let ids: std::collections::BTreeSet<i64> = scale.iter().map(|s| s.episode).collect();
+    let mut by: BTreeMap<u64, (Vec<f64>, Vec<f64>, usize)> = BTreeMap::new();
+    let mut add = |size: u64, gap: Option<f64>, touch: Option<f64>| {
+        let size = size.max(1);
+        let b = by.entry(size).or_default();
+        match gap {
+            Some(g) => {
+                b.0.push(g - bps(FIXED_LAMPORTS, size));
+                if let Some(t) = touch {
+                    b.1.push(t - bps(FIXED_LAMPORTS, size));
+                }
+            }
+            None => b.2 += 1,
+        }
+    };
+    for e in eps.iter().filter(|e| ids.contains(&e.id) && e.kind == "trigger") {
+        add(e.size.unwrap_or(0), e.exec_gap_bps, e.exec_gap_touch_bps);
+    }
+    for s in scale {
+        add(s.size, s.exec_gap_bps, s.exec_gap_touch_bps);
+    }
+    r.lag_scale = by.into_iter().map(|(k, (a, t, e))| (k, (Dist::of(a), Dist::of(t), e))).collect();
 }
 
 fn bps(num: i64, den: u64) -> f64 {
@@ -348,6 +384,18 @@ pub fn render(r: &Report) -> String {
             );
         }
     }
+    if !r.lag_scale.is_empty() {
+        let _ = writeln!(
+            o,
+            "\n   Wide gaps (≥ {} bp): the same episodes quoted at bigger sizes — does the edge survive size?",
+            r.lag_scale_trigger_bps.map(|t| format!("{t}")).unwrap_or("-".into())
+        );
+        let _ = writeln!(o, "   size SOL              {HEAD}");
+        for (size, (a, t, err)) in &r.lag_scale {
+            let _ = writeln!(o, "   {:>8} − fixed   {}   errors {err}", *size as f64 / 1e9, dist_cols(a));
+            let _ = writeln!(o, "   {:>8} vs touch  {}", "", dist_cols(t));
+        }
+    }
     let _ = writeln!(
         o,
         "\n   Pool mids arrive every few seconds on public RPC (see pool age); durations have that resolution."
@@ -366,6 +414,37 @@ mod tests {
         assert_eq!(d.p50, Some(-1.0));
         assert_eq!(d.max, Some(2.0));
         assert_eq!(Dist::of(vec![]).p50, None);
+    }
+
+    #[test]
+    fn size_scaling_pairs_the_same_episodes() {
+        let s = ResearchStore::open_in_memory().unwrap();
+        s.begin_run("r", 0, "0.2.0", r#"{"research":{"lag_trigger_bps":4.0,"lag_scale_trigger_bps":8.0}}"#).unwrap();
+        let ep = |id: i64, gap: f64| Episode {
+            id,
+            kind: "trigger".into(),
+            dex: "Raydium CLMM".into(),
+            size: Some(100_000_000),
+            exec_gap_bps: Some(gap),
+            exec_gap_touch_bps: Some(gap - 1.0),
+            ..Default::default()
+        };
+        s.upsert_episode("r", &ep(1, 9.0)).unwrap();
+        s.upsert_episode("r", &ep(2, 1.0)).unwrap(); // narrow: no scale rows, not in the table
+        s.insert_scale(&ScaleRow {
+            run_id: "r".into(),
+            episode: 1,
+            size: 1_000_000_000,
+            exec_gap_bps: Some(4.0),
+            exec_gap_touch_bps: Some(3.0),
+            ..Default::default()
+        })
+        .unwrap();
+        let r = build(&s, &["r".to_string()]).unwrap();
+        assert_eq!(r.lag_scale[&100_000_000].0.n, 1, "only the episode that was scaled");
+        assert!((r.lag_scale[&100_000_000].0.p50.unwrap() - (9.0 - 0.6)).abs() < 1e-9);
+        assert!((r.lag_scale[&1_000_000_000].0.p50.unwrap() - (4.0 - 0.06)).abs() < 1e-9);
+        assert!(render(&r).contains("does the edge survive size"));
     }
 
     #[test]
