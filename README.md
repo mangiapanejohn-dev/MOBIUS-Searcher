@@ -88,6 +88,12 @@ claim.
 
 ## Get involved
 
+**If this tool helps your research, [star the repository](https://github.com/mangiapanejohn-dev/MOBIUS-Searcher) to
+bookmark it and help other developers discover it.** Start with
+[installation](#install), [the measured results](docs/PAPER_RUN.md), or a
+[small contribution](https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22).
+
+
 MØBIUS-Searcher is most useful when its claims can be reproduced outside the
 machine they were measured on. If you want to contribute, the highest-value
 work right now is **benchmark reproduction, execution correctness, terminal
@@ -102,6 +108,15 @@ Negative results are welcome. A failed reproduction is useful evidence when the
 environment and method are documented.
 
 ## Install
+
+> [!NOTE]
+> **Release vs. development:** as of 2026-09-23, the prebuilt release is
+> **v0.1.0**, while `main` identifies as **0.2.0-beta.1**. The one-line
+> installers below download the latest published release. To try the 0.2
+> research and canary commands described in the development docs, use the
+> **Cargo / from source** instructions below. Run `mobius-searcher --version`
+> when reporting results; downloading v0.1.0 does not include every feature on `main`.
+
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mangiapanejohn-dev/MOBIUS-Searcher/main/scripts/install.sh | sh
