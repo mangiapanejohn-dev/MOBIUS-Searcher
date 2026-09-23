@@ -35,6 +35,10 @@ use tokio::sync::{mpsc, watch};
 
 /// A CEX quote older than this is not used.
 const CEX_MAX_AGE: Duration = Duration::from_secs(3);
+/// A pool mid older than this is not compared with a live CEX price: the
+/// chain feed pushes a change within a second or two, so anything older means
+/// the feed (or the process) stalled.
+const MAX_POOL_AGE: Duration = Duration::from_secs(30);
 /// An episode ends when the gap falls below half the trigger, flips sign, or
 /// after this long.
 const EPISODE_MAX: Duration = Duration::from_secs(300);
@@ -236,6 +240,7 @@ async fn evaluate(
     let (confirm_tx, mut confirm_rx) = mpsc::channel::<Confirmed>(64);
     let mut next_id: i64 = 0;
     let mut control_turn = 0usize;
+    let mut last_tick = Ts::now();
     let mut every_1s = tokio::time::interval(Duration::from_secs(1));
     let mut every_5s = tokio::time::interval(Duration::from_secs(5));
     let control_every = Duration::from_secs(r.lag_control_every_s.max(1));
@@ -251,7 +256,13 @@ async fn evaluate(
                     o.ep.confirm_ts = Some(c.ts);
                     o.ep.confirm_ms = Some(c.ms);
                     let fair = cex.lock().fair(Instant::now());
-                    match c.result {
+                    let result = match c.result {
+                        Ok(e) if plausible(e.px, o.ep.cex_mid).is_err() => {
+                            Err(plausible(e.px, o.ep.cex_mid).unwrap_err())
+                        }
+                        other => other,
+                    };
+                    match result {
                         Ok(Entry { px, dexes, .. }) => {
                             let buy = o.ep.side == "buy_on_dex";
                             o.ep.exec_px = Some(px);
@@ -286,6 +297,21 @@ async fn evaluate(
             }
             _ = every_1s.tick() => {
                 let now = Instant::now();
+                // the machine was asleep: every price we hold predates it, and
+                // an open episode spans the gap. Start again from the feeds.
+                let wall = Ts::now();
+                let slept = wall.0 - last_tick.0 > 30_000_000;
+                last_tick = wall;
+                if slept {
+                    for o in open.values_mut() {
+                        o.ep.confirm_err.get_or_insert_with(|| "interrupted: the machine slept".into());
+                        o.ep.end_ts = Some(wall.0);
+                        ctx.record("lag episode", |s| s.upsert_episode(&ctx.run, &o.ep));
+                    }
+                    open.clear();
+                    pools.clear();
+                    continue;
+                }
                 let Some(f) = cex.lock().fair(now) else { continue };
                 ctx.sol_usd.lock().replace(f.top.mid());
 
@@ -331,7 +357,8 @@ async fn evaluate(
                 for (dex, p) in &pools {
                     let g = gap_bps(p.mid, f.top.mid());
                     let cooled = last_confirm.get(dex).is_none_or(|t| now.duration_since(*t).as_secs() >= r.lag_confirm_cooldown_s);
-                    if g.abs() >= r.lag_trigger_bps && cooled && !busy.contains(dex) {
+                    let fresh = now.saturating_duration_since(p.at) < MAX_POOL_AGE;
+                    if g.abs() >= r.lag_trigger_bps && cooled && fresh && !busy.contains(dex) {
                         starts.push((dex.clone(), "trigger"));
                     }
                 }
@@ -340,7 +367,8 @@ async fn evaluate(
                     next_control = now + control_every;
                     let dex = pools.keys().nth(control_turn % pools.len()).cloned().unwrap_or_default();
                     control_turn += 1;
-                    if !busy.contains(&dex) && !starts.iter().any(|(d, _)| *d == dex) {
+                    if pools.get(&dex).is_some_and(|p| now.saturating_duration_since(p.at) < MAX_POOL_AGE)
+                        && !busy.contains(&dex) && !starts.iter().any(|(d, _)| *d == dex) {
                         starts.push((dex, "control"));
                     }
                 }
@@ -445,6 +473,21 @@ pub fn round_trip_bps(entry_in: u64, exit_out: u64) -> f64 {
     (exit_out as f64 - entry_in as f64) / entry_in.max(1) as f64 * 1e4
 }
 
+/// Quotes further than this from the reference are recorded as errors, not
+/// prices: mainnet returns the occasional 200 whose route delivers a third
+/// of the amount (or nothing), and one such number would swamp a distribution.
+pub const MAX_DEVIATION_BPS: f64 = 500.0;
+
+/// `Ok(())` when `value` is within [`MAX_DEVIATION_BPS`] of `reference`.
+pub fn plausible(value: f64, reference: f64) -> Result<(), String> {
+    let off = (value - reference) / reference * 1e4;
+    if reference > 0.0 && value > 0.0 && off.abs() <= MAX_DEVIATION_BPS {
+        Ok(())
+    } else {
+        Err(format!("implausible quote: {value:.6} is {off:+.0} bp from {reference:.6}"))
+    }
+}
+
 /// The way back: what the entry delivered, swapped back on any route at each
 /// delay in [`EXIT_AFTER_S`] after the entry quote answered.
 async fn exits(ctx: &Ctx, id: i64, entry: &Entry, entered: Instant) {
@@ -464,11 +507,18 @@ async fn exits(ctx: &Ctx, id: i64, entry: &Entry, entered: Instant) {
             ..Default::default()
         };
         match r {
-            Ok(b) => {
-                row.exit_out = Some(b.leg.out_amount);
-                row.rt_bps = Some(round_trip_bps(entry.in_amount, b.leg.out_amount));
-                row.dexes = Some(b.leg.dex_labels().join("+"));
-            }
+            Ok(b) => match plausible(b.leg.out_amount as f64, entry.in_amount as f64) {
+                Ok(()) => {
+                    row.exit_out = Some(b.leg.out_amount);
+                    row.rt_bps = Some(round_trip_bps(entry.in_amount, b.leg.out_amount));
+                    row.dexes = Some(b.leg.dex_labels().join("+"));
+                }
+                // recorded, but not as a number the distributions would believe
+                Err(e) => {
+                    row.exit_out = Some(b.leg.out_amount);
+                    row.err = Some(e);
+                }
+            },
             Err(e) if e == "stopped" => return,
             Err(e) => row.err = Some(e),
         }
@@ -524,6 +574,20 @@ mod tests {
         assert!((round_trip_bps(11_700_000, 11_710_000) - 8.547).abs() < 1e-3);
         assert!((round_trip_bps(11_700_000, 11_690_000) + 8.547).abs() < 1e-3);
         assert_eq!(round_trip_bps(100_000_000, 100_000_000), 0.0);
+    }
+
+    #[test]
+    fn implausible_quotes_are_refused() {
+        // recorded 2026-09-22: exits that returned nothing, a third, or 87 % of the entry
+        assert!(plausible(0.0, 100_000_000.0).is_err());
+        assert!(plausible(3_053_889.0, 100_000_000.0).is_err());
+        assert!(plausible(86_773_235.0, 100_000_000.0).is_err());
+        // a real round trip is within a few bp either way
+        assert!(plausible(100_081_169.0, 100_000_000.0).is_ok());
+        assert!(plausible(99_987_586.0, 100_000_000.0).is_ok());
+        // exactly at the limit either way
+        assert!(plausible(105.0, 100.0).is_ok() && plausible(95.0, 100.0).is_ok());
+        assert!(plausible(105.1, 100.0).is_err() && plausible(94.9, 100.0).is_err());
     }
 
     #[test]

@@ -52,6 +52,15 @@ before 1.0 a minor version may change configuration or behaviour.
   take the last rate-limit slot and everything else never the last two).
   `--research-report [RUN|latest|all]` prints whole
   distributions (sample counts next to positive counts).
+- A Jupiter `/build` answer whose route returns nothing is an error
+  (`ZeroOutput`), not a price of zero. Research also refuses any quote more
+  than 500 bp from its reference (the CEX mid for a lag entry, the entry
+  amount for its exit, the Solana buy price for a cross-chain sell) and
+  records it as an error: mainnet returns the occasional 200 that delivers a
+  third of the amount, and one such number swamped a whole distribution.
+- Research survives the machine sleeping: a wall-clock jump ends open
+  episodes as interrupted and drops every held price, and a pool mid older
+  than 30 s is never compared with a live CEX price.
 - Attribution for every opportunity (`attribution` table): which profit guard
   failed (EDGE_TOO_SMALL covers three), the SOL price used, whether the
   verdict used quoted or simulated costs, each leg's quoted and executed

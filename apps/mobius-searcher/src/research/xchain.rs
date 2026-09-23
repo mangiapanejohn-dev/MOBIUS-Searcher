@@ -146,6 +146,10 @@ async fn measure(
     };
     let sol_sell_usd = sell.leg.out_amount as f64 / 1e6;
     let sol_sell_px = sol_sell_usd / qty;
+    // a route that delivers a fraction of the amount is an error, not a price
+    if let Err(e) = super::lag::plausible(sol_sell_px, sol_buy_px) {
+        return fail(format!("solana sell: {e}"));
+    }
 
     // Solana fees per swap transaction, valued at the CEX SOL price
     let sol_usd = *ctx.sol_usd.lock();
@@ -171,6 +175,11 @@ async fn measure(
                 continue;
             }
         };
+        if let Err(e) = super::lag::plausible(eb.avg_px, sol_buy_px).and(super::lag::plausible(es.avg_px, sol_buy_px)) {
+            row.err = Some(format!("evm: {e}"));
+            rows.push(row);
+            continue;
+        }
         row.evm_buy_px = Some(eb.avg_px);
         row.evm_sell_px = Some(es.avg_px);
         row.evm_block = Some(es.as_of.clone());

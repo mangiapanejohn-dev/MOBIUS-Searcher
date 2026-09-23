@@ -18,6 +18,9 @@ pub enum AdaptError {
     Blockhash(usize),
     #[error("response mints do not match the request")]
     MintMismatch,
+    /// Seen on mainnet: a 200 response whose route returns nothing.
+    #[error("route returns zero output")]
+    ZeroOutput,
 }
 
 fn addr(s: &str) -> Result<Address, AdaptError> {
@@ -80,6 +83,9 @@ pub fn to_leg(r: &BuildResponse, ctx: LegContext) -> Result<(Leg, LegInstruction
     let output_mint = addr(&r.output_mint)?;
     if input_mint != ctx.expect_input || output_mint != ctx.expect_output {
         return Err(AdaptError::MintMismatch);
+    }
+    if amount(&r.out_amount)? == 0 {
+        return Err(AdaptError::ZeroOutput);
     }
     let hops = r
         .route_plan
@@ -222,5 +228,13 @@ mod tests {
         assert_eq!(ratio_to_ppm("1.5"), Ppm(1_500_000));
         assert_eq!(ratio_to_ppm("1e-3"), Ppm(1_000));
         assert_eq!(ratio_to_ppm("garbage"), Ppm(0));
+    }
+
+    #[test]
+    fn a_route_returning_nothing_is_an_error_not_a_price() {
+        let mut v: serde_json::Value = serde_json::from_str(FIXTURE).unwrap();
+        v["outAmount"] = serde_json::json!("0");
+        let r: BuildResponse = serde_json::from_value(v).unwrap();
+        assert!(matches!(to_leg(&r, ctx()), Err(AdaptError::ZeroOutput)));
     }
 }
