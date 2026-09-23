@@ -132,3 +132,26 @@ mobius-searcher --migrate-config
 It prints the new file, checks that it loads to exactly the same effective
 configuration, and writes it only after you type `yes`, keeping comments and
 the previous file as `.bak`. A section set in both places is refused.
+
+## Secrets and accounts
+
+Secrets are read from the process environment, then `~/.config/mobius/.env`,
+then `./.env`. The configuration holds the *names* of these variables, never
+their values, and nothing here is printed to a log or a report.
+
+| Variable | Needed for | Where it comes from |
+|---|---|---|
+| `JUPITER_API_KEY` | doubles the quote rate (keyless 0.5/s → 1/s) | free, self-serve at [portal.jup.ag](https://portal.jup.ag) |
+| `SOLANA_RPC_URL`, `SOLANA_WS_URL` | your own RPC instead of the public one | any Solana RPC provider |
+| `JITO_UUID` | optional, a Jito account's bundle quota | Jito |
+| `PYTH_API_KEY` | only with `oracle_source = "hermes"` | Pyth Hermes |
+| `ETHEREUM_RPC_URL`, `BASE_RPC_URL`, `ARBITRUM_RPC_URL` | cross-chain research and `--quote` on EVM venues | any EVM RPC provider (public nodes are the default) |
+| `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE` | only for a signed OKX read; market data needs none | OKX |
+| `BINANCE_API_KEY`, `BINANCE_API_SECRET` | same, for Binance | Binance |
+
+**None of these let anything be sent.** Signing needs
+`[venues.solana.wallet] keypair_path` *and* `execution.live_enabled = true`
+*and* a sending mode — see [LIVE_CHECKLIST.md](LIVE_CHECKLIST.md).
+
+`mobius-searcher --doctor` prints which of these are set (names only) and
+tests every endpoint they configure.

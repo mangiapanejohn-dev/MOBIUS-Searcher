@@ -3,7 +3,14 @@
 All notable changes to MØBIUS. Versions follow [Semantic Versioning](https://semver.org/);
 before 1.0 a minor version may change configuration or behaviour.
 
-## Unreleased
+## 0.2.0-beta.1 — 2026-09-23
+
+A research release: it measures where an edge could come from, and reports
+that it did not find one ([docs/RESEARCH_2026-09.md](docs/RESEARCH_2026-09.md)).
+Nothing in 0.2 has been sent to the chain: the canary that proves the sending
+path end to end has not been run against mainnet, so CONFIRM and LIVE remain
+verified only by tests and simulation.
+
 
 ### Added
 - **OKX connector** (`searcher-venues`): signed v5 REST (HMAC-SHA256, clock

@@ -97,6 +97,8 @@ jobs:
           name: MØBIUS ${{ env.TAG }}
           body_path: notes.md
           files: dist/*
+          # a tag with a pre-release suffix (v0.2.0-beta.1) is not the latest release
+          prerelease: ${{ contains(env.TAG, '-') }}
 
   npm:
     needs: release
@@ -122,8 +124,11 @@ jobs:
         env:
           NODE_AUTH_TOKEN: ${{ secrets.NPM_TOKEN }}
         run: |
-          npm version "${TAG#v}" --no-git-tag-version --allow-same-version
-          npm publish --access public --provenance
+          v="${TAG#v}"
+          npm version "$v" --no-git-tag-version --allow-same-version
+          # a pre-release must not become the default `npm install` version
+          case "$v" in *-*) npm publish --access public --provenance --tag beta ;;
+                       *)   npm publish --access public --provenance ;; esac
       - name: Skipped (no NPM_TOKEN secret)
         if: env.NPM_TOKEN == ''
         run: echo "NPM_TOKEN is not set; npm publish skipped. The GitHub release is complete."

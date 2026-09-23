@@ -71,13 +71,17 @@ execution / MEV 研究工具，而不是收益承诺。
 
 ## 现状
 
+**0.2.0-beta.1 是一个研究版本。它只做测量，从未交易过。**
+
 | | |
 |---|---|
-| **模拟盘结果** | 3 次长时间测试 · 3,091 次评估 · 2,333 次主网模拟 · **0 次可执行** · 毛利中位数 ≈ −3.5 bp，净利 ≈ −8.9 bp（[docs/PAPER_RUN.md](docs/PAPER_RUN.md)） |
-| **调度** | 默认事件驱动：相比轮询，请求少 30%，限流 0 次，决策时报价的年龄中位数从 2.6 秒降到 0.64 秒。*但从行情变化到拿到可用报价并没有变快*，瓶颈是 Jupiter 的请求限额（[docs/LATENCY.md](docs/LATENCY.md)） |
-| **数据新鲜度** | 默认 RPC 下，池子更新比链上最新区块慢 0–2 个 slot |
-| **CONFIRM / LIVE** | 已实现并有单元测试，默认锁住，**从未发出过交易** |
-| **交易所** | Solana：执行。OKX：仅行情数据（还没有下单连接器） |
+| **到底有没有可赚的价差？** | **测过了，没有。** 5.4 小时报价数据：SOL 往返在 0.05–2 SOL 各档都是 −3 到 −4 bp，跨链（Solana 对 Base/Arbitrum）12 个组合全部 −4.5 到 −10 bp，DEX 滞后套利在扣掉 1.16 bp 的报价与成交差之前最多也只是打平（[docs/RESEARCH_2026-09.md](docs/RESEARCH_2026-09.md)） |
+| **滞后数据确实说明的事** | 价差出现后，池子价格会向交易所价格回归 3–5 bp，在这些时刻交易比随机时刻好 1.4 bp——信号是真的，但比拿走它的成本还小 |
+| **模拟盘结果** | 0.1：3 次长测 · 3,091 次评估 · 0 次可执行。0.2 修好记账后：921 次评估，模拟失败率从 55% 降到 7%，模型与模拟的差距在 878 lamports 以内，仍然 0 次可执行（[docs/PAPER_RUN.md](docs/PAPER_RUN.md)） |
+| **链上发出的交易** | **零笔。** CONFIRM / LIVE 和 `--canary` 都已实现并有单元测试，但 canary 还没有在主网上跑过 |
+| **调度** | 默认事件驱动：相比轮询，请求少 30%，限流 0 次，决策时报价年龄中位数从 2.6 秒降到 0.64 秒（[docs/LATENCY.md](docs/LATENCY.md)） |
+| **数据新鲜度** | 默认 RPC 下，池子更新比链上最新区块慢 0–1 个 slot（约 0.4 秒） |
+| **交易所** | Solana：执行。OKX、Binance：参考价格。Base、Arbitrum：研究用的 Uniswap v3 报价 |
 
 ## 参与研究与贡献
 
@@ -254,18 +258,20 @@ mobius-searcher --print-config   # 每一项实际生效的值，以及它来自
 
 | 文档 | 内容 |
 |---|---|
+| [上手指南（中文）](docs/GETTING_STARTED.zh-CN.md) | **从这里开始**：需要准备什么、首次运行、体检、PAPER、研究，最后才是真金白银 |
 | [INSTALL](docs/INSTALL.md) | 安装方式、支持平台、文件位置、终端推荐 |
 | [USAGE](docs/USAGE.md) | 首次运行、模式、命令行、页面和按键、回放 |
 | [CONFIGURATION](docs/CONFIGURATION.md) | 配置分层、每个配置段、交易所、密钥 |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | 设计决策、crate 划分、运行时结构 |
 | [LATENCY](docs/LATENCY.md) | 调度、限流、实测 A/B 结果 |
 | [STORAGE](docs/STORAGE.md) | 记录什么、压缩、保留策略 |
+| [RESEARCH_2026-09](docs/RESEARCH_2026-09.md) | 0.2 的三项测量：仓位曲线、跨链、DEX 滞后，以及没有找到什么 |
 | [PAPER_RUN](docs/PAPER_RUN.md) | 模拟盘长时间测试的完整结果 |
 | [RESEARCH](docs/RESEARCH.md) | 设计背后的 API 调研 |
 | [LIVE_CHECKLIST](docs/LIVE_CHECKLIST.md) | 开启实盘前必须满足的所有条件 |
 | [SECURITY](SECURITY.md) | 密钥、私钥、执行关卡、漏洞报告 |
 
-文档正文目前为英文。
+文档正文以英文为主；[上手指南](docs/GETTING_STARTED.zh-CN.md) 有中文版。
 
 ## 开发
 

@@ -74,13 +74,17 @@ claim.
 
 ## Where it stands
 
+**0.2.0-beta.1 is a research release.** It measures; it has never traded.
+
 | | |
 |---|---|
-| **PAPER results** | 3 soak runs · 3,091 evaluations · 2,333 mainnet simulations · **0 executable** · median gross edge ≈ −3.5 bp, net ≈ −8.9 bp ([docs/PAPER_RUN.md](docs/PAPER_RUN.md)) |
-| **Scheduling** | event-driven by default: vs. round-robin, 30 % fewer requests, 0 × 429, quotes at decision time p50 2.6 s → 0.64 s. *Market change → usable quote did not get faster:* the Jupiter rate limit is the bottleneck ([docs/LATENCY.md](docs/LATENCY.md)) |
-| **Data freshness** | pool updates arrive 0–2 slots behind the chain head on the default RPC |
-| **CONFIRM / LIVE** | implemented and unit-tested, locked by default, **no transaction ever sent** |
-| **Venues** | Solana: execution. OKX: market data only (no order connector yet) |
+| **Is there an edge?** | **Measured, and no.** 5.4 hours of quotes: SOL round trips −3 to −4 bp at every size 0.05–2 SOL, cross-chain (Solana vs Base/Arbitrum) −4.5 to −10 bp in all twelve cells, and the DEX-lag trade break-even at best before the 1.16 bp quote-to-fill gap ([docs/RESEARCH_2026-09.md](docs/RESEARCH_2026-09.md)) |
+| **What the lag data does show** | pool prices revert 3–5 bp toward the exchange after a gap opens, and trading on that beats random timing by 1.4 bp — real, but smaller than the cost of taking it |
+| **PAPER results** | 0.1: 3 soaks · 3,091 evaluations · 0 executable. 0.2 with the fixed accounting: 921 evaluations, simulation failures 55 % → 7 %, model within 878 lamports of simulation, still 0 executable ([docs/PAPER_RUN.md](docs/PAPER_RUN.md)) |
+| **Transactions sent on chain** | **none.** CONFIRM/LIVE and `--canary` are implemented and unit-tested; the canary has not been run against mainnet yet |
+| **Scheduling** | event-driven by default: vs. round-robin, 30 % fewer requests, 0 × 429, quotes at decision time p50 2.6 s → 0.64 s ([docs/LATENCY.md](docs/LATENCY.md)) |
+| **Data freshness** | pool updates arrive 0–1 slots behind the chain head (≈ 0.4 s) on the default RPC |
+| **Venues** | Solana: execution. OKX, Binance: reference prices. Base, Arbitrum: Uniswap v3 quotes for research |
 
 ## Get involved
 
@@ -145,9 +149,12 @@ mobius-searcher --report latest # what happened, with numbers
 mobius-searcher --replay latest # the same UI over the recording
 ```
 
-No keys are needed to start: Jupiter works keyless at a lower rate, the public
-Solana RPC is the default. An optional `JUPITER_API_KEY` goes in
-`~/.config/mobius/.env`. More in [docs/USAGE.md](docs/USAGE.md).
+No keys are needed to start: Jupiter answers keyless at 0.5 requests/second,
+the public Solana RPC is the default, and nothing can be sent without a
+private key you provide yourself. A free Jupiter key doubles the quote rate
+([portal.jup.ag](https://portal.jup.ag)) and goes in `~/.config/mobius/.env`
+as `JUPITER_API_KEY`. Step by step:
+[docs/GETTING_STARTED.md](docs/GETTING_STARTED.md) ([中文](docs/GETTING_STARTED.zh-CN.md)).
 
 ## Safety model
 
@@ -255,12 +262,14 @@ Every section, venues and secrets: [docs/CONFIGURATION.md](docs/CONFIGURATION.md
 
 | Document | What's covered |
 |---|---|
+| [GETTING_STARTED](docs/GETTING_STARTED.md) · [中文](docs/GETTING_STARTED.zh-CN.md) | **start here**: what you need, first run, doctor, PAPER, research, then money |
 | [INSTALL](docs/INSTALL.md) | install methods, platforms, file locations, terminals |
 | [USAGE](docs/USAGE.md) | first run, modes, command line, pages and keys, replay |
 | [CONFIGURATION](docs/CONFIGURATION.md) | layers, every section, venues, secrets |
 | [ARCHITECTURE](docs/ARCHITECTURE.md) | design decisions, crates, runtime topology |
 | [LATENCY](docs/LATENCY.md) | scheduling, rate limits, measured A/B results |
 | [STORAGE](docs/STORAGE.md) | what is recorded, compression, retention |
+| [RESEARCH_2026-09](docs/RESEARCH_2026-09.md) | the 0.2 measurements: size ladder, cross-chain, DEX lag — and what they did not find |
 | [PAPER_RUN](docs/PAPER_RUN.md) | the PAPER soak results in full |
 | [RESEARCH](docs/RESEARCH.md) | API research behind the design |
 | [LIVE_CHECKLIST](docs/LIVE_CHECKLIST.md) | everything that must be true before LIVE |
