@@ -16,6 +16,14 @@ MØBIUS-Searcher is currently at **0.1.x**: Solana execution research is real, P
 
 ## 0.3 — act on what the research shows
 
+The 0.2 measurements ([docs/RESEARCH_2026-09.md](docs/RESEARCH_2026-09.md))
+found no direction that pays for its costs: round trips −3 to −4 bp at every
+size, cross-chain −4.5 to −10 bp, and the DEX-lag trade about break-even
+before the 1.16 bp quote-to-fill gap. The lag *signal* is real (pool prices
+revert 3–5 bp toward the exchange, and trading on it beats random timing by
+1.4 bp), so if anything is worth building next it is what would keep more of
+that: lower fixed costs per attempt, or being earlier than the quote API.
+
 - [ ] On-chain order entry beyond the Solana round trip (Solana + EVM chains).
 - [ ] A strategy chosen from the 0.2 research data — or none, if no direction survives.
 - [ ] USDC-based cycles and choosing the direction by inventory.
