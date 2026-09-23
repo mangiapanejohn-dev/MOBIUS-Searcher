@@ -3,7 +3,7 @@
 </p>
 
 <p align="center">
-  <a href="https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/releases/tag/v0.1.0"><img src="https://img.shields.io/github/v/release/mangiapanejohn-dev/MOBIUS-Searcher?style=for-the-badge&color=d97757" alt="Latest release"></a>
+  <a href="https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/releases/latest"><img src="https://img.shields.io/github/v/release/mangiapanejohn-dev/MOBIUS-Searcher?include_prereleases&style=for-the-badge&color=d97757" alt="Latest release"></a>
   <a href="https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/mangiapanejohn-dev/MOBIUS-Searcher/ci.yml?branch=main&style=for-the-badge&label=CI" alt="CI status"></a>
   <a href="https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/stargazers"><img src="https://img.shields.io/github/stars/mangiapanejohn-dev/MOBIUS-Searcher?style=for-the-badge&color=d97757" alt="GitHub stars"></a>
   <a href="https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/issues"><img src="https://img.shields.io/github/issues/mangiapanejohn-dev/MOBIUS-Searcher?style=for-the-badge&color=3a3a3a" alt="Open issues"></a>
