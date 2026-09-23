@@ -85,6 +85,11 @@ execution / MEV 研究工具，而不是收益承诺。
 
 ## 参与研究与贡献
 
+**如果这个工具对你有用，欢迎点一下仓库右上角的 Star，收藏项目，也让更多开发者发现它。**
+可以先看[安装方式](#安装)、[实测报告](docs/PAPER_RUN.md)，或者从
+[适合新贡献者的任务](https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/issues?q=is%3Aissue%20is%3Aopen%20label%3A%22good%20first%20issue%22)开始。
+
+
 MØBIUS-Searcher 最有价值的外部贡献不是“再加一个看起来很赚钱的策略”，而是让现有结论更容易被**复现、验证、推翻或解释**。
 
 目前最需要的方向：
@@ -105,6 +110,13 @@ MØBIUS-Searcher 最有价值的外部贡献不是“再加一个看起来很赚
 复现失败、与现有结果冲突的实验同样欢迎——只要方法和环境写清楚。
 
 ## 安装
+
+> [!NOTE]
+> **发布版与开发版：** 截至 2026-09-23，已发布的预编译版本是 **v0.1.0**，
+> `main` 分支的版本号为 **0.2.0-beta.1**。下面的一键安装脚本下载最新已发布版本。
+> 如需试用开发文档中的 0.2 研究与 canary 命令，请使用下方 **Cargo / 从源码编译**
+> 方式。反馈结果时附上 `mobius-searcher --version`；v0.1.0 不包含 `main` 的全部功能。
+
 
 ```bash
 curl -fsSL https://raw.githubusercontent.com/mangiapanejohn-dev/MOBIUS-Searcher/main/scripts/install.sh | sh
