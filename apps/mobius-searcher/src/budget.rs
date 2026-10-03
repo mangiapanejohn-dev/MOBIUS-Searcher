@@ -17,22 +17,28 @@ pub struct BudgetLock {
 pub fn acquire(data_dir: &Path, holder: &str) -> Result<BudgetLock> {
     std::fs::create_dir_all(data_dir)?;
     let path = data_dir.join("jupiter-budget.lock");
+    // Windows refuses reads of a locked file, so the holder's name is also
+    // kept next to it.
+    let holder_path = data_dir.join("jupiter-budget.holder");
     let mut file = OpenOptions::new().create(true).truncate(false).read(true).write(true).open(&path)?;
     match file.try_lock() {
         Ok(()) => {
-            file.set_len(0)?;
-            write!(
-                file,
+            let who = format!(
                 "{holder} · pid {} · since {}",
                 std::process::id(),
                 searcher_core::Ts::now().format("%Y-%m-%d %H:%M:%S")
-            )?;
+            );
+            file.set_len(0)?;
+            write!(file, "{who}")?;
             file.flush()?;
+            std::fs::write(&holder_path, &who)?;
             Ok(BudgetLock { _file: file })
         }
         Err(TryLockError::WouldBlock) => {
             let mut by = String::new();
-            let _ = File::open(&path).and_then(|mut f| f.read_to_string(&mut by));
+            if File::open(&path).and_then(|mut f| f.read_to_string(&mut by)).is_err() || by.trim().is_empty() {
+                by = std::fs::read_to_string(&holder_path).unwrap_or_default();
+            }
             let by = if by.trim().is_empty() { "another MØBIUS process".to_string() } else { by.trim().to_string() };
             bail!(
                 "the Jupiter budget is in use: {by}.\n\
