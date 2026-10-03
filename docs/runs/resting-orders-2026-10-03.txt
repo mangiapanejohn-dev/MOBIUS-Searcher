@@ -1,0 +1,33 @@
+RESTING ORDERS IN THE BIN POOL (imagined) · 1762 snapshots over 0.5 h · exchange price at 1695 of them
+  Every 5 s two orders are imagined in the Meteora pool: base token to sell some bins above the
+  active bin, quote token to buy some bins below. One is filled when the price goes through its
+  whole bin within 60 s. Its result: the bin's price plus the fee the bin earns, against the exchange
+  mid 0, 5, 15 and 30 s after the fill (bp; positive = better than the exchange price then).
+  order        when it went in           placed  filled              0 s      5 s     15 s     30 s  ± at 5 s
+  sell 1 bin   always                       316     144  45.6%     -0.49    -0.38    -0.09    +0.51      0.11
+  sell 1 bin   pool below the exchange        2       2 100.0%     -1.23    -0.81    -0.60    +0.02      0.74
+  sell 1 bin   in line with it              301     140  46.5%     -0.49    -0.39    -0.13    +0.51      0.12
+  sell 1 bin   pool above the exchange       13       2  15.4%     +0.58    +1.00    +3.29    +1.21      0.39
+  sell 2 bins  always                       316      95  30.1%     -0.24    -0.07    +0.24    +0.86      0.13
+  sell 2 bins  pool below the exchange        2       1  50.0%     -1.38    -0.55    -0.13    +1.95         -
+  sell 2 bins  in line with it              301      93  30.9%     -0.25    -0.09    +0.19    +0.82      0.13
+  sell 2 bins  pool above the exchange       13       1   7.7%     +1.61    +1.61    +4.53    +2.86         -
+  sell 5 bins  always                       316       4   1.3%     -0.62    -0.20    +0.63    +0.43      0.92
+  sell 5 bins  pool below the exchange        2       0   0.0%         -        -        -        -         -
+  sell 5 bins  in line with it              301       4   1.3%     -0.62    -0.20    +0.63    +0.43      0.92
+  sell 5 bins  pool above the exchange       13       0   0.0%         -        -        -        -         -
+  buy 1 bin    always                       316     136  43.0%     -0.79    -1.20    -1.09    -1.27      0.16
+  buy 1 bin    pool below the exchange        2       0   0.0%         -        -        -        -         -
+  buy 1 bin    in line with it              301     125  41.5%     -0.69    -1.16    -1.06    -1.14      0.15
+  buy 1 bin    pool above the exchange       13      11  84.6%     -1.93    -1.66    -1.40    -2.88      0.92
+  buy 2 bins   always                       316     103  32.6%     -0.97    -0.88    -1.29    -1.57      0.17
+  buy 2 bins   pool below the exchange        2       0   0.0%         -        -        -        -         -
+  buy 2 bins   in line with it              301      92  30.6%     -0.88    -0.77    -1.39    -1.53      0.17
+  buy 2 bins   pool above the exchange       13      11  84.6%     -1.75    -1.79    -0.46    -1.96      0.76
+  buy 5 bins   always                       316      38  12.0%     -2.35    -2.20    -1.34    -2.91      0.49
+  buy 5 bins   pool below the exchange        2       0   0.0%         -        -        -        -         -
+  buy 5 bins   in line with it              301      32  10.6%     -2.50    -2.31    -1.25    -2.89      0.57
+  buy 5 bins   pool above the exchange       13       6  46.2%     -1.55    -1.62    -1.83    -3.01      0.86
+  Not counted: a partial fill in the bin where the price stopped; the two transactions that put
+  the liquidity in and take it out; what it costs to turn the filled token back. Orders overlap
+  in time, so fills are not independent and the ± is smaller than the real uncertainty.

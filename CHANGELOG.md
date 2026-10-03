@@ -40,6 +40,10 @@ before 1.0 a minor version may change configuration or behaviour.
   price was 0–30 s after the fill, with the fee the bin earns counted in.
   Split by whether the pool was below or above the exchange when the order
   went in: the maker's side of the DEX-lag signal.
+- `scripts/filter_compare.py`: a text decision model (Laya, zero-shot) and
+  a logistic regression as filters on the recorded lag round trips. Neither
+  ranks them before the quote; the model does not after it either
+  (docs/RESEARCH_2026-10.md).
 - EVM JSON-RPC: logs, receipts, block headers and calls that keep a revert
   reason apart from a failed request.
 - **Quote aging** in `--report`: every simulated leg is recorded with its

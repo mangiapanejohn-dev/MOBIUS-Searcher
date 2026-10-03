@@ -1,0 +1,51 @@
+POOL-TO-POOL ROUND TRIPS · 1 run(s) · 2263 snapshots over 0.6 h · one every 1.0 s
+  Sell the base token on one pool, buy it back on another, both worked out from the pools'
+  own accounts at one slot. After both pools' fees; before any transaction cost. bp of the input.
+
+1. The best pair at each snapshot
+   size            n     >0        p5      p25      p50      p75      p95      max   above one transaction's cost
+   0.1 SOL      2263      2     -3.42    -2.92    -2.49    -2.14    -1.45    +0.38   0 (0.00 %; the cost is 0.600 bp)
+   1 SOL        2263      0     -4.56    -3.91    -3.21    -2.63    -1.98    -0.94   0 (0.00 %; the cost is 0.060 bp)
+   10 SOL       2263      0     -7.35    -5.75    -4.91    -3.65    -2.77    -1.97   0 (0.00 %; the cost is 0.006 bp)
+   one transaction's cost = base fee + the minimum Jito tip (6,000 lamports); priority fees and
+   a competitive tip come on top, and someone else may take the same gap first.
+
+2. Each pair
+   Meteora DLMM → Raydium CLMM
+                   n     >0        p5      p25      p50      p75      p95      max
+   0.1 SOL      2257      1     -5.03    -4.19    -3.48    -2.65    -1.91    +0.12
+   1 SOL        2257      0     -6.49    -5.63    -4.88    -4.11    -3.37    -1.24
+   10 SOL       2257      0    -21.79   -20.52   -19.30   -18.62   -17.55   -14.78
+   Meteora DLMM → Whirlpool
+                   n     >0        p5      p25      p50      p75      p95      max
+   0.1 SOL      2257      0     -8.60    -7.60    -5.62    -3.70    -2.38    -0.92
+   1 SOL        2257      0     -8.62    -7.70    -5.77    -3.73    -2.52    -1.43
+   10 SOL       2257      0    -10.22    -8.67    -7.51    -5.10    -3.88    -2.24
+   Raydium CLMM → Meteora DLMM
+                   n     >0        p5      p25      p50      p75      p95      max
+   0.1 SOL      2257      0     -5.10    -4.02    -3.42    -2.58    -1.73    -0.57
+   1 SOL        2257      0     -6.60    -5.58    -4.84    -4.09    -3.29    -2.21
+   10 SOL       2257      0    -21.85   -20.56   -19.39   -18.24   -16.81   -15.55
+   Raydium CLMM → Whirlpool
+                   n     >0        p5      p25      p50      p75      p95      max
+   0.1 SOL      2263      0     -8.86    -7.98    -6.68    -4.68    -3.57    -1.20
+   1 SOL        2263      0    -10.18    -9.30    -8.01    -6.01    -4.89    -2.52
+   10 SOL       2263      0    -23.33   -22.14   -20.97   -19.20   -18.09   -15.73
+   Whirlpool → Meteora DLMM
+                   n     >0        p5      p25      p50      p75      p95      max
+   0.1 SOL      2257      0     -8.53    -7.08    -4.91    -2.99    -1.89    -1.09
+   1 SOL        2257      0     -8.64    -7.22    -5.20    -3.15    -2.04    -1.47
+   10 SOL       2257      0    -10.93    -8.94    -6.57    -4.24    -2.80    -1.97
+   Whirlpool → Raydium CLMM
+                   n     >0        p5      p25      p50      p75      p95      max
+   0.1 SOL      2263      1     -8.72    -7.61    -5.61    -4.32    -3.43    +0.38
+   1 SOL        2263      0    -10.04    -8.93    -6.93    -5.64    -4.75    -0.94
+   10 SOL       2263      0    -23.39   -22.26   -20.35   -18.88   -18.12   -14.16
+
+3. How long a gap that pays for its transaction lasts
+   Runs of consecutive snapshots in which one pair stayed above the cost. A gap seen in a
+   single snapshot lasted 0 s here: less than the time between two snapshots.
+   size           gaps   lasted s (p50 · p95 · max)   best bp after the cost (p50 · max)
+   0.1 SOL           0                    - · - · -                            - · -
+   1 SOL             0                    - · - · -                            - · -
+   10 SOL            0                    - · - · -                            - · -

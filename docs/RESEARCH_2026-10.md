@@ -150,3 +150,107 @@ recovers it.
 
 Fifteen minutes on one afternoon. The table is in every session report from
 now on, so longer sessions will say whether the slope is real.
+
+---
+
+# The gap between pools, without a quote API — 2026-10-03
+
+`--research-pools` reads the three SOL/USDC pools (Orca Whirlpool, Raydium
+CLMM, Meteora DLMM) with the tick and bin arrays around their price at one
+slot, once a second, and works out with our own pool math what selling SOL on
+one and buying it back on another returns. The math matches what the pool
+programs pay in swaps simulated on mainnet: Whirlpool 19 of 19 samples and
+DLMM 9 of 9 to the last unit, Raydium to the last unit inside a tick range
+and within 6 parts in a billion across ticks.
+
+One run of 38 minutes, 2,263 slots, no failed request.
+Raw report: [runs/pools-2026-10-03.txt](runs/pools-2026-10-03.txt).
+
+| size | best pair, median | 95th percentile | best seen | above one transaction's cost |
+|---|---|---|---|---|
+| 0.1 SOL | −2.49 bp | −1.45 bp | +0.38 bp | 0 of 2,263 (the cost is 0.6 bp) |
+| 1 SOL | −3.21 | −1.98 | −0.94 | 0 |
+| 10 SOL | −4.91 | −2.77 | −1.97 | 0 |
+
+**Reading.** With the state taken from the chain and no quote API in the way,
+the pools still never stood further apart than their own fees plus one
+transaction: the best pair was positive before costs in 2 of 2,263 slots and
+never after them. The −2 to −3 bp the Jupiter-quoted round trips showed is
+therefore the market, not our latency. Being faster does not find a gap that
+is not there. (A second run of 30 minutes over the same half hour saw a best
+of +0.48 bp at 0.1 SOL, also below the cost.)
+
+Thirty-eight minutes of one afternoon. A burst of volatility would look
+different; the command is cheap to leave running.
+
+---
+
+# Resting orders, imagined — 2026-10-03
+
+The same run keeps each snapshot of the Meteora pool with the exchange mid
+(OKX and Binance best bid/ask) and imagines orders resting in its bins: base
+token to sell above the price, quote token to buy below, a new pair every 5
+seconds. An order is filled when the price goes through its whole bin within
+60 seconds. Its result is the bin's price with the fee the bin's liquidity
+earns, against the exchange mid after the fill; positive means the fill was
+better than the exchange price then.
+
+Thirty minutes, 1,762 slots, 316 orders of each kind.
+Raw report: [runs/resting-orders-2026-10-03.txt](runs/resting-orders-2026-10-03.txt).
+
+| order | filled | 0 s | 5 s | 15 s | 30 s |
+|---|---|---|---|---|---|
+| sell, 1 bin above | 45.6 % | −0.49 bp | −0.38 | −0.09 | +0.51 |
+| sell, 2 bins above | 30.1 % | −0.24 | −0.07 | +0.24 | +0.86 |
+| buy, 1 bin below | 43.0 % | −0.79 | −1.20 | −1.09 | −1.27 |
+| buy, 2 bins below | 32.6 % | −0.97 | −0.88 | −1.29 | −1.57 |
+| buy, 5 bins below | 12.0 % | −2.35 | −2.20 | −1.34 | −2.91 |
+
+**Reading.** Right after a fill both sides are behind the exchange price,
+with the fee already counted: the fill is the news. The price fell over this
+half hour, so the buys kept losing and the sells recovered; that part is the
+trend, not the maker. Whether the pool stood below or above the exchange when
+an order went in could not be read: 3 and 13 orders fell outside the 2 bp
+band. Not counted: partial fills, the two transactions that place and remove
+the liquidity, and turning the filled token back.
+
+Half an hour in one direction settles nothing. As a first reading it does not
+show a maker's edge either.
+
+---
+
+# A model as the filter — 2026-10-03
+
+Could a model look at what is known when a gap opens and pick the round trips
+that pay, so that the quote and the simulation are spent only on those?
+Tested on the 285 lag round trips of the two large September runs (233 of
+them at a gap over the trigger), with `scripts/filter_compare.py`. "Pays" =
+the quoted round trip covers its two transactions (1.2 bp at 0.1 SOL).
+Ranking skill: 0.5 is chance, 1.0 is every paying one above every losing one;
+the 95 % interval at this size is about ±0.07.
+
+| | before asking Jupiter | after the entry quote |
+|---|---|---|
+| the gap alone (the rule in use) | 0.52 | 0.52 |
+| logistic regression, trained on the other run | 0.51 | 0.69 |
+| Laya 421M, zero-shot, three phrasings | 0.44 – 0.53 | 0.42 – 0.49 |
+| random order | 0.44 | 0.49 |
+
+Figures for the 233 round trips at a gap over the trigger.
+
+- Before the quote nothing ranks them: not the model, not the regression,
+  not the size of the gap. That step cannot be skipped by guessing.
+- After the entry quote a six-coefficient regression does (its best third:
+  +1.09 bp after the two transactions, against +0.04 for all), because the
+  entry price is half of the answer. That is arithmetic more than
+  prediction, and it is still within the 1.16 bp by which simulated outputs
+  fell short of quotes.
+- Laya is a text model for routing and rating; it was never shown market
+  data, and here it does no better than chance with the decisive number in
+  front of it. To the plain question "will this return more than it costs"
+  it said yes to all 295 before the quote (87–100 % sure) and to 294 of them
+  after it; 38 % did. About 50–70 ms a question on an M4.
+
+Not tried: fine-tuning it (233 examples are too few for 421 million
+parameters). Nothing here goes into the decision path.
+
