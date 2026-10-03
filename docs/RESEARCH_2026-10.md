@@ -254,3 +254,65 @@ Figures for the 233 round trips at a gap over the trigger.
 Not tried: fine-tuning it (233 examples are too few for 421 million
 parameters). Nothing here goes into the decision path.
 
+---
+
+# Who takes the arbitrage on these pools, and what it costs — 2026-10-03
+
+Before paying for faster data, the prize was read back from the chain:
+`scripts/arb_replay.py` lists every transaction that touched the three
+SOL/USDC pools in one hour (to 19:05 UTC), reads a random 500 of those that
+touched two or more of them and 500 of those that touched each pool alone,
+and classifies each from its balance changes. An arbitrage is a transaction
+in which at least two program-owned accounts swapped, nobody paid for what
+came out, and what left the pools is positive. Figures per hour and per day
+scale the sample up. Raw report: [runs/arb-replay-2026-10-03.txt](runs/arb-replay-2026-10-03.txt).
+
+**What is on these pools.** About 72,000 transactions in the hour; some
+22,000 failed. Of the 49,557 that succeeded, 87 % moved no token at all: a
+searcher's program looked, found nothing and returned, paying its fee. Three
+signers sent 93 % of those.
+
+| | an hour | |
+|---|---|---|
+| transactions that succeeded | 49,557 | |
+| … that moved no token | about 43,100 | $48 in fees, $1,150 a day |
+| transactions that failed | about 22,300 | at least $320 a day at the base fee alone |
+| arbitrage | about 1,280 | 76 in the sample |
+
+**What an arbitrage is worth.** Taken from the pools: median $0.003, 90th
+percentile $0.09, 99th $1.00. 78 % took less than one cent. Fee and tips ate
+57–81 % of the median one, and 12 of the 58 on Meteora cost more than they
+brought. The median arbitrage kept a tenth of a cent.
+
+One of the 76 was different: 0.32 SOL ($39.65) through a memecoin pool, with
+a $5.47 tip. With it, the sample scales to $13,100 a day taken and $10,600
+kept; without it, to $1,050 a day taken. The day's figure is that one
+transaction: this is a business of rare large gaps against the long tail of
+other pools, not of the steady flow.
+
+**Who.** On Meteora the largest signer kept 94 % of what was kept (the large
+one was theirs); on the Whirlpool the top three kept 93 %, on Raydium 69 %.
+
+**Between our three pools.** 2,343 successful transactions touched two or
+more of them in the hour. Of 500 read, 498 moved nothing, one was someone's
+swap, one was an arbitrage ($0.57 taken, $0.51 kept): about five an hour,
+give or take a great deal. Four signers send those probes, some 39 a minute,
+and pay about $59 a day for a cycle worth about $64 a day. This is the cycle
+`--research-pools` computes, and the two agree: the gap is almost never
+there, and others are already standing on it.
+
+**Reading.** Leaving the quote API does not reach a prize that was hidden
+behind it. Between these pools there is next to nothing, and it is watched
+every slot. What money there is comes from rare gaps on pools our math does
+not cover, goes almost entirely to whoever is first, and is paid for with
+tens of thousands of transactions an hour that find nothing. Entering that
+needs coverage of thousands of pools and a place among the first few
+signers; faster data alone buys neither.
+
+**Limits.** One hour; 500 transactions per group, so everything rare rests
+on a handful of cases and the daily sums on one. A tip paid in another
+transaction of the same bundle is not seen, so costs are a lower bound.
+Program-owned accounts that swap are taken to be pools; fee collection and
+liquidity changes fall under "other". The fees of failed transactions were
+not read.
+

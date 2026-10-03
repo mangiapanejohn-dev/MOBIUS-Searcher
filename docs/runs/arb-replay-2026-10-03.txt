@@ -1,0 +1,59 @@
+last 1 h · https://api.mainnet-beta.solana.com · SOL at $119.77 · 8 Jito tip accounts known
+  Whirlpool       49439 transactions touched it: 37563 succeeded, 11876 failed
+  Raydium CLMM     8252 transactions touched it: 6751 succeeded, 1501 failed
+  Meteora DLMM    16496 transactions touched it: 7586 succeeded, 8910 failed
+
+A. Transactions that touched two or more of the three pools: a random 500 of the 2343 that succeeded
+  read 500: 1 arbitrage, 1 someone's swap, 498 moved no token at all, 0 other
+  those that moved nothing: fee p50 $0.0008  p90 $0.0013  sum $0.52  → $59 a day · 4 signers, the three busiest sent 100 %
+  arbitrage per hour: 5  (estimated from the sample)
+  taken from the pools   p50 $0.5670  p90 $0.567  max $0.57  sum $0.57  → $64 a day at this rate
+  reached the signer     p50 $0.5670  p90 $0.567  sum $0.57  (seen in the signer's own accounts in 0 of 1; gross used for the rest)
+  fee and tips           p50 $0.0615  p90 $0.061  sum $0.06  (11 % of what reached the signers; 0 % of it to Jito tip accounts)
+  fee and tips ÷ reached p50 11 %  p90 11 %   ·   cost more than it brought: 0 of 1
+  kept                   p50 $0.5056  p90 $0.506  sum $0.51  → $57 a day at this rate
+  signers: 1 · share of what was kept: top 1: 100 %, top 3: 100 %, top 5: 100 %
+  the signers with an arbitrage also sent 0 that brought nothing, costing $0.00: kept $0.51 − $0.00 = $0.51  → $57 a day
+  pools in one transaction: 2 pools × 1
+
+B. Whirlpool: a random 500 of the 35828 successful transactions that touched only this pool
+  read 500: 6 arbitrage, 31 someone's swap, 458 moved no token at all, 5 other
+  those that moved nothing: fee p50 $0.0007  p90 $0.0012  sum $0.37  → $631 a day · 6 signers, the three busiest sent 98 %
+  arbitrage per hour: 430  (estimated from the sample)
+  taken from the pools   p50 $0.0019  p90 $0.007  max $0.01  sum $0.02  → $29 a day at this rate
+  reached the signer     p50 $0.0019  p90 $0.006  sum $0.02  (seen in the signer's own accounts in 6 of 6; gross used for the rest)
+  fee and tips           p50 $0.0009  p90 $0.004  sum $0.01  (52 % of what reached the signers; 58 % of it to Jito tip accounts)
+  fee and tips ÷ reached p50 81 %  p90 96 %   ·   cost more than it brought: 0 of 6
+  kept                   p50 $0.0010  p90 $0.005  sum $0.01  → $13 a day at this rate
+  signers: 6 · share of what was kept: top 1: 66 %, top 3: 93 %, top 5: 100 %
+  the signers with an arbitrage also sent 0 that brought nothing, costing $0.00: kept $0.01 − $0.00 = $0.01  → $13 a day
+  pools in one transaction: 2 pools × 5, 3 pools × 1
+
+B. Raydium CLMM: a random 500 of the 5063 successful transactions that touched only this pool
+  read 500: 11 arbitrage, 60 someone's swap, 426 moved no token at all, 3 other
+  those that moved nothing: fee p50 $0.0011  p90 $0.0100  sum $1.57  → $383 a day · 4 signers, the three busiest sent 99 %
+  arbitrage per hour: 111  (estimated from the sample)
+  taken from the pools   p50 $0.0019  p90 $0.007  max $0.01  sum $0.03  → $8 a day at this rate
+  reached the signer     p50 $0.0019  p90 $0.007  sum $0.03  (seen in the signer's own accounts in 11 of 11; gross used for the rest)
+  fee and tips           p50 $0.0009  p90 $0.003  sum $0.02  (51 % of what reached the signers; 44 % of it to Jito tip accounts)
+  fee and tips ÷ reached p50 57 %  p90 89 %   ·   cost more than it brought: 0 of 11
+  kept                   p50 $0.0009  p90 $0.005  sum $0.02  → $4 a day at this rate
+  signers: 10 · share of what was kept: top 1: 28 %, top 3: 69 %, top 5: 86 %
+  the signers with an arbitrage also sent 1 that brought nothing, costing $0.00: kept $0.02 − $0.00 = $0.01  → $4 a day
+  pools in one transaction: 2 pools × 5, 3 pools × 5, 4 pools × 1
+
+B. Meteora DLMM: a random 500 of the 6323 successful transactions that touched only this pool
+  read 500: 58 arbitrage, 123 someone's swap, 289 moved no token at all, 30 other
+  those that moved nothing: fee p50 $0.0007  p90 $0.0011  sum $0.27  → $82 a day · 9 signers, the three busiest sent 89 %
+  arbitrage per hour: 733  (estimated from the sample)
+  taken from the pools   p50 $0.0046  p90 $0.167  max $39.65  sum $42.79  → $12,988 a day at this rate
+  reached the signer     p50 $0.0039  p90 $0.161  sum $41.46  (seen in the signer's own accounts in 48 of 58; gross used for the rest)
+  fee and tips           p50 $0.0024  p90 $0.090  sum $6.71  (16 % of what reached the signers; 82 % of it to Jito tip accounts)
+  fee and tips ÷ reached p50 73 %  p90 301 %   ·   cost more than it brought: 12 of 58
+  kept                   p50 $0.0007  p90 $0.160  sum $34.75  → $10,547 a day at this rate
+  signers: 37 · share of what was kept: top 1: 94 %, top 3: 98 %, top 5: 99 %
+  the signers with an arbitrage also sent 4 that brought nothing, costing $0.34: kept $34.75 − $0.34 = $34.42  → $10,445 a day
+  pools in one transaction: 2 pools × 23, 3 pools × 33, 4 pools × 2
+
+  A tip paid in another transaction of the same bundle is not seen, so costs are a lower bound.
+  Sampled figures scale one transaction to many: a few large ones decide the sums.
