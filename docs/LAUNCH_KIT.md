@@ -11,7 +11,7 @@ public claim tied to measured results in the repository.
 - HelloGitHub: submission prepared below; **not published**. The GitHub integration returned HTTP 403 (`Resource not accessible by integration`) when creating the submission.
 - Awesome Ratatui: contribution guidelines and Finance and Markets category checked; **not submitted**. A fork and pull request are needed; the browser is not signed in.
 - X, Hacker News and developer-group copy below: **drafts, not posted**.
-- Published binary: v0.1.0. Development branch: 0.2.0-beta.1. Keep those audiences and feature sets explicit.
+- Published binary: v0.3.0, a research release that includes the research commands. Nothing in it has traded; keep that explicit.
 
 ### X — short post
 
@@ -58,7 +58,7 @@ It combines live Jupiter quotes, v0 transaction construction, mainnet simulation
 
 The published v0.1 PAPER report covers 3,091 route evaluations and 2,333 simulations, with zero executable opportunities at the tested default configuration. That is a result for those runs, not proof that arbitrage never exists. The rejected routes are part of the output, so other people can inspect the assumptions.
 
-Prebuilt v0.1.0 downloads support macOS, Linux and Windows. The main branch is 0.2.0-beta.1 development; its extra research commands require a source build.
+Prebuilt v0.3.0 downloads support macOS, Linux and Windows and include the research commands.
 
 I'd appreciate feedback on the route inspector, replay workflow, cost model and quote freshness. Can you reproduce a rejection and identify which cost or assumption decides it?
 
@@ -118,7 +118,7 @@ MØBIUS-Searcher 将实时行情、路线报价、交易构建、主网模拟和
 - Ratatui 多页界面：实时行情、路线检查、图表、系统健康和日志；本地 SQLite 录制与回放。
 - Jupiter 路线报价、真实 v0 交易构建和主网模拟，逐项核算费用、Jito tip、ATA rent 等成本。
 - 项目公开的 v0.1 PAPER 报告记录了 3,091 次评估、2,333 次主网模拟，默认配置下 0 个可执行机会。该结果限定于报告的环境和样本，不代表普遍不存在套利机会。
-- main 分支正在开发 0.2.0-beta.1；研究功能与已发布的 v0.1.0 二进制有差异。没有已验证的实盘收益，适合作为工程与研究工具介绍。
+- 已发布的 v0.3.0 是研究版，包含全部研究命令。没有已验证的实盘收益，适合作为工程与研究工具介绍。
 
 报告：https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/blob/main/docs/PAPER_RUN.md
 架构：https://github.com/mangiapanejohn-dev/MOBIUS-Searcher/blob/main/docs/ARCHITECTURE.md

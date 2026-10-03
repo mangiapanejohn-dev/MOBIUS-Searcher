@@ -2,7 +2,7 @@
 
 This is a public research and engineering roadmap, not a promise of release dates.
 
-MØBIUS-Searcher is currently at **0.2.x**: Solana execution research is real, PAPER is the default, and the shipped configuration has produced **0 executable opportunities** across the published run. The immediate goal is not to manufacture more "opportunities"; it is to reduce uncertainty about **why** apparent edge disappears and when the system can know that reliably.
+MØBIUS-Searcher is currently at **0.3.0**: Solana execution research is real, PAPER is the default, and the shipped configuration has produced **0 executable opportunities** across the published run. The immediate goal is not to manufacture more "opportunities"; it is to reduce uncertainty about **why** apparent edge disappears and when the system can know that reliably.
 
 ## 0.2 — measure where an edge could come from, and prove the execution path
 

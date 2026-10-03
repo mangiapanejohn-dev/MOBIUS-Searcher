@@ -3,7 +3,18 @@
 All notable changes to MØBIUS. Versions follow [Semantic Versioning](https://semver.org/);
 before 1.0 a minor version may change configuration or behaviour.
 
-## Unreleased (0.3)
+## 0.3.0 — 2026-10-03
+
+A research release: new measurements, and no strategy that sends anything.
+None of them found a direction that pays for its costs at this scale
+([docs/RESEARCH_2026-10.md](docs/RESEARCH_2026-10.md)). As in 0.2, nothing has
+been sent to the chain: the canary has not been run against mainnet, so
+CONFIRM and LIVE remain verified only by tests and simulation.
+
+This is the first release after 0.1.0 that the installers download by
+default. It also contains everything from 0.2.0-beta.1 (`--research`,
+`--canary`, the venue connectors, inventory accounting, the thresholds
+panel): see that section of the changelog.
 
 ### Added
 

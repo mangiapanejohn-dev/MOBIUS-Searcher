@@ -74,11 +74,12 @@ claim.
 
 ## Where it stands
 
-**0.2.0-beta.1 is a research release.** It measures; it has never traded.
+**0.3.0 is a research release.** It measures; it has never traded.
 
 | | |
 |---|---|
 | **Is there an edge?** | **Measured, and no.** 5.4 hours of quotes: SOL round trips −3 to −4 bp at every size 0.05–2 SOL, cross-chain (Solana vs Base/Arbitrum) −4.5 to −10 bp in all twelve cells, and the DEX-lag trade break-even at best before the 1.16 bp quote-to-fill gap ([docs/RESEARCH_2026-09.md](docs/RESEARCH_2026-09.md)) |
+| **What 0.3 checked next** | **Still no.** Liquidations (Morpho on Base, 30 days): 95 % of the incentive is taken inside the block that creates it. Between the three SOL/USDC pools, worked out from their own accounts with no quote API: never above one transaction's cost. The arbitrage others actually do on those pools: 78 % under a cent, the rare large one to whoever is first ([docs/RESEARCH_2026-10.md](docs/RESEARCH_2026-10.md)) |
 | **What the lag data does show** | pool prices revert 3–5 bp toward the exchange after a gap opens, and trading on that beats random timing by 1.4 bp — real, but smaller than the cost of taking it |
 | **PAPER results** | 0.1: 3 soaks · 3,091 evaluations · 0 executable. 0.2 with the fixed accounting: 921 evaluations, simulation failures 55 % → 7 %, model within 878 lamports of simulation, still 0 executable ([docs/PAPER_RUN.md](docs/PAPER_RUN.md)) |
 | **Transactions sent on chain** | **none.** CONFIRM/LIVE and `--canary` are implemented and unit-tested; the canary has not been run against mainnet yet |
@@ -110,12 +111,9 @@ environment and method are documented.
 ## Install
 
 > [!NOTE]
-> **Release vs. development:** as of 2026-09-23, the prebuilt release is
-> **v0.1.0**, while `main` identifies as **0.2.0-beta.1**. The one-line
-> installers below download the latest published release. To try the 0.2
-> research and canary commands described in the development docs, use the
-> **Cargo / from source** instructions below. Run `mobius-searcher --version`
-> when reporting results; downloading v0.1.0 does not include every feature on `main`.
+> **Release:** the prebuilt release is **v0.3.0** (2026-10-03), and the
+> one-line installers below download it. It includes the research and canary
+> commands. Run `mobius-searcher --version` when reporting results.
 
 
 ```bash
@@ -285,6 +283,7 @@ Every section, venues and secrets: [docs/CONFIGURATION.md](docs/CONFIGURATION.md
 | [LATENCY](docs/LATENCY.md) | scheduling, rate limits, measured A/B results |
 | [STORAGE](docs/STORAGE.md) | what is recorded, compression, retention |
 | [RESEARCH_2026-09](docs/RESEARCH_2026-09.md) | the 0.2 measurements: size ladder, cross-chain, DEX lag — and what they did not find |
+| [RESEARCH_2026-10](docs/RESEARCH_2026-10.md) | the 0.3 measurements: liquidations, quote aging, the gap between pools, resting orders, the arbitrage others do, a model as the filter |
 | [PAPER_RUN](docs/PAPER_RUN.md) | the PAPER soak results in full |
 | [RESEARCH](docs/RESEARCH.md) | API research behind the design |
 | [LIVE_CHECKLIST](docs/LIVE_CHECKLIST.md) | everything that must be true before LIVE |
@@ -312,12 +311,15 @@ OKX) are `#[ignore]`d and run with `-- --ignored`.
 
 ## Roadmap
 
-0.2 measures where an edge could come from (`--research`) and proves the
-execution path with one loss-bounded, reconciled trade (`--canary`). 0.3 acts on
-what the measurements show: on-chain order entry on Solana and EVM chains and a
-strategy chosen from the data — or none, if no direction survives. OKX and
-Binance stay market data (reference prices). See [ROADMAP.md](ROADMAP.md) and
-the [CHANGELOG](CHANGELOG.md).
+0.2 measured where an edge could come from through a quote API (`--research`)
+and built the execution path up to one loss-bounded, reconciled trade
+(`--canary`, not yet run on mainnet). 0.3 measured what that left open:
+liquidations, what waiting costs a quote, the gap between pools without a
+quote API, resting orders, and the arbitrage others actually do. Nothing pays
+for its costs at this scale. Next come longer runs of those measurements;
+order entry beyond the Solana round trip waits for a measurement that gives
+it something to execute. OKX and Binance stay market data (reference prices).
+See [ROADMAP.md](ROADMAP.md) and the [CHANGELOG](CHANGELOG.md).
 
 ## License
 
