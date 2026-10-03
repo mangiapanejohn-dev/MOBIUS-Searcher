@@ -97,7 +97,7 @@ So this direction is closed for a liquidator of this kind, and neither a live
 watcher nor an executor will be built on it. The measurement stays: the
 command is incremental and can be run again when the conditions change.
 
-## Limits
+## Limits of the liquidation measurement
 
 - One protocol on one chain for 30 days, 91 % of the value in four of them.
   A crash in another collateral would look different in size, not obviously
@@ -111,3 +111,42 @@ command is incremental and can be run again when the conditions change.
   was not replayed.
 - Liquidations through Morpho's pre-liquidation contracts do not emit this
   event and are not counted.
+
+---
+
+# What waiting costs a quote — first reading, 2026-10-03
+
+`--report` now compares what every simulated leg was quoted with what it
+returned, against the age of its quote when the simulation was sent. One
+15-minute PAPER session on mainnet (no Jupiter key, public RPC, 0.1 SOL
+cycles): 166 evaluations, 164 simulations, 314 executed legs.
+Raw report: [runs/aging-paper-2026-10-03.txt](runs/aging-paper-2026-10-03.txt).
+
+| quote age | legs | median | mean | below the quote |
+|---|---|---|---|---|
+| under 0.5 s | 99 | 0.00 bp | −0.10 bp | 32 % |
+| 0.5–1 s | 181 | 0.00 | −0.07 | 23 % |
+| 1–2 s | 18 | 0.00 | −0.38 | 28 % |
+| 2–4 s | 16 | −0.11 | −1.13 | 50 % |
+
+A straight line through the legs: +0.10 bp at age zero, −0.34 bp per second
+of age, with a standard error of 0.25 on that slope.
+
+| DEX of the leg | legs | median age | median |
+|---|---|---|---|
+| Whirlpool | 112 | 0.6 s | 0.00 bp |
+| Meteora DLMM | 95 | 0.6 s | 0.00 |
+| Raydium CLMM | 69 | 0.5 s | 0.00 |
+| HumidiFi | 36 | 0.3 s | −0.80 |
+
+**Reading, with the sample size in mind.** On the three pools whose state is
+on chain, a quote under a second old executes at the quote: nothing is lost
+at once, and what is lost grows with age. The slope is about a third of a
+basis point per second but only 1.4 standard errors from zero: 314 legs do
+not settle it. HumidiFi is different in kind: its legs were the youngest and
+still returned 0.8 bp less than quoted at the median. That is not aging; it
+is a quote the pool does not honour for this taker, and no amount of speed
+recovers it.
+
+Fifteen minutes on one afternoon. The table is in every session report from
+now on, so longer sessions will say whether the slope is real.

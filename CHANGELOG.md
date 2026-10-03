@@ -3,6 +3,40 @@
 All notable changes to MØBIUS. Versions follow [Semantic Versioning](https://semver.org/);
 before 1.0 a minor version may change configuration or behaviour.
 
+## Unreleased (0.3)
+
+### Added
+
+- **`--research-liquidations [DAYS]`**: every Morpho Blue liquidation of the
+  last DAYS days (default 30) on Base, read back from chain into
+  `research.sqlite`. For each: the incentive the protocol paid at its oracle
+  price (`repaid × (LIF − 1)`), the gas the winner paid (L2 and L1 data fee),
+  the sender, and the first block at whose end the position was liquidatable.
+  That block is found by asking the Morpho contract itself (`liquidate` as an
+  `eth_call` at past blocks: it reverts with "position is healthy" or goes on
+  to the repayment), so interest and the oracle are the contract's, not a
+  formula of ours. The report shows the whole distribution: incentive sizes,
+  how concentrated they are in days and in senders, how long each one waited
+  for its winner, gas as a share of the incentive, and what was left for a
+  liquidator several blocks late. Signs and sends nothing; needs no key and
+  no Jupiter budget.
+- EVM JSON-RPC: logs, receipts, block headers and calls that keep a revert
+  reason apart from a failed request.
+- **Quote aging** in `--report`: every simulated leg is recorded with its
+  quoted output, its executed output and the age of its quote when the
+  simulation was sent (`leg_aging`). The report shows executed − quoted by
+  age (under 0.5 s … over 4 s), by DEX, and a straight line through the
+  legs: what a perfectly fresh quote would still lose, and what each second
+  of waiting adds, with the standard error of that slope. This separates the
+  loss that is there at once from the loss that comes from the quote API and
+  the queue in front of it.
+
+### Fixed
+
+- On Windows the second process refused the Jupiter budget could not say who
+  holds it (a locked file cannot be read there); the holder is now also kept
+  in `jupiter-budget.holder`. This was the failing Windows CI test.
+
 ## 0.2.0-beta.1 — 2026-09-23
 
 A research release: it measures where an edge could come from, and reports

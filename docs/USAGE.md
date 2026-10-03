@@ -57,6 +57,7 @@ or LIVE, and run the [canary](#canary-the-first-real-trade) once first.
 | `mobius-searcher --replay ID --snapshot 120x40 --out DIR` | render pages of a session to `.txt` / `.html` |
 | `mobius-searcher --research [--duration N]` | measurements only: size ladder, cross-chain spreads, DEX lag ([Research](#research)) |
 | `mobius-searcher --research-report [RUN\|latest\|all]` | what the research runs recorded, as whole distributions (`--json`) |
+| `mobius-searcher --research-liquidations [DAYS]` | past lending liquidations read back from chain: what each paid and how long it had been available ([Liquidations](#liquidations)) |
 | `mobius-searcher --canary` | one real, loss-bounded trade through the LIVE path, then a reconciliation ([Canary](#canary-the-first-real-trade)) |
 | `mobius-searcher --quote WETH/USDC --size 0.5` | price a market on every enabled venue that lists it |
 | `mobius-searcher --migrate-config` | move the Solana sections of your config under `[venues.solana]` (asks first) |
@@ -165,6 +166,28 @@ number of positive ones, and the caveats next to the numbers: quotes are not
 fills, bridging and inventory moves between chains are not included, pool
 mids are not executable.
 
+### Liquidations
+
+```bash
+mobius-searcher --research-liquidations 30
+```
+
+Reads every Morpho Blue liquidation of the last 30 days on Base from the
+chain and reports, for each one: what the protocol paid (the incentive at its
+oracle price), what the winner spent on gas, who the winner was, and **for how
+many blocks the position had been liquidatable when the winner took it**. That
+last number is asked of the contract itself, block by block, so there is no
+health formula of ours in it. It answers one question: could a liquidator
+that watches a public node ever have been first?
+
+It needs no key, uses no Jupiter budget (it can run next to a trading
+session), and signs and sends nothing. Events are kept in
+`<data dir>/research.sqlite`; a later run only reads the blocks since the
+last one. `--json` prints the report as JSON.
+
+The node must serve historical state. The built-in public gateway does; with
+`BASE_RPC_URL` set, your own node is used instead.
+
 ## Canary: the first real trade
 
 ```bash
@@ -198,6 +221,13 @@ mobius-searcher --report latest
 ```bash
 mobius-searcher --replay latest
 ```
+
+The report's **quote aging** section compares what each simulated leg was
+quoted with what it returned, by how old the quote was when the simulation
+was sent. Its last line splits the difference in two: what a perfectly fresh
+quote would still lose, and what each second of waiting adds. The first is
+the pool and the route; the second is the quote API and the queue in front
+of it.
 
 Old sessions are removed automatically (7 days, 90 days for sessions with
 trades, 1 GB cap); see [STORAGE.md](STORAGE.md).

@@ -1,0 +1,69 @@
+SESSION 20261003-132637-8a4f  ·  PAPER  ·  15m 00s
+
+OPPORTUNITIES
+  scanned (all evaluations)          166
+  priced (full route quoted)         166
+  gross-positive                     2 (1.2%)
+  net-positive (after all costs)     0 (0.0%)
+  executable (sim + risk passed)     0
+  median gross edge                  -2.91 bp
+  p90 / max gross edge               -1.56 bp / +0.59 bp
+  median net edge                    -8.27 bp
+  gross-positive episodes            2  lifetime median 0 µs–11.7 s (sampling gap 22.6 s)
+  median quote latency (all legs)    604 ms
+
+PNL (lamports; paper = simulated, no landing risk applied)
+  gross expected, all priced         -0.060630 SOL
+  net expected, all priced           -0.198858 SOL
+  gross expected, executable         0.000000 SOL
+  net expected, executable           0.000000 SOL
+  paper fills / net                  0 / 0.000000 SOL
+
+SIMULATION
+  simulations                        164
+  failure rate                       3.7% (6 failed)
+    · slippage_exceeded              6
+    single_tx/exact                  160 sims · 6 failed (3.8%)
+    bundle/per_tx                    4 sims · 0 failed (0.0%)
+  median sim latency                 521 ms
+  median CU consumed                 136492
+  median sim − model net             +0 lamports
+  expected landing cost (median)     16128 lamports (base+priority+tip)
+  median Jito tip (policy)           10000 lamports
+
+SKIP REASONS
+  EDGE_TOO_SMALL                     166
+
+PROFIT GUARD THAT FAILED (EDGE_TOO_SMALL covers these)
+  lamports                           166
+
+EXECUTED vs QUOTED (first leg, from simulation logs)
+  multi-leg simulations checked      160
+  first leg below its quote          40 (0 of them failed: the next leg's input is fixed)
+  executed − quoted, median / p5     +0.00 bp / -1.99 bp
+
+QUOTE AGING (executed − quoted per simulated leg, by the quote's age when the simulation was sent)
+  quote age        legs     median       mean  below quote
+  under 0.5 s        99   +0.00 bp   -0.10 bp          32%
+  0.5–1 s           181   +0.00 bp   -0.07 bp          23%
+  1–2 s              18   +0.00 bp   -0.38 bp          28%
+  2–4 s              16   -0.11 bp   -1.13 bp          50%
+  over 4 s            0          —          —           0%
+  a fresh quote would still be off by +0.10 bp; each second of age adds -0.34 bp (± 0.25; 314 legs)
+  by DEX                               legs   median age     median
+  Whirlpool                             112        0.6 s   +0.00 bp
+  Meteora DLMM                           95        0.6 s   +0.00 bp
+  Raydium CLMM                           69        0.5 s   +0.00 bp
+  HumidiFi                               36        0.3 s   -0.80 bp
+  Deriverse                               1        0.5 s   +0.00 bp
+  Obsidian                                1        1.1 s  -12.36 bp
+
+STRATEGIES
+  strategy     scanned  priced gross+   net+  exec   med gross     med net    best net    sim ok
+  cross-dex        165     165      2      0     0    -2.92 bp    -8.29 bp    -4.36 bp   157/163
+  round-trip         1       1      0      0     0    -1.34 bp    -6.26 bp    -6.26 bp       1/1
+
+SYSTEM
+  errors                             0
+  429 / rate-limited events          0
+  dropped storage events             0
