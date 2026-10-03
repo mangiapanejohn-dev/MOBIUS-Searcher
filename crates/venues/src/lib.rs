@@ -13,6 +13,7 @@ pub mod evm;
 pub mod evm_sign;
 pub mod evm_trade;
 pub mod market;
+pub mod morpho;
 pub mod okx;
 
 pub use binance::{BinanceClient, BinanceCredentials, BinanceError};

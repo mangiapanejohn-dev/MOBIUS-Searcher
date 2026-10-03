@@ -1,0 +1,65 @@
+LIQUIDATIONS · base · Morpho Blue · last 30 days · 830 events in 523 transactions
+  Read back from chain; nothing here was attempted by this program.
+  incentive = repaid × (LIF − 1): what the protocol pays at its oracle price, before gas
+  and before the seized collateral is sold. Dollars where the loan token is a dollar or WETH.
+
+1. How much, and how often
+                              n         p5       p25       p50       p75       p95        max         sum
+   incentive ($)            802       0.21      0.98      2.19     31.36    634.17   11273.56    $149,520
+   not valued (loan token without a dollar price here): EURC 1, USDA 2, jEUR 25
+   calendar days with a liquidation: 28 · median 4 a day on those · the 4 busiest hold 81 % of the events and 91 % of the incentive
+      2026-09-15    320 events    $116,671
+      2026-09-17    161 events        $207
+      2026-09-16    119 events     $19,213
+      2026-09-18     76 events         $67
+   by collateral:
+      cbXRP          369 events    $128,917
+      cbDOGE          35 events      $8,700
+      cbZEC           14 events      $6,043
+      cbADA           14 events      $2,127
+      JitoSOL          9 events        $694
+      WETH            11 events        $635
+      SOL              9 events        $601
+      cbLTC            6 events        $480
+
+2. How long each one had been there when the winner took it
+   From the first block at whose end the contract itself says the position can be
+   liquidated to the winner's block. A block is 2.00 s.
+   waited                       events   share    incentive   share
+   inside the winner's block       642   77.3%     $142,478   95.3%
+   1 block (the next one)          109   13.1%       $7,016    4.7%
+   2–3 blocks                       29    3.5%          $25    0.0%
+   4–10 blocks                       9    1.1%           $0    0.0%
+   11–100 blocks                     3    0.4%           $0    0.0%
+   over 100 blocks                  38    4.6%           $1    0.0%
+   not measured                      0    0.0%           $0    0.0%
+   by size      events   median wait     same or next block  liquidators   top 3 of them
+   under $1        206      0 blocks                    79%           34             57%
+   $1–10           304      0 blocks                    97%           32             37%
+   $10–100         167      0 blocks                   100%           22             60%
+   over $100       125      0 blocks                   100%           16             70%
+
+3. Who took them
+   72 liquidators (the contracts that called liquidate), signed for by 179 accounts.
+   top 1:  15 % of the events,  54 % of the incentive
+   top 3:  21 % of the events,  88 % of the incentive
+   top 5:  34 % of the events,  94 % of the incentive
+
+4. What the winners paid
+                              n         p5       p25       p50       p75       p95        max
+   gas ($)                  830      0.004     0.017     0.064     0.130     5.530    764.991
+   gas ÷ incentive (%)      774        0.0       0.2       1.5       7.9      24.0      717.8   (incentives of a cent or more)
+   priority fee (gwei)      830     0.0010    0.0043    0.0500    0.0933    2.7257   355.7036
+   incentive below the winner's own gas: 31 events (4 %)
+
+5. What a slower liquidator would have found
+   Events that waited at least this long and paid more than the winner's gas.
+   waited at least        events    a day   median after gas          sum
+   2 blocks (4 s)             28      0.9              $0.50          $24
+   3 blocks (6 s)             11      0.4              $0.07           $3
+   5 blocks (10 s)             7      0.2              $0.04           $1
+   10 blocks (20 s)            6      0.2              $0.03           $1
+   30 blocks (60 s)            5      0.2              $0.07           $1
+   150 blocks (300 s)          5      0.2              $0.07           $1
+   An upper bound: someone took every one of these, the cost of selling the collateral
+   is not counted, and a second liquidator would have had to outbid the first.

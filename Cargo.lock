@@ -1857,6 +1857,7 @@ version = "0.2.0-beta.1"
 dependencies = [
  "anyhow",
  "clap",
+ "futures-util",
  "parking_lot",
  "qrcode",
  "ratatui",

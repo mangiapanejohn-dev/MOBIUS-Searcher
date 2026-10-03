@@ -27,6 +27,7 @@ searcher-storage.workspace = true
 searcher-venues.workspace = true
 searcher-tui.workspace = true
 tokio.workspace = true
+futures-util.workspace = true
 clap.workspace = true
 anyhow.workspace = true
 ratatui.workspace = true

@@ -129,10 +129,14 @@ impl EvmRpc {
         let status = resp.status().as_u16();
         let v: Value = resp.json().await.map_err(|e| EvmError::Transport(format!("http {status}: {e}")))?;
         if let Some(e) = v.get("error") {
-            return Err(EvmError::Rpc {
-                code: e.get("code").and_then(Value::as_i64).unwrap_or(0),
-                message: e.get("message").and_then(Value::as_str).unwrap_or("").to_string(),
-            });
+            let mut message = e.get("message").and_then(Value::as_str).unwrap_or("").to_string();
+            // some nodes put the revert reason only in `data`
+            if message == REVERTED
+                && let Some(why) = e.get("data").and_then(Value::as_str).and_then(revert_reason)
+            {
+                message = format!("{REVERTED}: {why}");
+            }
+            return Err(EvmError::Rpc { code: e.get("code").and_then(Value::as_i64).unwrap_or(0), message });
         }
         v.get("result").cloned().ok_or_else(|| EvmError::Decode(format!("no result (http {status})")))
     }
@@ -159,6 +163,126 @@ impl EvmRpc {
     pub async fn call(&self, to: &str, data: &str, block: &str) -> Result<Vec<u8>, EvmError> {
         let r = self.request("eth_call", json!([{"to": to, "data": data}, block])).await?;
         hex_bytes(r.as_str().ok_or_else(|| EvmError::Decode("eth_call result".into()))?)
+    }
+
+    /// `eth_call` from `from` at block `number`, keeping a revert apart from
+    /// a failed request: the contract's own answer to "would this succeed?".
+    /// Needs a node that serves the state at `number`.
+    pub async fn try_call(&self, from: &str, to: &str, data: &str, number: u64) -> Result<Call, EvmError> {
+        let params = json!([{"from": from, "to": to, "data": data}, format!("0x{number:x}")]);
+        match self.request("eth_call", params).await {
+            Ok(r) => {
+                Ok(Call::Returned(hex_bytes(r.as_str().ok_or_else(|| EvmError::Decode("eth_call result".into()))?)?))
+            }
+            Err(EvmError::Rpc { message, .. }) if message.starts_with(REVERTED) => {
+                Ok(Call::Reverted(message[REVERTED.len()..].trim_start_matches(':').trim().to_string()))
+            }
+            Err(e) => Err(e),
+        }
+    }
+
+    /// Header of block `number`: (timestamp in unix seconds, base fee in wei).
+    pub async fn block(&self, number: u64) -> Result<(u64, u128), EvmError> {
+        let b = self.request("eth_getBlockByNumber", json!([format!("0x{number:x}"), false])).await?;
+        let base_fee = b.get("baseFeePerGas").map(quantity_u128).transpose()?.unwrap_or(0);
+        Ok((Self::quantity(b.get("timestamp").unwrap_or(&Value::Null))?, base_fee))
+    }
+
+    /// Logs of `address` with first topic `topic0` in blocks `from..=to`
+    /// (public nodes cap the range; Base's own allows 2,000 blocks).
+    pub async fn logs(&self, address: &str, topic0: &str, from: u64, to: u64) -> Result<Vec<Log>, EvmError> {
+        let filter = json!([{
+            "address": address, "topics": [topic0],
+            "fromBlock": format!("0x{from:x}"), "toBlock": format!("0x{to:x}"),
+        }]);
+        let r = self.request("eth_getLogs", filter).await?;
+        r.as_array().ok_or_else(|| EvmError::Decode("eth_getLogs result".into()))?.iter().map(Log::parse).collect()
+    }
+
+    /// What a mined transaction cost and who sent it; `None` if the node does not know it.
+    pub async fn receipt(&self, tx: &str) -> Result<Option<Receipt>, EvmError> {
+        let r = self.request("eth_getTransactionReceipt", json!([tx])).await?;
+        if r.is_null() {
+            return Ok(None);
+        }
+        let text = |k: &str| r.get(k).and_then(Value::as_str).unwrap_or_default().to_ascii_lowercase();
+        let num = |k: &str| r.get(k).map(quantity_u128).transpose().map(Option::unwrap_or_default);
+        Ok(Some(Receipt {
+            from: text("from"),
+            to: text("to"),
+            index: num("transactionIndex")? as u32,
+            gas_used: num("gasUsed")? as u64,
+            effective_gas_price: num("effectiveGasPrice")?,
+            l1_fee: num("l1Fee")?,
+        }))
+    }
+}
+
+const REVERTED: &str = "execution reverted";
+
+/// The text of a Solidity `Error(string)` revert payload.
+fn revert_reason(data: &str) -> Option<String> {
+    let bytes = hex_bytes(data.strip_prefix("0x08c379a0")?).ok()?;
+    decode_string(&bytes).ok()
+}
+
+fn quantity_u128(v: &Value) -> Result<u128, EvmError> {
+    let s = v.as_str().ok_or_else(|| EvmError::Decode("quantity".into()))?;
+    u128::from_str_radix(s.trim_start_matches("0x"), 16).map_err(|e| EvmError::Decode(e.to_string()))
+}
+
+/// Outcome of [`EvmRpc::try_call`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum Call {
+    Returned(Vec<u8>),
+    /// The revert reason (`""` when the contract gave none).
+    Reverted(String),
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Log {
+    pub block: u64,
+    pub index: u32,
+    pub tx: String,
+    /// `0x…` words, the event signature first.
+    pub topics: Vec<String>,
+    pub data: Vec<u8>,
+}
+
+impl Log {
+    pub fn parse(v: &Value) -> Result<Log, EvmError> {
+        let text = |k: &str| v.get(k).and_then(Value::as_str).ok_or_else(|| EvmError::Decode(format!("log.{k}")));
+        Ok(Log {
+            block: quantity_u128(v.get("blockNumber").unwrap_or(&Value::Null))? as u64,
+            index: quantity_u128(v.get("logIndex").unwrap_or(&Value::Null))? as u32,
+            tx: text("transactionHash")?.to_ascii_lowercase(),
+            topics: v
+                .get("topics")
+                .and_then(Value::as_array)
+                .map(|t| t.iter().filter_map(Value::as_str).map(str::to_ascii_lowercase).collect())
+                .unwrap_or_default(),
+            data: hex_bytes(text("data")?)?,
+        })
+    }
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Receipt {
+    pub from: String,
+    pub to: String,
+    /// Position in its block.
+    pub index: u32,
+    pub gas_used: u64,
+    /// Wei per gas actually paid (base fee + priority fee).
+    pub effective_gas_price: u128,
+    /// OP-stack chains: the L1 data fee in wei (0 elsewhere).
+    pub l1_fee: u128,
+}
+
+impl Receipt {
+    /// Everything the sender paid for this transaction, in wei.
+    pub fn fee_wei(&self) -> u128 {
+        self.gas_used as u128 * self.effective_gas_price + self.l1_fee
     }
 }
 
@@ -196,7 +320,8 @@ pub struct Quote {
     pub block: u64,
 }
 
-async fn token(rpc: &EvmRpc, address: String) -> Result<Token, EvmError> {
+/// An ERC-20's symbol and decimals, read on chain.
+pub async fn token(rpc: &EvmRpc, address: String) -> Result<Token, EvmError> {
     let symbol = decode_string(&rpc.call(&address, SYMBOL, "latest").await?)?;
     let decimals = word_u128_of(word(&rpc.call(&address, DECIMALS, "latest").await?, 0)?)? as u8;
     Ok(Token { address, symbol, decimals })
@@ -396,6 +521,40 @@ mod tests {
         assert_eq!(e.market(), "WETH/USDC");
         let m = e.mid(1_543_258_361_466_207_989_055_270_047_900_004.0, "WETH").unwrap();
         assert!((m - 2635.6).abs() < 1.5, "{m}");
+    }
+
+    #[test]
+    fn a_receipt_and_its_log_parse() {
+        // Base, block 52,121,149: a Morpho liquidation (logs trimmed to that event)
+        let v: Value =
+            serde_json::from_str(include_str!("../../../fixtures/evm/receipt-base-liquidation.json")).unwrap();
+        let l = Log::parse(&v["logs"][0]).unwrap();
+        assert_eq!((l.block, l.index, l.topics.len(), l.data.len()), (52_121_149, 0x1a3, 4, 160));
+        assert_eq!(l.tx, "0xfdf5fec344a0c4e721a876522f758c8e95b0f070586fd375cea8ca783718c5eb");
+        let r = Receipt {
+            from: "0xc1538bf47249eeab076102408d3d4cfab5452e25".into(),
+            to: "0xb3cf873d27b171c7331c3b4a13a0789c8886314a".into(),
+            index: 57,
+            gas_used: quantity_u128(&v["gasUsed"]).unwrap() as u64,
+            effective_gas_price: quantity_u128(&v["effectiveGasPrice"]).unwrap(),
+            l1_fee: quantity_u128(&v["l1Fee"]).unwrap(),
+        };
+        // 1,043,004 gas at 0.83 gwei plus the L1 data fee
+        assert_eq!(r.fee_wei(), 865_696_612_279_116);
+        assert!(Log::parse(&json!({"blockNumber": "0x1"})).is_err());
+    }
+
+    #[test]
+    fn a_revert_reason_is_read_from_the_error_data() {
+        // `data` of the eth_call error for a healthy position on Base
+        let data = concat!(
+            "0x08c379a0",
+            "0000000000000000000000000000000000000000000000000000000000000020",
+            "0000000000000000000000000000000000000000000000000000000000000013",
+            "706f736974696f6e206973206865616c74687900000000000000000000000000",
+        );
+        assert_eq!(revert_reason(data).as_deref(), Some("position is healthy"));
+        assert_eq!(revert_reason("0x"), None);
     }
 
     #[test]

@@ -9,6 +9,7 @@
 //!   mobius-searcher --replay <SESSION> --snapshot 120x40,80x24 --out shots/
 //!   mobius-searcher --research [--duration N]   measurements only (research.sqlite)
 //!   mobius-searcher --research-report [RUN|latest|all]
+//!   mobius-searcher --research-liquidations [DAYS]   past lending liquidations, read from chain
 
 use mobius_searcher::{budget, canary, doctor, engine, envfile, migrate, research, setup};
 
@@ -87,6 +88,11 @@ struct Cli {
     /// Summarise research runs: a run id, `latest` or `all` (default: all).
     #[arg(long, value_name = "RUN", num_args = 0..=1, default_missing_value = "all")]
     research_report: Option<String>,
+    /// Read the last DAYS days of lending liquidations back from chain (Morpho
+    /// on Base): what each paid, what the winner spent, how long it had been
+    /// available. Recorded in research.sqlite; signs and sends nothing.
+    #[arg(long, value_name = "DAYS", num_args = 0..=1, default_missing_value = "30")]
+    research_liquidations: Option<u32>,
     /// Price MARKET (e.g. WETH/USDC, SOL/USDT) on every enabled venue that lists it, then exit.
     #[arg(long, value_name = "MARKET")]
     quote: Option<String>,
@@ -272,6 +278,7 @@ fn main() -> Result<()> {
         && !cli.canary
         && !cli.migrate_config
         && cli.research_report.is_none()
+        && cli.research_liquidations.is_none()
         && !cli.list_sessions
         && !cli.prune
         && !cli.db_info
@@ -353,6 +360,10 @@ fn main() -> Result<()> {
     if cli.research {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
         return rt.block_on(research::run(cfg, cli.duration));
+    }
+    if let Some(days) = cli.research_liquidations {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        return rt.block_on(research::liquidation::run(&cfg, days.max(1), cli.json));
     }
     let db_path = cli.db.clone().unwrap_or_else(|| cfg.data_dir().join("mobius.sqlite"));
 

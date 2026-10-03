@@ -191,6 +191,15 @@ prune_interval_min = 30   # while recording (also once at startup); --prune runs
 # lag_scale_trigger_bps = 8.0     # gaps this wide are also quoted at the sizes below
 # lag_scale_lamports = [500000000, 1000000000]
 # keep_awake = true             # macOS: caffeinate while running
+#
+# --research-liquidations: Morpho Blue deployments whose past liquidations are
+# read back from chain. rpc_url must serve historical state and logs; when the
+# venue's rpc_url_env variable (BASE_RPC_URL) is set, that node is used instead.
+# [[research.liquidations]]
+# venue = "base"
+# morpho = "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb"
+# rpc_url = "https://base.gateway.tenderly.co"
+# log_window = 1000             # blocks per eth_getLogs request (the node's cap)
 
 # ── Execution gate ──────────────────────────────────────────────────────────
 [execution]

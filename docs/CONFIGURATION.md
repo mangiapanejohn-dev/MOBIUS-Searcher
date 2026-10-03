@@ -94,7 +94,7 @@ The Solana stack still uses the top-level sections below and moves under
 | `[venues.*]` | other markets (above) | `markets`, `watchlist`, `rest_url` |
 | `[network]` | proxy for every connection | `proxy` = `"auto"` (environment, else the macOS system proxy) \| `"none"` \| `"http://host:port"` |
 | `[storage]` | the recording database ([STORAGE.md](STORAGE.md)) | `retention_days`, `keep_trading_days`, `max_db_mb`, `prune_interval_min` |
-| `[research]` | `--research` measurements | `ladder_sizes_lamports`, `xchain_assets`, `lag_trigger_bps`, `lag_control_every_s`, `keep_awake` |
+| `[research]` | `--research` measurements; `--research-liquidations` | `ladder_sizes_lamports`, `xchain_assets`, `lag_trigger_bps`, `lag_control_every_s`, `keep_awake`, `[[research.liquidations]]` (`venue`, `morpho`, `rpc_url`, `log_window`) |
 | `[canary]` | `--canary`, the first real trade | `max_loss_lamports` (also the on-chain bound), `amount_lamports` |
 | `[ui]` | terminal UI | `glyphs`, `color`, `fps`, `mouse`, `max_graphs` |
 
@@ -145,7 +145,7 @@ their values, and nothing here is printed to a log or a report.
 | `SOLANA_RPC_URL`, `SOLANA_WS_URL` | your own RPC instead of the public one | any Solana RPC provider |
 | `JITO_UUID` | optional, a Jito account's bundle quota | Jito |
 | `PYTH_API_KEY` | only with `oracle_source = "hermes"` | Pyth Hermes |
-| `ETHEREUM_RPC_URL`, `BASE_RPC_URL`, `ARBITRUM_RPC_URL` | cross-chain research and `--quote` on EVM venues | any EVM RPC provider (public nodes are the default) |
+| `ETHEREUM_RPC_URL`, `BASE_RPC_URL`, `ARBITRUM_RPC_URL` | cross-chain research and `--quote` on EVM venues; `--research-liquidations` needs one that serves historical state | any EVM RPC provider (public nodes are the default) |
 | `OKX_API_KEY`, `OKX_API_SECRET`, `OKX_API_PASSPHRASE` | only for a signed OKX read; market data needs none | OKX |
 | `BINANCE_API_KEY`, `BINANCE_API_SECRET` | same, for Binance | Binance |
 

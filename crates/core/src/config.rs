@@ -995,6 +995,9 @@ pub struct ResearchConfig {
     pub lag_binance_ws_url: String,
     /// Keep the machine awake while researching (macOS `caffeinate`).
     pub keep_awake: bool,
+    /// `--research-liquidations`: lending markets whose past liquidations are
+    /// read back from the chain.
+    pub liquidations: Vec<LiquidationTarget>,
 }
 
 impl ResearchConfig {
@@ -1025,6 +1028,15 @@ impl ResearchConfig {
         if self.lag_confirm_lamports == 0 {
             return Err("research.lag_confirm_lamports must be > 0".into());
         }
+        for t in &self.liquidations {
+            let hex = t.morpho.strip_prefix("0x").unwrap_or_default();
+            if hex.len() != 40 || !hex.bytes().all(|b| b.is_ascii_hexdigit()) {
+                return Err(format!("research.liquidations {}: morpho must be a 0x address", t.venue));
+            }
+            if t.log_window == 0 {
+                return Err(format!("research.liquidations {}: log_window must be > 0", t.venue));
+            }
+        }
         Ok(())
     }
 }
@@ -1046,6 +1058,21 @@ impl Default for CanaryConfig {
     fn default() -> Self {
         Self { max_loss_lamports: 500_000, amount_lamports: 0 }
     }
+}
+
+/// One Morpho Blue deployment for `--research-liquidations`.
+#[derive(Clone, Debug, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct LiquidationTarget {
+    /// EVM venue: gives the chain id, the keyed-RPC variable and the pool
+    /// that prices gas (its first one, WETH against a dollar).
+    pub venue: String,
+    pub morpho: String,
+    /// A node that serves logs and historical state (an archive node). When
+    /// the venue's `rpc_url_env` variable is set, that URL is used instead.
+    pub rpc_url: String,
+    /// Blocks per `eth_getLogs` request (the node's cap).
+    pub log_window: u64,
 }
 
 /// One asset for the cross-chain comparison.
@@ -1105,6 +1132,17 @@ impl Default for ResearchConfig {
             lag_okx_inst: "SOL-USDC".into(),
             lag_binance_ws_url: "wss://data-stream.binance.vision/ws/solusdc@bookTicker".into(),
             keep_awake: true,
+            // Base only: over the 30 days to 2026-10-03 Morpho on Arbitrum
+            // paid out about $22 in 20 liquidations. Measured that day:
+            // base-rpc.publicnode.com refuses historical state, mainnet.base.org
+            // answers "over rate limit" to most historical calls even at 2 a
+            // second; this gateway answered 8 a second (logs: 1,000 blocks).
+            liquidations: vec![LiquidationTarget {
+                venue: "base".into(),
+                morpho: "0xBBBBBbbBBb9cC5e90e3b3Af64bdAF62C37EEFFCb".into(),
+                rpc_url: "https://base.gateway.tenderly.co".into(),
+                log_window: 1_000,
+            }],
         }
     }
 }

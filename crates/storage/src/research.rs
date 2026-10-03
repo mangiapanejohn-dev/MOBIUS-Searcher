@@ -103,6 +103,30 @@ CREATE TABLE IF NOT EXISTS lag_feed (
     run_id TEXT NOT NULL, ts INTEGER NOT NULL, dex TEXT NOT NULL,
     slot INTEGER NOT NULL, head_slot INTEGER NOT NULL
 );
+
+-- Liquidations read back from chain (facts of the chain, not of a run).
+-- Amounts are raw token units as decimal text: they exceed 64 bits.
+CREATE TABLE IF NOT EXISTS liq_events (
+    venue TEXT NOT NULL, block INTEGER NOT NULL, log_index INTEGER NOT NULL,
+    tx TEXT NOT NULL, market TEXT NOT NULL, borrower TEXT NOT NULL,
+    caller TEXT NOT NULL,           -- msg.sender of liquidate (usually the winner's contract)
+    repaid TEXT NOT NULL, seized TEXT NOT NULL, bad_debt TEXT NOT NULL,
+    block_time INTEGER,             -- unix seconds
+    tx_index INTEGER, sender TEXT,  -- the transaction's position in its block and its signer
+    loan TEXT, collateral TEXT, lltv REAL,
+    incentive REAL,                 -- loan-token units at the oracle price: repaid × (LIF − 1)
+    loan_usd REAL,                  -- NULL: loan token not valued
+    gas_eth REAL,                   -- this event's share of what the transaction paid (L2 gas + L1 data)
+    priority_gwei REAL,             -- effective gas price − base fee
+    eth_usd REAL,
+    since_block INTEGER,            -- first block at whose end the position was liquidatable
+    since_time INTEGER,
+    since_kind TEXT,                -- same_block | earlier | after_liquidation | horizon
+    probes INTEGER, err TEXT,
+    PRIMARY KEY (venue, block, log_index)
+);
+-- Blocks first..next−1 have been searched for events.
+CREATE TABLE IF NOT EXISTS liq_scan (venue TEXT PRIMARY KEY, first INTEGER NOT NULL, next INTEGER NOT NULL);
 "#;
 
 pub struct ResearchStore {
@@ -235,6 +259,38 @@ pub struct RunRow {
     pub jupiter_requests: i64,
     pub jupiter_errors: i64,
     pub jupiter_429: i64,
+}
+
+/// One liquidation (`liq_events`). The fields after `bad_debt` are filled in
+/// after the event is found.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct LiqEvent {
+    pub venue: String,
+    pub block: u64,
+    pub log_index: u32,
+    pub tx: String,
+    pub market: String,
+    pub borrower: String,
+    pub caller: String,
+    pub repaid: String,
+    pub seized: String,
+    pub bad_debt: String,
+    pub block_time: Option<i64>,
+    pub tx_index: Option<u32>,
+    pub sender: Option<String>,
+    pub loan: Option<String>,
+    pub collateral: Option<String>,
+    pub lltv: Option<f64>,
+    pub incentive: Option<f64>,
+    pub loan_usd: Option<f64>,
+    pub gas_eth: Option<f64>,
+    pub priority_gwei: Option<f64>,
+    pub eth_usd: Option<f64>,
+    pub since_block: Option<u64>,
+    pub since_time: Option<i64>,
+    pub since_kind: Option<String>,
+    pub probes: Option<u32>,
+    pub err: Option<String>,
 }
 
 impl ResearchStore {
@@ -503,6 +559,121 @@ impl ResearchStore {
         Ok(out)
     }
 
+    /// Record newly found liquidations; ones already known are left as they are.
+    pub fn insert_liq_events(&self, events: &[LiqEvent]) -> Result<(), StoreError> {
+        for e in events {
+            self.conn.execute(
+                "INSERT OR IGNORE INTO liq_events(venue, block, log_index, tx, market, borrower, caller, repaid, seized, bad_debt)
+                 VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+                params![
+                    e.venue,
+                    e.block as i64,
+                    e.log_index,
+                    e.tx,
+                    e.market,
+                    e.borrower,
+                    e.caller,
+                    e.repaid,
+                    e.seized,
+                    e.bad_debt
+                ],
+            )?;
+        }
+        Ok(())
+    }
+
+    /// Store what was worked out about an event (everything after `bad_debt`).
+    pub fn update_liq_event(&self, e: &LiqEvent) -> Result<(), StoreError> {
+        self.conn.execute(
+            "UPDATE liq_events SET block_time = ?4, tx_index = ?5, sender = ?6, loan = ?7, collateral = ?8, lltv = ?9,
+                incentive = ?10, loan_usd = ?11, gas_eth = ?12, priority_gwei = ?13, eth_usd = ?14,
+                since_block = ?15, since_time = ?16, since_kind = ?17, probes = ?18, err = ?19
+             WHERE venue = ?1 AND block = ?2 AND log_index = ?3",
+            params![
+                e.venue,
+                e.block as i64,
+                e.log_index,
+                e.block_time,
+                e.tx_index,
+                e.sender,
+                e.loan,
+                e.collateral,
+                e.lltv,
+                e.incentive,
+                e.loan_usd,
+                e.gas_eth,
+                e.priority_gwei,
+                e.eth_usd,
+                e.since_block.map(|b| b as i64),
+                e.since_time,
+                e.since_kind,
+                e.probes,
+                e.err
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// A venue's liquidations from block `from` on, in chain order.
+    pub fn liq_events(&self, venue: &str, from: u64) -> Result<Vec<LiqEvent>, StoreError> {
+        let mut st = self.conn.prepare(
+            "SELECT venue, block, log_index, tx, market, borrower, caller, repaid, seized, bad_debt, block_time,
+                    tx_index, sender, loan, collateral, lltv, incentive, loan_usd, gas_eth, priority_gwei, eth_usd,
+                    since_block, since_time, since_kind, probes, err
+             FROM liq_events WHERE venue = ?1 AND block >= ?2 ORDER BY block, log_index",
+        )?;
+        let rows = st.query_map(params![venue, from as i64], |r| {
+            Ok(LiqEvent {
+                venue: r.get(0)?,
+                block: r.get::<_, i64>(1)? as u64,
+                log_index: r.get(2)?,
+                tx: r.get(3)?,
+                market: r.get(4)?,
+                borrower: r.get(5)?,
+                caller: r.get(6)?,
+                repaid: r.get(7)?,
+                seized: r.get(8)?,
+                bad_debt: r.get(9)?,
+                block_time: r.get(10)?,
+                tx_index: r.get(11)?,
+                sender: r.get(12)?,
+                loan: r.get(13)?,
+                collateral: r.get(14)?,
+                lltv: r.get(15)?,
+                incentive: r.get(16)?,
+                loan_usd: r.get(17)?,
+                gas_eth: r.get(18)?,
+                priority_gwei: r.get(19)?,
+                eth_usd: r.get(20)?,
+                since_block: r.get::<_, Option<i64>>(21)?.map(|b| b as u64),
+                since_time: r.get(22)?,
+                since_kind: r.get(23)?,
+                probes: r.get(24)?,
+                err: r.get(25)?,
+            })
+        })?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The block range already searched for a venue's liquidations: `first..next`.
+    pub fn liq_scan(&self, venue: &str) -> Result<Option<(u64, u64)>, StoreError> {
+        Ok(self
+            .conn
+            .query_row("SELECT first, next FROM liq_scan WHERE venue = ?1", params![venue], |r| {
+                Ok((r.get::<_, i64>(0)? as u64, r.get::<_, i64>(1)? as u64))
+            })
+            .optional()?)
+    }
+
+    pub fn set_liq_scan(&self, venue: &str, first: u64, next: u64) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO liq_scan(venue, first, next) VALUES (?1,?2,?3)
+             ON CONFLICT(venue) DO UPDATE SET first = ?2, next = ?3",
+            params![venue, first as i64, next as i64],
+        )?;
+        Ok(())
+    }
+
     pub fn runs(&self) -> Result<Vec<RunRow>, StoreError> {
         let mut st = self.conn.prepare(
             "SELECT id, started_at, ended_at, version, setup, awake_s, jupiter_requests, jupiter_errors, jupiter_429
@@ -728,5 +899,46 @@ mod tests {
         assert_eq!(s.counts("r1").unwrap(), [1, 1, 1, 1]);
         let r = s.run("r1").unwrap().unwrap();
         assert_eq!((r.ended_at, r.awake_s, r.jupiter_requests), (Some(9), 8, 7));
+    }
+
+    #[test]
+    fn liquidations_are_found_once_then_filled_in() {
+        let s = ResearchStore::open_in_memory().unwrap();
+        let found = LiqEvent {
+            venue: "base".into(),
+            block: 52_121_149,
+            log_index: 419,
+            tx: "0xfd".into(),
+            market: "0x45".into(),
+            borrower: "0xb8".into(),
+            caller: "0xb3".into(),
+            repaid: "141980096".into(),
+            seized: "121595503775334797723".into(), // more than 64 bits
+            bad_debt: "0".into(),
+            ..Default::default()
+        };
+        s.insert_liq_events(std::slice::from_ref(&found)).unwrap();
+        let done = LiqEvent {
+            block_time: Some(1_791_031_645),
+            sender: Some("0xc1".into()),
+            lltv: Some(0.86),
+            incentive: Some(6.22),
+            loan_usd: Some(1.0),
+            since_block: Some(52_121_148),
+            since_kind: Some("earlier".into()),
+            probes: Some(2),
+            ..found.clone()
+        };
+        s.update_liq_event(&done).unwrap();
+        // a later run finds the same log again: what was worked out stays
+        s.insert_liq_events(std::slice::from_ref(&found)).unwrap();
+        assert_eq!(s.liq_events("base", 0).unwrap(), vec![done]);
+        assert!(s.liq_events("base", 52_121_150).unwrap().is_empty());
+        assert!(s.liq_events("arbitrum", 0).unwrap().is_empty());
+
+        assert_eq!(s.liq_scan("base").unwrap(), None);
+        s.set_liq_scan("base", 100, 200).unwrap();
+        s.set_liq_scan("base", 50, 300).unwrap();
+        assert_eq!(s.liq_scan("base").unwrap(), Some((50, 300)));
     }
 }
