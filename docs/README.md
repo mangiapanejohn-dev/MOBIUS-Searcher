@@ -17,6 +17,7 @@
 | Results and operations | |
 |---|---|
 | [RESEARCH_2026-09.md](RESEARCH_2026-09.md) | where an edge could come from: the 0.2 measurements and what they did not find |
+| [RESEARCH_2026-10.md](RESEARCH_2026-10.md) | the 0.3 measurements: liquidations read back from chain, what waiting costs a quote, the gap between pools without a quote API, resting orders |
 | [PAPER_RUN.md](PAPER_RUN.md) | PAPER soak results; raw artefacts in [runs/](runs/) |
 | [LIVE_CHECKLIST.md](LIVE_CHECKLIST.md) | everything that must be true before LIVE |
 | [../SECURITY.md](../SECURITY.md) | secrets, keys, execution gates, reporting a vulnerability |

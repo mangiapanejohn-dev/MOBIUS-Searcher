@@ -191,6 +191,7 @@ pub async fn run(cfg: Config, duration: Option<u64>) -> Result<()> {
                     ready.push(state);
                 }
                 let (Some(now), true) = (now, slot > last_slot) else { continue };
+                last_slot = slot;
                 let ts = Ts::now().0;
                 let fair = cex.lock().fair(Instant::now());
                 for (p, state) in pools.iter().zip(&ready) {
@@ -218,7 +219,6 @@ pub async fn run(cfg: Config, duration: Option<u64>) -> Result<()> {
                 if trips.is_empty() {
                     continue;
                 }
-                last_slot = slot;
                 recorded += 1;
                 let rows: Vec<PoolEdge> = trips
                     .into_iter()

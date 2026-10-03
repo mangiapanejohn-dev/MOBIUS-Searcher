@@ -2,7 +2,7 @@
 
 This is a public research and engineering roadmap, not a promise of release dates.
 
-MØBIUS-Searcher is currently at **0.1.x**: Solana execution research is real, PAPER is the default, and the shipped configuration has produced **0 executable opportunities** across the published run. The immediate goal is not to manufacture more "opportunities"; it is to reduce uncertainty about **why** apparent edge disappears and when the system can know that reliably.
+MØBIUS-Searcher is currently at **0.2.x**: Solana execution research is real, PAPER is the default, and the shipped configuration has produced **0 executable opportunities** across the published run. The immediate goal is not to manufacture more "opportunities"; it is to reduce uncertainty about **why** apparent edge disappears and when the system can know that reliably.
 
 ## 0.2 — measure where an edge could come from, and prove the execution path
 
@@ -14,20 +14,30 @@ MØBIUS-Searcher is currently at **0.1.x**: Solana execution research is real, P
 - [x] Solana settings under `[venues.solana]` (the old layout is read until 0.4).
 - [ ] A canary trade landed and reconciled on mainnet (the release gate).
 
-## 0.3 — act on what the research shows
+## 0.3 — measure what the 0.2 numbers left open
 
-The 0.2 measurements ([docs/RESEARCH_2026-09.md](docs/RESEARCH_2026-09.md))
-found no direction that pays for its costs: round trips −3 to −4 bp at every
-size, cross-chain −4.5 to −10 bp, and the DEX-lag trade about break-even
-before the 1.16 bp quote-to-fill gap. The lag *signal* is real (pool prices
-revert 3–5 bp toward the exchange, and trading on it beats random timing by
-1.4 bp), so if anything is worth building next it is what would keep more of
-that: lower fixed costs per attempt, or being earlier than the quote API.
+0.2 ([docs/RESEARCH_2026-09.md](docs/RESEARCH_2026-09.md)) found no direction
+that pays for its costs as a taker through a quote API. That left four
+questions, and 0.3 is a research release that answers them with data
+([docs/RESEARCH_2026-10.md](docs/RESEARCH_2026-10.md)). It adds no strategy
+that sends anything.
 
-- [ ] On-chain order entry beyond the Solana round trip (Solana + EVM chains).
-- [ ] A strategy chosen from the 0.2 research data — or none, if no direction survives.
-- [ ] USDC-based cycles and choosing the direction by inventory.
-- [ ] Local pool math (no quote API in the loop), if the data says latency decides.
+- [x] **Is a bigger prize reachable?** `--research-liquidations`: Morpho's
+      liquidations on Base read back from chain. 95 % of the incentive is taken
+      inside the block that creates it; a liquidator a block late finds $26 in
+      30 days. Closed.
+- [x] **How much of the loss is waiting?** Quote aging in `--report`: executed
+      vs quoted output of every simulated leg by the age of its quote.
+- [x] **Local pool math** (no quote API in the loop): Whirlpool, Raydium CLMM
+      and Meteora DLMM, exact against swaps simulated on mainnet.
+- [x] **Is there a gap between pools at all, without our latency?**
+      `--research-pools`: round trips from the pools' own accounts at one slot.
+- [x] **The maker's side of the lag signal**: orders resting in Meteora bins,
+      imagined, with what the exchange price did after each fill.
+- [ ] Longer runs of the three measurements above (hours, several days).
+- [ ] A venue execution interface and on-chain order entry beyond the Solana
+      round trip: only once a measurement says there is something to execute.
+- [ ] USDC-based cycles and choosing the direction by inventory (same condition).
 
 ## Now — make the result easier to reproduce
 
