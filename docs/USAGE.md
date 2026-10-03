@@ -181,6 +181,16 @@ back on another returns, for every ordered pair and each size in
 (`crates/market/src/amm`) and is checked against what the pool programs
 themselves pay in swaps simulated on mainnet.
 
+Each snapshot of the Meteora pool is also kept with the exchange price of
+that moment (OKX and Binance best bid/ask), and a second report imagines
+orders resting in its bins: base token to sell one, two and five bins above
+the price, quote token to buy as far below, a new pair every 5 seconds. An
+order is filled when the price goes through its whole bin within a minute;
+its result is the bin's price with the fee the bin earns, against the
+exchange price 0, 5, 15 and 30 seconds later, split by whether the pool was
+below or above the exchange when the order went in. This is the maker's side
+of the DEX-lag signal; nothing is placed.
+
 No quote API is involved, so this is the market without our latency in it:
 whether a gap wider than the two pools' fees ever opens, how wide, and for how
 many seconds it stays. It uses no Jupiter budget and can run next to a

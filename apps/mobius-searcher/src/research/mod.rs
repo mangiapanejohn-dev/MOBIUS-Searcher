@@ -15,6 +15,7 @@
 pub mod ladder;
 pub mod lag;
 pub mod liquidation;
+pub mod maker;
 pub mod pools;
 pub mod report;
 pub mod xchain;

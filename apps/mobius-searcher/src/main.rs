@@ -376,10 +376,11 @@ fn main() -> Result<()> {
     if cli.research_pools_report {
         let store = searcher_storage::ResearchStore::open(&cfg.data_dir().join("research.sqlite"))?;
         let r = research::pools::build(&store.pool_edges(&[])?);
+        let m = research::maker::build(&store.pool_snaps(&[])?);
         if cli.json {
-            println!("{}", serde_json::to_string_pretty(&r)?);
+            println!("{}", serde_json::to_string_pretty(&serde_json::json!({"round_trips": r, "resting_orders": m}))?);
         } else {
-            print!("{}", research::pools::render(&r));
+            print!("{}\n{}", research::pools::render(&r), research::maker::render(&m));
         }
         return Ok(());
     }

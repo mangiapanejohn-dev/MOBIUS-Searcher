@@ -3,21 +3,29 @@
 //! this measures the market itself, without our latency in it: is there
 //! ever a gap between two pools wider than their fees, how wide, and for how
 //! long. Nothing is signed or sent, and no Jupiter budget is used.
+//!
+//! Each snapshot of a bin pool (Meteora DLMM) is also kept with the exchange
+//! price of that moment, for [`super::maker`]: what an order resting in one
+//! of its bins would have met.
 
+use super::lag::{Cex, Top, parse_binance, parse_okx};
 use super::report::Dist;
 use anyhow::{Context, Result, bail};
+use parking_lot::Mutex;
 use searcher_core::config::{Config, PoolKind};
 use searcher_core::{Address, Ts};
 use searcher_market::accounts::decode_pool;
 use searcher_market::amm::{self, Pool};
+use searcher_market::feed;
 use searcher_storage::ResearchStore;
-use searcher_storage::research::PoolEdge;
+use searcher_storage::research::{PoolEdge, PoolSnap};
 use searcher_telemetry::Telemetry;
 use serde::Serialize;
 use std::collections::BTreeMap;
 use std::fmt::Write;
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+use tokio::sync::watch;
 
 /// The chain's clock (unix time at offset 32): Meteora's fee depends on it.
 const CLOCK: &str = "SysvarC1ock11111111111111111111111111111111";
@@ -29,6 +37,8 @@ struct Watched {
     kind: PoolKind,
     address: Address,
     base: Address,
+    /// Raw quote units per raw base unit → quote per base.
+    unit: f64,
     /// The tick or bin arrays (and fee configuration) the last snapshot named.
     deps: Vec<Address>,
 }
@@ -63,9 +73,11 @@ pub async fn run(cfg: Config, duration: Option<u64>) -> Result<()> {
     let tokens = cfg.tokens();
     let mut pools = Vec::new();
     for p in &cfg.feeds.pools {
-        let base = tokens.get(&p.base).with_context(|| format!("feeds.pools {}: unknown token {}", p.dex, p.base))?;
+        let token = |s: &str| tokens.get(s).with_context(|| format!("feeds.pools {}: unknown token {s}", p.dex));
+        let (base, quote) = (token(&p.base)?, token(&p.quote)?);
         let address = p.address.parse().map_err(|e| anyhow::anyhow!("feeds.pools {}: {e}", p.dex))?;
-        pools.push(Watched { name: p.dex.clone(), kind: p.kind, address, base: base.mint, deps: Vec::new() });
+        let unit = 10f64.powi(base.decimals as i32 - quote.decimals as i32);
+        pools.push(Watched { name: p.dex.clone(), kind: p.kind, address, base: base.mint, unit, deps: Vec::new() });
     }
     if pools.len() < 2 {
         bail!("feeds.pools lists {} pool(s): a round trip needs two", pools.len());
@@ -87,6 +99,39 @@ pub async fn run(cfg: Config, duration: Option<u64>) -> Result<()> {
         db.display()
     );
     println!("  Ctrl-C to stop; the report follows.");
+
+    // the exchange price next to each snapshot (best bid/ask of OKX and Binance)
+    let (stop, stopped) = watch::channel(false);
+    let cex = Arc::new(Mutex::new(Cex::default()));
+    let r = &cfg.research;
+    let okx = serde_json::json!({"op": "subscribe", "args": [{"channel": "bbo-tbt", "instId": r.lag_okx_inst}]});
+    let on_okx = {
+        let cex = cex.clone();
+        move |t: &str| {
+            if let Some((bid, ask)) = parse_okx(t) {
+                cex.lock().okx = Some(Top { bid, ask, at: Instant::now() });
+            }
+        }
+    };
+    let on_binance = {
+        let cex = cex.clone();
+        move |t: &str| {
+            if let Some((bid, ask)) = parse_binance(t) {
+                cex.lock().binance = Some(Top { bid, ask, at: Instant::now() });
+            }
+        }
+    };
+    let idle = Duration::from_secs(30);
+    let streams = [
+        tokio::spawn(feed::run_subscribed_stream(
+            r.lag_okx_ws_url.clone(),
+            vec![okx.to_string()],
+            idle,
+            on_okx,
+            stopped.clone(),
+        )),
+        tokio::spawn(feed::run_text_stream(r.lag_binance_ws_url.clone(), idle, on_binance, stopped)),
+    ];
 
     let started = tokio::time::Instant::now(); // monotonic: does not advance while asleep
     let deadline = duration.map(|s| started + Duration::from_secs(s));
@@ -146,6 +191,28 @@ pub async fn run(cfg: Config, duration: Option<u64>) -> Result<()> {
                     ready.push(state);
                 }
                 let (Some(now), true) = (now, slot > last_slot) else { continue };
+                let ts = Ts::now().0;
+                let fair = cex.lock().fair(Instant::now());
+                for (p, state) in pools.iter().zip(&ready) {
+                    // bin pools whose base token is the first one: bins upwards are higher prices of the base
+                    let Some((Pool::Dlmm(d), true)) = state else { continue };
+                    let Some(bin) = d.bins.get(&d.active_id) else { continue };
+                    let snap = PoolSnap {
+                        run: run_id.clone(),
+                        ts,
+                        slot,
+                        pool: p.name.clone(),
+                        active_id: d.active_id,
+                        bin_step: d.bin_step,
+                        price: bin.price as f64 / 2f64.powi(64) * p.unit,
+                        lp_fee_bps: d.fee_rate_at(d.active_id, now) as f64 / 1e5 * (1.0 - d.protocol_share as f64 / 1e4),
+                        cex_mid: fair.map(|f| f.top.mid()),
+                        cex_src: fair.map(|f| f.src.to_string()),
+                    };
+                    if let Err(e) = store.insert_pool_snap(&snap) {
+                        eprintln!("research: writing pool_snap: {e}");
+                    }
+                }
                 let named: Vec<(&str, Option<&Ready>)> = pools.iter().zip(&ready).map(|(p, r)| (p.name.as_str(), r.as_ref())).collect();
                 let trips = round_trips(&named, &sizes, now);
                 if trips.is_empty() {
@@ -153,7 +220,6 @@ pub async fn run(cfg: Config, duration: Option<u64>) -> Result<()> {
                 }
                 last_slot = slot;
                 recorded += 1;
-                let ts = Ts::now().0;
                 let rows: Vec<PoolEdge> = trips
                     .into_iter()
                     .map(|(size, sell_on, buy_on, gross_bps)| {
@@ -172,7 +238,13 @@ pub async fn run(cfg: Config, duration: Option<u64>) -> Result<()> {
         "\n{snapshots} snapshots in {} s, {recorded} at a new slot, {errors} failed requests",
         started.elapsed().as_secs()
     );
-    print!("\n{}", render(&build(&store.pool_edges(std::slice::from_ref(&run_id))?)));
+    let _ = stop.send(true);
+    for s in streams {
+        let _ = tokio::time::timeout(Duration::from_secs(3), s).await;
+    }
+    let this = std::slice::from_ref(&run_id);
+    print!("\n{}", render(&build(&store.pool_edges(this)?)));
+    print!("\n{}", super::maker::render(&super::maker::build(&store.pool_snaps(this)?)));
     Ok(())
 }
 
@@ -361,6 +433,7 @@ mod tests {
             base_fee_power: 0,
             variable_fee_control: 0,
             max_volatility_accumulator: 0,
+            protocol_share: 0,
             filter_period: 0,
             decay_period: 0,
             reduction_factor: 0,

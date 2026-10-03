@@ -33,6 +33,13 @@ before 1.0 a minor version may change configuration or behaviour.
   No quote API and no Jupiter budget: the gap between pools without our
   latency in it, and how long a gap that would pay for a transaction lasts.
   `--research-pools-report` prints every recorded run.
+- **Resting orders, imagined** (in the same run): every snapshot of the
+  Meteora pool is kept with the exchange price, and the report works out what
+  orders resting one, two and five bins from the price would have met: how
+  often the price went through them within a minute, and where the exchange
+  price was 0–30 s after the fill, with the fee the bin earns counted in.
+  Split by whether the pool was below or above the exchange when the order
+  went in: the maker's side of the DEX-lag signal.
 - EVM JSON-RPC: logs, receipts, block headers and calls that keep a revert
   reason apart from a failed request.
 - **Quote aging** in `--report`: every simulated leg is recorded with its

@@ -37,6 +37,9 @@ pub struct Dlmm {
     pub base_fee_power: u8,
     pub variable_fee_control: u32,
     pub max_volatility_accumulator: u32,
+    /// Share of the fee the protocol keeps, in ten-thousandths; the rest
+    /// goes to the liquidity in the bin.
+    pub protocol_share: u16,
     /// Seconds: a swap sooner than this after the last one keeps the references.
     pub filter_period: u16,
     /// Seconds after which the volatility reference is forgotten.
@@ -77,24 +80,35 @@ impl Dlmm {
         (base + variable).min(MAX_FEE_RATE)
     }
 
+    /// The bin and volatility a swap at unix time `now` counts from: a swap
+    /// after a quiet spell starts from where the price is now.
+    fn references(&self, now: i64) -> (i32, u32) {
+        let elapsed = now - self.last_update;
+        if elapsed < self.filter_period as i64 {
+            return (self.index_reference, self.volatility_reference);
+        }
+        let kept = if elapsed < self.decay_period as i64 {
+            (self.volatility_accumulator as u64 * self.reduction_factor as u64 / 10_000) as u32
+        } else {
+            0
+        };
+        (self.active_id, kept)
+    }
+
+    /// What a swap arriving at bin `id` at unix time `now` pays, in billionths
+    /// of its input.
+    pub fn fee_rate_at(&self, id: i32, now: i64) -> u128 {
+        let (index_reference, volatility_reference) = self.references(now);
+        self.fee_rate(id, index_reference, volatility_reference)
+    }
+
     /// Sell exactly `amount_in` of token X (`x_to_y`) or of token Y at unix
     /// time `now` (the fee depends on the time since the last swap).
     ///
     /// `None` when the answer is not known: the swap would run past the bins
     /// at hand.
     pub fn swap(&self, x_to_y: bool, amount_in: u64, now: i64) -> Option<Swap> {
-        // a swap after a quiet spell starts counting bins from where the price is now
-        let elapsed = now - self.last_update;
-        let (index_reference, volatility_reference) = if elapsed >= self.filter_period as i64 {
-            let kept = if elapsed < self.decay_period as i64 {
-                (self.volatility_accumulator as u64 * self.reduction_factor as u64 / 10_000) as u32
-            } else {
-                0
-            };
-            (self.active_id, kept)
-        } else {
-            (self.index_reference, self.volatility_reference)
-        };
+        let (index_reference, volatility_reference) = self.references(now);
 
         let (mut id, mut left, mut out, mut fees) = (self.active_id, amount_in as u128, 0u128, 0u128);
         while left > 0 {
@@ -159,7 +173,8 @@ pub fn bin_array(pool: &Address, index: i64) -> Option<Address> {
 ///
 /// LbPair: static parameters @8 (base_factor u16, filter_period u16,
 /// decay_period u16, reduction_factor u16, variable_fee_control u32,
-/// max_volatility_accumulator u32 @20, base_fee_power_factor u8 @34),
+/// max_volatility_accumulator u32 @20, protocol_share u16 @32,
+/// base_fee_power_factor u8 @34),
 /// variable parameters @40 (volatility_accumulator u32, volatility_reference
 /// u32, index_reference i32, last_update_timestamp i64 @56), active_id i32
 /// @76, bin_step u16 @80. BinArray: index i64 @8, then 70 bins of 144 bytes
@@ -193,6 +208,7 @@ pub fn decode(pool: &[u8], arrays: &[&[u8]]) -> Option<Dlmm> {
         base_fee_power: *pool.get(34)?,
         variable_fee_control: u32_at(16)?,
         max_volatility_accumulator: u32_at(20)?,
+        protocol_share: u16_at(32)?,
         filter_period: u16_at(10)?,
         decay_period: u16_at(12)?,
         reduction_factor: u16_at(14)?,
@@ -220,6 +236,7 @@ mod tests {
             base_fee_power: 1,
             variable_fee_control: 0,
             max_volatility_accumulator: 100_000,
+            protocol_share: 1_000,
             filter_period: 10,
             decay_period: 120,
             reduction_factor: 5_000,
@@ -281,6 +298,10 @@ mod tests {
         let long_after = p.swap(true, 100_000, 600).unwrap();
         assert!(soon.fee > later.fee && later.fee > long_after.fee, "{soon:?} {later:?} {long_after:?}");
         assert_eq!(long_after.fee, 100);
+        assert_eq!(
+            (p.fee_rate_at(0, 5), p.fee_rate_at(0, 60), p.fee_rate_at(0, 600)),
+            (1_050_000, 1_004_500, 1_000_000)
+        );
     }
 
     #[test]

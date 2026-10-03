@@ -135,6 +135,17 @@ CREATE TABLE IF NOT EXISTS pool_edge (
 );
 CREATE INDEX IF NOT EXISTS pool_edge_run ON pool_edge(run_id, size);
 
+-- A bin pool at each snapshot of --research-pools with the exchange price at
+-- that moment: what an order resting in one of its bins would have met.
+CREATE TABLE IF NOT EXISTS pool_snap (
+    run_id TEXT NOT NULL, ts INTEGER NOT NULL, slot INTEGER NOT NULL, pool TEXT NOT NULL,
+    active_id INTEGER NOT NULL, bin_step INTEGER NOT NULL,
+    price REAL NOT NULL,            -- quote per base at the active bin
+    lp_fee_bps REAL NOT NULL,       -- of a swap's input there, the part the bin's liquidity earns
+    cex_mid REAL, cex_src TEXT      -- NULL: no fresh exchange price
+);
+CREATE INDEX IF NOT EXISTS pool_snap_run ON pool_snap(run_id, pool, ts);
+
 -- Blocks first..next−1 have been searched for events.
 CREATE TABLE IF NOT EXISTS liq_scan (venue TEXT PRIMARY KEY, first INTEGER NOT NULL, next INTEGER NOT NULL);
 "#;
@@ -281,6 +292,21 @@ pub struct PoolEdge {
     pub sell_on: String,
     pub buy_on: String,
     pub gross_bps: f64,
+}
+
+/// A bin pool at one snapshot (`pool_snap`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PoolSnap {
+    pub run: String,
+    pub ts: i64,
+    pub slot: u64,
+    pub pool: String,
+    pub active_id: i32,
+    pub bin_step: u16,
+    pub price: f64,
+    pub lp_fee_bps: f64,
+    pub cex_mid: Option<f64>,
+    pub cex_src: Option<String>,
 }
 
 /// One liquidation (`liq_events`). The fields after `bad_debt` are filled in
@@ -610,6 +636,50 @@ impl ResearchStore {
             })
         })?;
         let all: Vec<PoolEdge> = rows.collect::<Result<_, _>>()?;
+        Ok(all.into_iter().filter(|e| runs.is_empty() || runs.contains(&e.run)).collect())
+    }
+
+    pub fn insert_pool_snap(&self, s: &PoolSnap) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT INTO pool_snap(run_id, ts, slot, pool, active_id, bin_step, price, lp_fee_bps, cex_mid, cex_src)
+             VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
+            params![
+                s.run,
+                s.ts,
+                s.slot as i64,
+                s.pool,
+                s.active_id,
+                s.bin_step,
+                s.price,
+                s.lp_fee_bps,
+                s.cex_mid,
+                s.cex_src
+            ],
+        )?;
+        Ok(())
+    }
+
+    /// Bin-pool snapshots of the given runs (all runs when empty), by run, pool and time.
+    pub fn pool_snaps(&self, runs: &[String]) -> Result<Vec<PoolSnap>, StoreError> {
+        let mut st = self.conn.prepare(
+            "SELECT run_id, ts, slot, pool, active_id, bin_step, price, lp_fee_bps, cex_mid, cex_src
+             FROM pool_snap ORDER BY run_id, pool, ts",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(PoolSnap {
+                run: r.get(0)?,
+                ts: r.get(1)?,
+                slot: r.get::<_, i64>(2)? as u64,
+                pool: r.get(3)?,
+                active_id: r.get(4)?,
+                bin_step: r.get(5)?,
+                price: r.get(6)?,
+                lp_fee_bps: r.get(7)?,
+                cex_mid: r.get(8)?,
+                cex_src: r.get(9)?,
+            })
+        })?;
+        let all: Vec<PoolSnap> = rows.collect::<Result<_, _>>()?;
         Ok(all.into_iter().filter(|e| runs.is_empty() || runs.contains(&e.run)).collect())
     }
 
@@ -1002,6 +1072,22 @@ mod tests {
         s.insert_pool_edges(&[edge.clone(), PoolEdge { run: "p2".into(), ..edge.clone() }]).unwrap();
         assert_eq!(s.pool_edges(&["p1".into()]).unwrap(), vec![edge]);
         assert_eq!(s.pool_edges(&[]).unwrap().len(), 2);
+        let snap = PoolSnap {
+            run: "p1".into(),
+            ts: 5,
+            slot: 453_000_000,
+            pool: "Meteora DLMM".into(),
+            active_id: -21_212,
+            bin_step: 1,
+            price: 119.9,
+            lp_fee_bps: 0.97,
+            cex_mid: Some(119.93),
+            cex_src: Some("okx".into()),
+        };
+        s.insert_pool_snap(&snap).unwrap();
+        s.insert_pool_snap(&PoolSnap { ts: 6, cex_mid: None, cex_src: None, ..snap.clone() }).unwrap();
+        let back = s.pool_snaps(&["p1".into()]).unwrap();
+        assert_eq!((back.len(), &back[0], back[1].cex_mid), (2, &snap, None));
 
         assert_eq!(s.liq_scan("base").unwrap(), None);
         s.set_liq_scan("base", 100, 200).unwrap();
