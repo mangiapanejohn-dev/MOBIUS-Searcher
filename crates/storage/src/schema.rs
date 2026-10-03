@@ -116,6 +116,16 @@ CREATE TABLE IF NOT EXISTS attribution (
     PRIMARY KEY (session_id, opportunity_id)
 );
 
+-- Every simulated leg: its quoted and executed output, and how old the
+-- quote was when the simulation was sent. What waiting costs is read off this.
+CREATE TABLE IF NOT EXISTS leg_aging (
+    session_id TEXT NOT NULL, opportunity_id INTEGER NOT NULL, leg INTEGER NOT NULL,
+    dexes TEXT NOT NULL,            -- the leg's route labels, joined by +
+    quoted INTEGER NOT NULL, executed INTEGER NOT NULL,
+    age_ms INTEGER NOT NULL,
+    PRIMARY KEY (session_id, opportunity_id, leg)
+);
+
 -- Wallet inventory in sending modes (the USD ledger): value = SOL × price + USDC.
 CREATE TABLE IF NOT EXISTS inventory (
     session_id TEXT NOT NULL, ts INTEGER NOT NULL,

@@ -15,6 +15,7 @@ key is).
 | Opportunities table | a numeric row per opportunity (edges, costs, status, latency) | `--report` statistics |
 | Opportunity snapshot (full JSON), raw provider quotes | only for notable opportunities: gross > 0, or executable / sent / filled / failed | 99.9% are plain `EDGE_TOO_SMALL` skips; the event log still has them in full |
 | Simulations | a row each (with logs) | calibration of the cost model |
+| Simulated legs (`leg_aging`) | a row per leg that executed: quoted and executed output, the quote's age when the simulation was sent, DEX labels | `--report` quote aging: what is lost at once and what waiting adds |
 | OKX data on the Markets page | never | display only |
 
 ## How

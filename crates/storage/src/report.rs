@@ -87,10 +87,114 @@ pub struct Report {
     /// Executed − quoted first-leg output (bp): median and 5th percentile.
     pub first_leg_median_bps: Option<f64>,
     pub first_leg_p5_bps: Option<f64>,
+    /// Simulated legs by the age of their quote when the simulation was sent.
+    pub aging: Vec<AgingRow>,
+    /// Straight line through executed − quoted (bp) against quote age (s):
+    /// what a fresh quote would still lose, and what each second of waiting adds.
+    pub aging_fit: Option<AgingFit>,
+    /// The same by the leg's DEX labels: (labels, legs, median age ms, median bp), most legs first.
+    pub aging_by_dex: Vec<(String, i64, Option<f64>, Option<f64>)>,
     /// Accounts the simulated transactions leave created: (address, times, lamports each).
     pub created_accounts: Vec<(String, i64, i64)>,
     /// Wallet ledger (sending modes), USD.
     pub ledger: Option<Ledger>,
+}
+
+/// Executed − quoted output (bp) of the legs whose quote was this old.
+#[derive(Clone, Debug, Default, PartialEq, Serialize)]
+pub struct AgingRow {
+    pub age: String,
+    pub legs: i64,
+    pub median_bps: Option<f64>,
+    pub mean_bps: Option<f64>,
+    /// Share of the legs that returned less than their quote.
+    pub below_quote: f64,
+}
+
+/// Least squares over the legs within [`AGING_FIT_MAX_BPS`] of their quote.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct AgingFit {
+    pub legs: i64,
+    /// Legs further from their quote than the fit takes (they are in the table).
+    pub left_out: i64,
+    pub at_zero_bps: f64,
+    pub per_second_bps: f64,
+    /// Standard error of `per_second_bps`.
+    pub per_second_se: f64,
+}
+
+/// A leg executing this far from its quote is a quote that was not honoured,
+/// not one that aged; one of them would decide the whole line.
+const AGING_FIT_MAX_BPS: f64 = 100.0;
+
+/// (age in seconds, executed − quoted in bp) → line, when there is enough to fit one.
+fn fit_aging(legs: &[(f64, f64)]) -> Option<AgingFit> {
+    let pts: Vec<(f64, f64)> = legs.iter().copied().filter(|(_, bp)| bp.abs() <= AGING_FIT_MAX_BPS).collect();
+    let n = pts.len() as f64;
+    let (mx, my) = (pts.iter().map(|p| p.0).sum::<f64>() / n, pts.iter().map(|p| p.1).sum::<f64>() / n);
+    let sxx: f64 = pts.iter().map(|p| (p.0 - mx).powi(2)).sum();
+    if pts.len() < 3 || sxx <= 0.0 {
+        return None;
+    }
+    let slope = pts.iter().map(|p| (p.0 - mx) * (p.1 - my)).sum::<f64>() / sxx;
+    let at_zero = my - slope * mx;
+    let sse: f64 = pts.iter().map(|p| (p.1 - at_zero - slope * p.0).powi(2)).sum();
+    Some(AgingFit {
+        legs: pts.len() as i64,
+        left_out: (legs.len() - pts.len()) as i64,
+        at_zero_bps: at_zero,
+        per_second_bps: slope,
+        per_second_se: (sse / (n - 2.0) / sxx).sqrt(),
+    })
+}
+
+fn median_of(mut v: Vec<f64>) -> Option<f64> {
+    v.sort_by(|a, b| a.total_cmp(b));
+    (!v.is_empty()).then(|| v[(v.len() - 1) / 2])
+}
+
+/// Executed vs quoted output of every simulated leg against its quote's age (`leg_aging`).
+fn aging(c: &rusqlite::Connection, session: &str, rep: &mut Report) -> Result<(), StoreError> {
+    let mut st = c.prepare(
+        "SELECT dexes, quoted, executed, age_ms FROM leg_aging WHERE session_id = ?1 AND quoted > 0 AND executed > 0",
+    )?;
+    let rows: Vec<(String, f64, f64)> = st
+        .query_map(params![session], |r| {
+            let (quoted, executed): (i64, i64) = (r.get(1)?, r.get(2)?);
+            Ok((r.get(0)?, r.get::<_, i64>(3)? as f64, (executed - quoted) as f64 / quoted as f64 * 1e4))
+        })?
+        .collect::<Result<_, _>>()?;
+    for (label, lo, hi) in [
+        ("under 0.5 s", 0.0, 500.0),
+        ("0.5–1 s", 500.0, 1_000.0),
+        ("1–2 s", 1_000.0, 2_000.0),
+        ("2–4 s", 2_000.0, 4_000.0),
+        ("over 4 s", 4_000.0, f64::MAX),
+    ] {
+        let bps: Vec<f64> = rows.iter().filter(|r| (lo..hi).contains(&r.1)).map(|r| r.2).collect();
+        let n = bps.len();
+        rep.aging.push(AgingRow {
+            age: label.to_string(),
+            legs: n as i64,
+            mean_bps: (n > 0).then(|| bps.iter().sum::<f64>() / n as f64),
+            below_quote: bps.iter().filter(|b| **b < 0.0).count() as f64 / n.max(1) as f64,
+            median_bps: median_of(bps),
+        });
+    }
+    rep.aging_fit = fit_aging(&rows.iter().map(|r| (r.1 / 1e3, r.2)).collect::<Vec<_>>());
+    let mut by: std::collections::BTreeMap<&str, (Vec<f64>, Vec<f64>)> = Default::default();
+    for (dexes, age, bp) in &rows {
+        let e = by.entry(dexes).or_default();
+        e.0.push(*age);
+        e.1.push(*bp);
+    }
+    rep.aging_by_dex = by
+        .into_iter()
+        .map(|(d, (ages, bps))| (d.to_string(), bps.len() as i64, median_of(ages), median_of(bps)))
+        .collect();
+    rep.aging_by_dex.sort_by_key(|d| std::cmp::Reverse(d.1));
+    rep.aging_by_dex.truncate(10);
+    Ok(())
 }
 
 /// Change of the wallet's USD value split into what explains it.
@@ -338,6 +442,7 @@ pub fn build(store: &Store, session: &str) -> Result<Report, StoreError> {
     rep.errors = c.query_row("SELECT COUNT(*) FROM errors WHERE session_id = ?1", params![session], |r| r.get(0))?;
     rep.rate_limited_429 = store.kind_count(session, "rate_limited")?;
     attribution(c, session, &mut rep)?;
+    aging(c, session, &mut rep)?;
     Ok(rep)
 }
 
@@ -552,6 +657,44 @@ pub fn render(r: &Report) -> String {
             format!("{} / {}", obps(r.first_leg_median_bps), obps(r.first_leg_p5_bps)),
         );
     }
+    if r.aging.iter().any(|a| a.legs > 0) {
+        o.push_str(
+            "\nQUOTE AGING (executed − quoted per simulated leg, by the quote's age when the simulation was sent)\n",
+        );
+        o.push_str(&format!(
+            "  {:<14} {:>6} {:>10} {:>10} {:>12}\n",
+            "quote age", "legs", "median", "mean", "below quote"
+        ));
+        for a in &r.aging {
+            o.push_str(&format!(
+                "  {:<14} {:>6} {:>10} {:>10} {:>11.0}%\n",
+                a.age,
+                a.legs,
+                obps(a.median_bps),
+                obps(a.mean_bps),
+                a.below_quote * 100.0
+            ));
+        }
+        match r.aging_fit {
+            Some(f) => {
+                o.push_str(&format!(
+                    "  a fresh quote would still be off by {:+.2} bp; each second of age adds {:+.2} bp (± {:.2}; {} legs",
+                    f.at_zero_bps, f.per_second_bps, f.per_second_se, f.legs
+                ));
+                if f.left_out > 0 {
+                    o.push_str(&format!(", {} over {AGING_FIT_MAX_BPS:.0} bp from their quote left out", f.left_out));
+                }
+                o.push_str(")\n");
+            }
+            None => o.push_str("  too few legs for a line through them\n"),
+        }
+        o.push_str(&format!("  {:<34} {:>6} {:>12} {:>10}\n", "by DEX", "legs", "median age", "median"));
+        for (dex, n, age, med) in &r.aging_by_dex {
+            let age = age.map(|a| format!("{:.1} s", a / 1e3)).unwrap_or_else(|| "—".into());
+            let dex: String = dex.chars().take(34).collect();
+            o.push_str(&format!("  {dex:<34} {n:>6} {age:>12} {:>10}\n", obps(*med)));
+        }
+    }
     if !r.created_accounts.is_empty() {
         o.push_str("\nACCOUNTS THE TRANSACTIONS CREATE (rent the payer deposits)\n");
         for (a, n, l) in &r.created_accounts {
@@ -595,4 +738,27 @@ pub fn render(r: &Report) -> String {
     line(&mut o, "429 / rate-limited events", r.rate_limited_429.to_string());
     line(&mut o, "dropped storage events", r.dropped_events.to_string());
     o
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn the_aging_line_separates_what_is_lost_at_once_from_what_waiting_adds() {
+        // −0.5 bp however fresh, −1 bp per second, and one quote that was not honoured
+        let mut legs: Vec<(f64, f64)> = [0.2, 0.6, 1.0, 1.5, 3.0].iter().map(|s| (*s, -0.5 - s)).collect();
+        legs.push((0.4, -6_000.0));
+        let f = fit_aging(&legs).unwrap();
+        assert_eq!((f.legs, f.left_out), (5, 1));
+        assert!((f.at_zero_bps + 0.5).abs() < 1e-9 && (f.per_second_bps + 1.0).abs() < 1e-9, "{f:?}");
+        assert!(f.per_second_se < 1e-9);
+        // noise shows up as an error on the slope
+        let noisy = [(0.0, 1.0), (1.0, -3.0), (2.0, 0.0), (3.0, -4.0)];
+        let f = fit_aging(&noisy).unwrap();
+        assert!((f.per_second_bps + 1.2).abs() < 1e-9 && f.per_second_se > 0.5, "{f:?}");
+        // one age only, or too few legs: no line
+        assert_eq!(fit_aging(&[(1.0, -1.0), (1.0, -2.0), (1.0, -3.0)]), None);
+        assert_eq!(fit_aging(&[(1.0, -1.0), (2.0, -2.0)]), None);
+    }
 }

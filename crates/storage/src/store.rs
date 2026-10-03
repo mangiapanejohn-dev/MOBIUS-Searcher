@@ -525,6 +525,24 @@ impl Store {
                 sim.filter(|t| t.ok).map(|t| t.created.iter().map(|(_, l)| *l as i64).sum::<i64>()),
             ],
         )?;
+        if let (Some(s), Some(t)) = (&o.simulation, sim) {
+            let sent_ms = s.simulated_at.millis() - s.latency_ms as i64;
+            for (i, (leg, executed)) in o.route.legs.iter().zip(&t.leg_outputs).enumerate() {
+                tx.execute(
+                    "INSERT OR REPLACE INTO leg_aging(session_id, opportunity_id, leg, dexes, quoted, executed, age_ms)
+                     VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                    params![
+                        session,
+                        o.id.0 as i64,
+                        i as i64,
+                        leg.dex_labels().join("+"),
+                        leg.out_amount as i64,
+                        *executed as i64,
+                        (sent_ms - leg.quoted_at.millis()).max(0),
+                    ],
+                )?;
+            }
+        }
         Ok(())
     }
 

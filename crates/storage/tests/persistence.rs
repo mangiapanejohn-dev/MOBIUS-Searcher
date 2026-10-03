@@ -565,6 +565,21 @@ fn attribution_records_the_failed_guard_executed_outputs_and_created_accounts() 
     assert_eq!(r.created_accounts, vec![(created.to_string(), 1, 13_045_440)]);
     let text = render_report(&r);
     assert!(text.contains("PROFIT GUARD THAT FAILED") && text.contains("ACCOUNTS THE TRANSACTIONS CREATE"), "{text}");
+
+    // quote aging: every executed leg with its quote's age when the simulation
+    // was sent (simulated_at − latency − quoted_at): #1 1.8 s, #2 2.8 s
+    let legs: Vec<(String, i64)> = r.aging.iter().map(|a| (a.age.clone(), a.legs)).collect();
+    assert_eq!(
+        legs,
+        [("under 0.5 s", 0), ("0.5–1 s", 0), ("1–2 s", 1), ("2–4 s", 2), ("over 4 s", 0)]
+            .map(|(a, n)| (a.to_string(), n))
+    );
+    // #2: +647 on 10,796,000 and −14,437 on 100,003,099 → +0.60 bp and −1.44 bp
+    let (med, mean, short) = (r.aging[3].median_bps.unwrap(), r.aging[3].mean_bps.unwrap(), r.aging[3].below_quote);
+    assert!((med + 1.4437).abs() < 1e-3 && (mean + 0.4222).abs() < 1e-3 && short == 0.5, "{med} {mean} {short}");
+    let fit = r.aging_fit.unwrap();
+    assert_eq!((fit.legs, fit.left_out), (3, 0));
+    assert!(text.contains("QUOTE AGING") && text.contains("each second of age adds"), "{text}");
 }
 
 #[test]
