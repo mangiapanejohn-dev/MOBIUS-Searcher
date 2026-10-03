@@ -1,6 +1,7 @@
 //! Solana JSON-RPC client, slot WebSocket feed and chain state.
 
 pub mod accounts;
+pub mod amm;
 pub mod feed;
 pub mod hermes;
 pub mod hot;
