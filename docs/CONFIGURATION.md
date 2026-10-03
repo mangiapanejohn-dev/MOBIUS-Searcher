@@ -94,7 +94,7 @@ The Solana stack still uses the top-level sections below and moves under
 | `[venues.*]` | other markets (above) | `markets`, `watchlist`, `rest_url` |
 | `[network]` | proxy for every connection | `proxy` = `"auto"` (environment, else the macOS system proxy) \| `"none"` \| `"http://host:port"` |
 | `[storage]` | the recording database ([STORAGE.md](STORAGE.md)) | `retention_days`, `keep_trading_days`, `max_db_mb`, `prune_interval_min` |
-| `[research]` | `--research` measurements; `--research-liquidations` | `ladder_sizes_lamports`, `xchain_assets`, `lag_trigger_bps`, `lag_control_every_s`, `keep_awake`, `[[research.liquidations]]` (`venue`, `morpho`, `rpc_url`, `log_window`) |
+| `[research]` | `--research` measurements; `--research-liquidations` | `ladder_sizes_lamports`, `xchain_assets`, `lag_trigger_bps`, `lag_control_every_s`, `keep_awake`, `pool_sizes_lamports`, `pool_every_ms`, `[[research.liquidations]]` (`venue`, `morpho`, `rpc_url`, `log_window`) |
 | `[canary]` | `--canary`, the first real trade | `max_loss_lamports` (also the on-chain bound), `amount_lamports` |
 | `[ui]` | terminal UI | `glyphs`, `color`, `fps`, `mouse`, `max_graphs` |
 

@@ -20,6 +20,19 @@ before 1.0 a minor version may change configuration or behaviour.
   for its winner, gas as a share of the incentive, and what was left for a
   liquidator several blocks late. Signs and sends nothing; needs no key and
   no Jupiter budget.
+- **Pool math of our own** (`searcher_market::amm`): what a swap returns on
+  Orca Whirlpool, Raydium CLMM and Meteora DLMM, from the pool account and
+  the tick or bin arrays around the price. Written from the published
+  mathematics, and checked against what each pool program itself paid in
+  swaps simulated on mainnet at the same state (`scripts/amm_parity.py`,
+  `fixtures/amm`): Whirlpool and DLMM to the last unit (up to 150 SOL,
+  through 11 bins), Raydium to the last unit inside a tick range and within
+  6 parts in a billion across ticks.
+- **`--research-pools`**: once a second, the round trip between each two
+  watched pools at 0.1, 1 and 10 SOL, from the pools' accounts at one slot.
+  No quote API and no Jupiter budget: the gap between pools without our
+  latency in it, and how long a gap that would pay for a transaction lasts.
+  `--research-pools-report` prints every recorded run.
 - EVM JSON-RPC: logs, receipts, block headers and calls that keep a revert
   reason apart from a failed request.
 - **Quote aging** in `--report`: every simulated leg is recorded with its

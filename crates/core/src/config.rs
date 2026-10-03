@@ -998,6 +998,11 @@ pub struct ResearchConfig {
     /// `--research-liquidations`: lending markets whose past liquidations are
     /// read back from the chain.
     pub liquidations: Vec<LiquidationTarget>,
+    /// `--research-pools`: the round trip between each two pools of `[feeds]`
+    /// is worked out from their accounts for these input sizes …
+    pub pool_sizes_lamports: Vec<u64>,
+    /// … every this many milliseconds (one RPC request each time).
+    pub pool_every_ms: u64,
 }
 
 impl ResearchConfig {
@@ -1027,6 +1032,9 @@ impl ResearchConfig {
         }
         if self.lag_confirm_lamports == 0 {
             return Err("research.lag_confirm_lamports must be > 0".into());
+        }
+        if self.pool_sizes_lamports.contains(&0) || self.pool_every_ms < 400 {
+            return Err("research.pool_sizes_lamports must be > 0 and pool_every_ms ≥ 400 (a slot)".into());
         }
         for t in &self.liquidations {
             let hex = t.morpho.strip_prefix("0x").unwrap_or_default();
@@ -1143,6 +1151,8 @@ impl Default for ResearchConfig {
                 rpc_url: "https://base.gateway.tenderly.co".into(),
                 log_window: 1_000,
             }],
+            pool_sizes_lamports: vec![100_000_000, 1_000_000_000, 10_000_000_000],
+            pool_every_ms: 1_000,
         }
     }
 }

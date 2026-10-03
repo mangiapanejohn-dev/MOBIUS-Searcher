@@ -10,6 +10,7 @@
 //!   mobius-searcher --research [--duration N]   measurements only (research.sqlite)
 //!   mobius-searcher --research-report [RUN|latest|all]
 //!   mobius-searcher --research-liquidations [DAYS]   past lending liquidations, read from chain
+//!   mobius-searcher --research-pools [--duration N]  pool-to-pool round trips from the pools' accounts
 
 use mobius_searcher::{budget, canary, doctor, engine, envfile, migrate, research, setup};
 
@@ -93,6 +94,15 @@ struct Cli {
     /// available. Recorded in research.sqlite; signs and sends nothing.
     #[arg(long, value_name = "DAYS", num_args = 0..=1, default_missing_value = "30")]
     research_liquidations: Option<u32>,
+    /// Round trips between the watched pools, worked out from their own
+    /// accounts once a second (no quote API, no Jupiter budget): is there a
+    /// gap wider than the fees, and how long does it last. Recorded in
+    /// research.sqlite; stop with Ctrl-C or --duration N.
+    #[arg(long)]
+    research_pools: bool,
+    /// The report of every recorded --research-pools run.
+    #[arg(long)]
+    research_pools_report: bool,
     /// Price MARKET (e.g. WETH/USDC, SOL/USDT) on every enabled venue that lists it, then exit.
     #[arg(long, value_name = "MARKET")]
     quote: Option<String>,
@@ -279,6 +289,8 @@ fn main() -> Result<()> {
         && !cli.migrate_config
         && cli.research_report.is_none()
         && cli.research_liquidations.is_none()
+        && !cli.research_pools
+        && !cli.research_pools_report
         && !cli.list_sessions
         && !cli.prune
         && !cli.db_info
@@ -360,6 +372,20 @@ fn main() -> Result<()> {
     if cli.research {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
         return rt.block_on(research::run(cfg, cli.duration));
+    }
+    if cli.research_pools_report {
+        let store = searcher_storage::ResearchStore::open(&cfg.data_dir().join("research.sqlite"))?;
+        let r = research::pools::build(&store.pool_edges(&[])?);
+        if cli.json {
+            println!("{}", serde_json::to_string_pretty(&r)?);
+        } else {
+            print!("{}", research::pools::render(&r));
+        }
+        return Ok(());
+    }
+    if cli.research_pools {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        return rt.block_on(research::pools::run(cfg, cli.duration));
     }
     if let Some(days) = cli.research_liquidations {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;

@@ -57,6 +57,7 @@ or LIVE, and run the [canary](#canary-the-first-real-trade) once first.
 | `mobius-searcher --replay ID --snapshot 120x40 --out DIR` | render pages of a session to `.txt` / `.html` |
 | `mobius-searcher --research [--duration N]` | measurements only: size ladder, cross-chain spreads, DEX lag ([Research](#research)) |
 | `mobius-searcher --research-report [RUN\|latest\|all]` | what the research runs recorded, as whole distributions (`--json`) |
+| `mobius-searcher --research-pools [--duration N]` | round trips between the watched pools, worked out from the pools' own accounts ([Pools](#pools)); `--research-pools-report` prints every recorded run |
 | `mobius-searcher --research-liquidations [DAYS]` | past lending liquidations read back from chain: what each paid and how long it had been available ([Liquidations](#liquidations)) |
 | `mobius-searcher --canary` | one real, loss-bounded trade through the LIVE path, then a reconciliation ([Canary](#canary-the-first-real-trade)) |
 | `mobius-searcher --quote WETH/USDC --size 0.5` | price a market on every enabled venue that lists it |
@@ -165,6 +166,26 @@ The report prints whole distributions with the number of samples next to the
 number of positive ones, and the caveats next to the numbers: quotes are not
 fills, bridging and inventory moves between chains are not included, pool
 mids are not executable.
+
+### Pools
+
+```bash
+mobius-searcher --research-pools --duration 3600
+```
+
+Once a second, reads the watched pools (`[feeds]`: Orca Whirlpool, Raydium
+CLMM, Meteora DLMM for SOL/USDC) with the tick and bin arrays around their
+price, all at one slot, and works out what selling SOL on one and buying it
+back on another returns, for every ordered pair and each size in
+`research.pool_sizes_lamports`. The pool math is our own
+(`crates/market/src/amm`) and is checked against what the pool programs
+themselves pay in swaps simulated on mainnet.
+
+No quote API is involved, so this is the market without our latency in it:
+whether a gap wider than the two pools' fees ever opens, how wide, and for how
+many seconds it stays. It uses no Jupiter budget and can run next to a
+trading session. The report is printed when it stops (Ctrl-C or `--duration`);
+`--research-pools-report` prints all recorded runs together.
 
 ### Liquidations
 

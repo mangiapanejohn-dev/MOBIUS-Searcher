@@ -125,6 +125,16 @@ CREATE TABLE IF NOT EXISTS liq_events (
     probes INTEGER, err TEXT,
     PRIMARY KEY (venue, block, log_index)
 );
+-- Round trips between two pools, worked out from their accounts at one slot
+-- (no quote API): sell `size` of the base token on one pool, buy it back on
+-- the other. A row per new slot seen, pair and size.
+CREATE TABLE IF NOT EXISTS pool_edge (
+    run_id TEXT NOT NULL, ts INTEGER NOT NULL, slot INTEGER NOT NULL,
+    size INTEGER NOT NULL, sell_on TEXT NOT NULL, buy_on TEXT NOT NULL,
+    gross_bps REAL NOT NULL         -- (base back − base in) / base in, after both pools' fees
+);
+CREATE INDEX IF NOT EXISTS pool_edge_run ON pool_edge(run_id, size);
+
 -- Blocks first..next−1 have been searched for events.
 CREATE TABLE IF NOT EXISTS liq_scan (venue TEXT PRIMARY KEY, first INTEGER NOT NULL, next INTEGER NOT NULL);
 "#;
@@ -259,6 +269,18 @@ pub struct RunRow {
     pub jupiter_requests: i64,
     pub jupiter_errors: i64,
     pub jupiter_429: i64,
+}
+
+/// One round trip between two pools at one slot (`pool_edge`).
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct PoolEdge {
+    pub run: String,
+    pub ts: i64,
+    pub slot: u64,
+    pub size: u64,
+    pub sell_on: String,
+    pub buy_on: String,
+    pub gross_bps: f64,
 }
 
 /// One liquidation (`liq_events`). The fields after `bad_debt` are filled in
@@ -557,6 +579,38 @@ impl ResearchStore {
             out.extend(rows.collect::<Result<Vec<_>, _>>()?);
         }
         Ok(out)
+    }
+
+    /// The round trips of one snapshot, written together.
+    pub fn insert_pool_edges(&self, rows: &[PoolEdge]) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        for r in rows {
+            tx.execute(
+                "INSERT INTO pool_edge(run_id, ts, slot, size, sell_on, buy_on, gross_bps) VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![r.run, r.ts, r.slot as i64, r.size as i64, r.sell_on, r.buy_on, r.gross_bps],
+            )?;
+        }
+        Ok(tx.commit()?)
+    }
+
+    /// Round trips of the given runs (all runs when empty), in time order.
+    pub fn pool_edges(&self, runs: &[String]) -> Result<Vec<PoolEdge>, StoreError> {
+        let mut st = self.conn.prepare(
+            "SELECT run_id, ts, slot, size, sell_on, buy_on, gross_bps FROM pool_edge ORDER BY run_id, ts, rowid",
+        )?;
+        let rows = st.query_map([], |r| {
+            Ok(PoolEdge {
+                run: r.get(0)?,
+                ts: r.get(1)?,
+                slot: r.get::<_, i64>(2)? as u64,
+                size: r.get::<_, i64>(3)? as u64,
+                sell_on: r.get(4)?,
+                buy_on: r.get(5)?,
+                gross_bps: r.get(6)?,
+            })
+        })?;
+        let all: Vec<PoolEdge> = rows.collect::<Result<_, _>>()?;
+        Ok(all.into_iter().filter(|e| runs.is_empty() || runs.contains(&e.run)).collect())
     }
 
     /// Record newly found liquidations; ones already known are left as they are.
@@ -935,6 +989,19 @@ mod tests {
         assert_eq!(s.liq_events("base", 0).unwrap(), vec![done]);
         assert!(s.liq_events("base", 52_121_150).unwrap().is_empty());
         assert!(s.liq_events("arbitrum", 0).unwrap().is_empty());
+
+        let edge = PoolEdge {
+            run: "p1".into(),
+            ts: 5,
+            slot: 453_000_000,
+            size: 100_000_000,
+            sell_on: "Whirlpool".into(),
+            buy_on: "Raydium CLMM".into(),
+            gross_bps: -6.5,
+        };
+        s.insert_pool_edges(&[edge.clone(), PoolEdge { run: "p2".into(), ..edge.clone() }]).unwrap();
+        assert_eq!(s.pool_edges(&["p1".into()]).unwrap(), vec![edge]);
+        assert_eq!(s.pool_edges(&[]).unwrap().len(), 2);
 
         assert_eq!(s.liq_scan("base").unwrap(), None);
         s.set_liq_scan("base", 100, 200).unwrap();
