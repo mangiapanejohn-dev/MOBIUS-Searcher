@@ -770,24 +770,30 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
         t.on_bar(&plan, e, &bars, &other, bid, now_ms()).await;
         let said = std::mem::take(&mut t.said);
         journal(said)?;
-        let equity = state.account.cash + state.account.sol() * bid;
-        let row = (last.ts, last.open, last.high, last.low, last.close, last.volume);
-        store.record_lab_bar(
-            (&run, &e.name),
-            &row,
-            &[],
-            equity,
-            sol_before * last.close,
-            &serde_json::to_string(&state)?,
-        )?;
-        println!(
-            "{}  bar closed at {:.2} · the budget is worth {:.4} USD ({:+.1} %){}",
-            now(),
-            last.close,
-            equity,
-            (equity / live.budget_usd - 1.0) * 100.0,
-            if state.account.lots.is_empty() { "" } else { " · in SOL" }
-        );
+        if state.funded {
+            let equity = state.account.cash + state.account.sol() * bid;
+            let row = (last.ts, last.open, last.high, last.low, last.close, last.volume);
+            store.record_lab_bar(
+                (&run, &e.name),
+                &row,
+                &[],
+                equity,
+                sol_before * last.close,
+                &serde_json::to_string(&state)?,
+            )?;
+            println!(
+                "{}  bar closed at {:.2} · the budget is worth {:.4} USD ({:+.1} %){}",
+                now(),
+                last.close,
+                equity,
+                (equity / live.budget_usd - 1.0) * 100.0,
+                if state.account.lots.is_empty() { "" } else { " · in SOL" }
+            );
+        } else {
+            // an empty account is not a lost one: its history starts with the budget
+            save(&state, last.ts)?;
+            println!("{}  bar closed at {:.2} · the budget is not set aside yet", now(), last.close);
+        }
         let keep = warmup as usize + 8;
         if bars.len() > keep * 2 {
             bars.drain(..bars.len() - keep);
@@ -820,18 +826,26 @@ pub fn report(cfg: &Config, json: bool) -> Result<()> {
     for (id, _, manifest) in runs {
         let plan = parse(&manifest).with_context(|| format!("the rules of run {id}"))?;
         let plan = Plan { id: id.clone(), ..plan };
+        let real = id.starts_with("trade-");
         let mut all = Vec::new();
         let mut seen: Vec<Bar> = Vec::new();
+        let mut unfunded = false;
         for e in &plan.experiments {
-            let rows = store.lab_equity(&id, &e.name)?;
+            let mut rows = store.lab_equity(&id, &e.name)?;
             let acct = match store.lab_state(&id, &e.name)? {
                 // a run with real money keeps its account inside its state
-                Some((_, json)) => match serde_json::from_str::<trade::State>(&json) {
-                    Ok(state) if json.contains("\"account\"") => state.account,
-                    _ => serde_json::from_str(&json)?,
-                },
+                Some((_, json)) if real => {
+                    let state: trade::State = serde_json::from_str(&json)?;
+                    unfunded = !state.funded;
+                    state.account
+                }
+                Some((_, json)) => serde_json::from_str(&json)?,
                 None => Account::new(plan.capital),
             };
+            if real {
+                // bars from before the budget was set aside: the account was empty, not lost
+                rows.retain(|r| r.2 > 0.0);
+            }
             let points: Vec<Point> =
                 rows.iter().map(|r| Point { ts: r.0, close: r.1, equity: r.2, sol_value: r.3 }).collect();
             if points.len() > seen.len() {
@@ -843,15 +857,29 @@ pub fn report(cfg: &Config, json: bool) -> Result<()> {
             all.push(stats(&e.name, plan.capital, &plan.costs, &points, &acct));
         }
         if json {
-            out.push(serde_json::json!({ "run": id, "experiments": all }));
+            out.push(
+                serde_json::json!({ "run": id, "real_money": real, "budget_set_aside": !unfunded, "experiments": all }),
+            );
         } else {
-            let what = if id.starts_with("trade-") { "REAL MONEY" } else { "paper, live prices" };
-            let mut head = header(&plan, what, &seen);
-            // the hash in the header is the file's; a real run is filed under its own name
-            if id.starts_with("trade-") {
-                head = head.replace("costs ", "the costs below are the wallet's own · modelled costs ");
+            if unfunded {
+                println!(
+                    "LAB · REAL MONEY · {} {} · run {} · rule `{}`\n\
+                     the budget of {:.2} USD has not been set aside yet: no swap has landed and nothing was spent\n",
+                    plan.instrument,
+                    plan.bar,
+                    &id[..id.len().min(14)],
+                    plan.experiments.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", "),
+                    plan.capital
+                );
+            } else {
+                let what = if real { "REAL MONEY" } else { "paper, live prices" };
+                let mut head = header(&plan, what, &seen);
+                // the hash in the header is the file's; a real run is filed under its own name
+                if real {
+                    head = head.replace("costs ", "the costs below are the wallet's own · modelled costs ");
+                }
+                println!("{}", stats::render(&head, &all));
             }
-            println!("{}", stats::render(&head, &all));
             for (ts, line) in store.lab_journal(&id)? {
                 println!("  {} {}  {line}", date(ts), searcher_core::Ts(ts * 1000).hms());
             }
