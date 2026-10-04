@@ -32,7 +32,7 @@ use base64::Engine;
 use searcher_core::config::Config;
 use searcher_core::model::{DexFilter, Mode, RoutingMode, SlippageSpec};
 use searcher_core::{Address, address::well_known};
-use searcher_execution::assemble::{AssemblyParams, compose_single, reserialize};
+use searcher_execution::assemble::{AssembledTx, AssemblyParams, compose_single, reserialize};
 use searcher_execution::wallet::Wallet;
 use searcher_jito::{JitoClient, SendPermit};
 use searcher_jupiter::{ApiKey, BuildRequest, JupiterClient};
@@ -514,6 +514,14 @@ impl From<String> for No {
     }
 }
 
+/// Why a transaction was not sent.
+#[derive(Debug)]
+enum Unsent {
+    /// Its simulation as signed failed: the quote went stale, another may do.
+    Simulation(String),
+    Other(String),
+}
+
 fn mint(s: &str) -> Address {
     well_known::addr(s)
 }
@@ -679,28 +687,15 @@ impl Mainnet {
                 self.fee_reserve
             )));
         }
-        let mut tx =
+        let tx =
             compose_single(&[&built.instructions], &params(cu_limit, price)).map_err(|e| format!("assembling: {e}"))?;
-        // sending goes on until the blockhash expires: it must have a while left
-        let height = self.block_height().await?;
-        if height + 40 > leg.last_valid_block_height {
-            return Ok(Sent::NotSent(format!(
-                "the quote's blockhash is nearly spent (block {height} of {})",
-                leg.last_valid_block_height
-            )));
-        }
-        wallet.sign(&mut tx.tx).map_err(|e| format!("signing: {e}"))?;
-        let signature = tx.tx.signatures.first().map(|s| s.to_string()).unwrap_or_default();
-        let wire = reserialize(&tx.tx).map_err(|e| format!("serialising: {e}"))?;
-        let b64 = base64::engine::general_purpose::STANDARD.encode(wire);
-        // the exact bytes, as signed: any error and nothing is sent
-        let last = self.rpc.simulate_signed(&b64).await.map_err(|e| format!("final simulation unavailable: {e}"))?;
-        if let Some(err) = &last.err {
-            let why = format!("via {via}, as signed ({err}: {})", last.logs.last().cloned().unwrap_or_default());
-            return Err(No::Simulation { via: leg.dex_labels(), why });
-        }
-        let (fate, refused) =
-            deliver(self, &b64, &signature, leg.last_valid_block_height, Duration::from_secs(2)).await;
+        let (signature, fate, refused) = match self.sign_and_send(wallet, tx, leg.last_valid_block_height).await {
+            Ok(sent) => sent,
+            Err(Unsent::Simulation(why)) => {
+                return Err(No::Simulation { via: leg.dex_labels(), why: format!("via {via}, as signed ({why})") });
+            }
+            Err(Unsent::Other(why)) => return Ok(Sent::NotSent(why)),
+        };
         let fate = match fate {
             Fate::Confirmed => "confirmed".to_string(),
             Fate::Failed(err) => format!("it landed and failed ({err}): its fee is paid, nothing was swapped"),
@@ -710,6 +705,38 @@ impl Mainnet {
         let refused =
             if refused.is_empty() { String::new() } else { format!("; refused by {}", refused.join(" and ")) };
         Ok(Sent::Sent(format!("{note}; {fate}; signature {signature}{refused}")))
+    }
+
+    /// Sign, simulate the exact bytes as signed (any error and nothing is
+    /// sent), then send until it is confirmed or its blockhash has expired.
+    /// Returns the signature, what became of it, and who refused it.
+    async fn sign_and_send(
+        &self,
+        wallet: &Wallet,
+        mut tx: AssembledTx,
+        last_valid: u64,
+    ) -> Result<(String, Fate, Vec<String>), Unsent> {
+        // sending goes on until the blockhash expires: it must have a while left
+        let height = self.block_height().await.map_err(Unsent::Other)?;
+        if height + 40 > last_valid {
+            return Err(Unsent::Other(format!(
+                "the quote's blockhash is nearly spent (block {height} of {last_valid})"
+            )));
+        }
+        wallet.sign(&mut tx.tx).map_err(|e| Unsent::Other(format!("signing: {e}")))?;
+        let signature = tx.tx.signatures.first().map(|s| s.to_string()).unwrap_or_default();
+        let wire = reserialize(&tx.tx).map_err(|e| Unsent::Other(format!("serialising: {e}")))?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(wire);
+        let last = self
+            .rpc
+            .simulate_signed(&b64)
+            .await
+            .map_err(|e| Unsent::Other(format!("final simulation unavailable: {e}")))?;
+        if let Some(err) = &last.err {
+            return Err(Unsent::Simulation(format!("{err}: {}", last.logs.last().cloned().unwrap_or_default())));
+        }
+        let (fate, refused) = deliver(self, &b64, &signature, last_valid, Duration::from_secs(2)).await;
+        Ok((signature, fate, refused))
     }
 }
 
@@ -1112,6 +1139,101 @@ stop = 0.05
         println!("block height {height}; {newest}: {status:?}");
         assert!(matches!(status, Ok(Some(_))), "a fresh transaction is in a confirmed block: {status:?}");
         assert_eq!(chain.status("1111111111111111111111111111111111111111111111111111111111111111").await, Ok(None));
+    }
+
+    /// A local validator and test SOL only: the real sending against a real
+    /// node. A transaction is signed, sent, seen confirmed and paid for once;
+    /// sent again it is not paid for twice; one that fails on chain is told
+    /// apart; one that fails its simulation as signed is never sent.
+    /// `solana-test-validator --rpc-port 18899 --faucet-port 19900 --ledger /tmp/mobius-ledger`
+    /// `MOBIUS_TEST_VALIDATOR=http://127.0.0.1:18899 cargo test -p mobius-searcher --lib on_a_local_validator -- --ignored --nocapture`
+    #[tokio::test]
+    #[ignore]
+    async fn the_sending_lands_a_transaction_once_on_a_local_validator() {
+        let url = std::env::var("MOBIUS_TEST_VALIDATOR").expect("MOBIUS_TEST_VALIDATOR: a local validator's RPC URL");
+        assert!(url.contains("127.0.0.1") || url.contains("localhost"), "a local validator only: {url}");
+        let key = std::env::temp_dir().join(format!("mobius-trade-test-{}.json", std::process::id()));
+        let _ = std::fs::remove_file(&key);
+        searcher_execution::GeneratedWallet::new().write_new(&key).unwrap();
+        let mut cfg = Config::default();
+        (cfg.rpc.url, cfg.rpc.url_env) = (url, String::new());
+        cfg.execution.live_enabled = true;
+        (cfg.wallet.keypair_path, cfg.wallet.pubkey) = (Some(key.to_string_lossy().into()), None);
+        cfg.jito.block_engine_url = "http://127.0.0.1:1".into(); // nobody there: Jito refuses, the node takes it
+        let live = parse(FILE).unwrap().live.unwrap();
+        let chain = Mainnet::new(&cfg, &live, false).unwrap();
+        std::fs::remove_file(&key).unwrap();
+        let (_, wallet) = chain.signer.as_ref().unwrap();
+        let (me, other) = (wallet.pubkey(), searcher_execution::GeneratedWallet::new().pubkey());
+        let balance = || async { chain.rpc.get_balance(&me).await.unwrap() };
+
+        chain.rpc.call("requestAirdrop", json!([me.to_string(), 1_000_000_000u64])).await.unwrap();
+        for _ in 0..60 {
+            if balance().await > 0 {
+                break;
+            }
+            tokio::time::sleep(Duration::from_millis(500)).await;
+        }
+        assert_eq!(balance().await, 1_000_000_000, "test SOL from the validator's faucet");
+
+        // a transfer of `lamports` to `other`, assembled as a swap is: limit, price, instructions
+        let (rpc, none) = (&chain.rpc, &HashSet::new());
+        let transfer = |lamports: u64| async move {
+            let (v, _) = rpc.call("getLatestBlockhash", json!([{"commitment": "confirmed"}])).await.unwrap();
+            let hash: Address = v["value"]["blockhash"].as_str().unwrap().parse().unwrap();
+            let params = AssemblyParams {
+                payer: me,
+                cu_limit: 10_000,
+                cu_price_micro: 100_000, // 1,000 lamports of priority fee
+                tip: Some((other, lamports)),
+                dont_front: None,
+                existing_atas: none,
+                blockhash: hash.0,
+            };
+            (compose_single(&[], &params).unwrap(), v["value"]["lastValidBlockHeight"].as_u64().unwrap())
+        };
+        const FEE: u64 = 5_000 + 1_000;
+
+        // 1. the way a swap goes: signed, simulated as signed, sent, confirmed
+        let (tx, last_valid) = transfer(1_000_000).await;
+        let (signature, fate, refused) = chain.sign_and_send(wallet, tx, last_valid).await.unwrap();
+        println!("1. {signature}: {fate:?}; refused by {refused:?}");
+        assert_eq!(fate, Fate::Confirmed);
+        assert!(refused.len() == 1 && refused[0].starts_with("Jito"), "only Jito, which is not there: {refused:?}");
+        assert_eq!(balance().await, 1_000_000_000 - 1_000_000 - FEE);
+        assert_eq!(chain.rpc.get_balance(&other).await.unwrap(), 1_000_000);
+
+        // 2. the same signed bytes handed over again and again land once
+        let (mut tx, last_valid) = transfer(1_000_000).await;
+        wallet.sign(&mut tx.tx).unwrap();
+        let signature = tx.tx.signatures[0].to_string();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(reserialize(&tx.tx).unwrap());
+        let every = Duration::from_millis(500);
+        for round in 0..3 {
+            let (fate, _) = deliver(&chain, &b64, &signature, last_valid, every).await;
+            assert_eq!(fate, Fate::Confirmed, "round {round}");
+        }
+        println!("2. {signature}: delivered three times, paid for once");
+        assert_eq!(balance().await, 1_000_000_000 - 2 * (1_000_000 + FEE));
+        assert_eq!(chain.rpc.get_balance(&other).await.unwrap(), 2_000_000);
+
+        // 3. one that fails its simulation as signed (more than the wallet holds) is never sent
+        let (tx, last_valid) = transfer(5_000_000_000).await;
+        let unsent = chain.sign_and_send(wallet, tx, last_valid).await.unwrap_err();
+        println!("3. not sent: {unsent:?}");
+        assert!(matches!(unsent, Unsent::Simulation(_)), "{unsent:?}");
+        assert_eq!(balance().await, 1_000_000_000 - 2 * (1_000_000 + FEE), "nothing was paid");
+
+        // 4. sent all the same, it lands and fails: the fee is paid, nothing moves, and it is told apart
+        let (mut tx, last_valid) = transfer(5_000_000_000).await;
+        wallet.sign(&mut tx.tx).unwrap();
+        let signature = tx.tx.signatures[0].to_string();
+        let b64 = base64::engine::general_purpose::STANDARD.encode(reserialize(&tx.tx).unwrap());
+        let (fate, _) = deliver(&chain, &b64, &signature, last_valid, every).await;
+        println!("4. {signature}: {fate:?}");
+        assert!(matches!(&fate, Fate::Failed(err) if err.contains("InstructionError")), "{fate:?}");
+        assert_eq!(balance().await, 1_000_000_000 - 2 * (1_000_000 + FEE) - FEE);
+        assert_eq!(chain.rpc.get_balance(&other).await.unwrap(), 2_000_000);
     }
 
     /// A wire that answers each look from a script; the last answer repeats.
