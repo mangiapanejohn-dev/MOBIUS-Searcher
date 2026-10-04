@@ -2,10 +2,17 @@
 //!
 //! The rule decides as it does on paper, at the close of each bar; what
 //! differs is the fill: a real SOL/USDC swap, built by Jupiter, assembled,
-//! simulated, signed, simulated again as signed, sent once as a Jito bundle
-//! (the engine's own send path, [`execute_live`]) and then **read back from
-//! the wallet's balances**. The account only ever records what the wallet
-//! shows: a swap that was sent and did not land changes nothing.
+//! simulated, signed, simulated again as signed, sent as an ordinary
+//! transaction (to the RPC and, through Jito, straight to the leader) again
+//! and again until it is confirmed or its blockhash has expired, and then
+//! **read back from the wallet's balances**. The account only ever records
+//! what the wallet shows: a swap that was sent and did not land changes
+//! nothing.
+//!
+//! Not a bundle: one sent once lives only until the next Jito leader, and on
+//! 2026-10-04 the first two this runner sent were both dropped. A swap with
+//! a minimum output needs no bundle; what it risks by landing and failing is
+//! its fee.
 //!
 //! What keeps it small:
 //! * a budget in USD, set aside as USDC once at the start, never topped up;
@@ -25,18 +32,17 @@ use base64::Engine;
 use searcher_core::config::Config;
 use searcher_core::model::{DexFilter, Mode, RoutingMode, SlippageSpec};
 use searcher_core::{Address, address::well_known};
-use searcher_execution::assemble::{AssemblyParams, compose_single};
-use searcher_execution::live::{BundleConfirmation, LiveBackend, LiveOutcome, LiveParams, execute_live};
+use searcher_execution::assemble::{AssemblyParams, compose_single, reserialize};
 use searcher_execution::wallet::Wallet;
-use searcher_jito::{InflightStatus, JitoClient, SendPermit};
+use searcher_jito::{JitoClient, SendPermit};
 use searcher_jupiter::{ApiKey, BuildRequest, JupiterClient};
-use searcher_market::{RpcClient, SimulateOutcome};
+use searcher_market::RpcClient;
 use searcher_telemetry::{LimiterConfig, Telemetry};
 use serde::{Deserialize, Serialize};
+use serde_json::{Value, json};
 use std::collections::HashSet;
 use std::future::Future;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicU64, Ordering};
 use std::time::Duration;
 
 /// A budget above this is refused: this is for trying a rule, not for size.
@@ -45,11 +51,14 @@ pub const MAX_BUDGET_USD: f64 = 25.0;
 pub const MIN_BUDGET_USD: f64 = 1.0;
 /// The words the file must carry.
 pub const ACK: &str = "ALLOW LOSS";
-/// Ceiling of a swap's priority fee, lamports: a bundle is ordered by its tip.
-const MAX_PRIORITY_FEE: u64 = 1_000;
-/// Ceiling of a swap's tip, lamports, whatever the config allows the
-/// arbitrage: at a few USD a larger tip is a visible share of the trade.
-const MAX_TIP: u64 = 10_000;
+/// A swap's priority fee, lamports: what Jupiter suggests, between these. It
+/// is what gets an ordinary transaction into a block.
+const MIN_PRIORITY_FEE: u64 = 2_000;
+const MAX_PRIORITY_FEE: u64 = 7_000;
+/// Ceiling of a swap's tip, lamports (Jito forwards nothing under 1,000),
+/// whatever the config allows the arbitrage: at a few USD a larger one is a
+/// visible share of the trade.
+const MAX_TIP: u64 = 4_000;
 /// Lamports of a sold lot kept back to pay for the sale (signature, priority
 /// fee, tip): a sale never spends SOL the run did not buy.
 const SELL_HOLDBACK: u64 = 5_000 + MAX_PRIORITY_FEE + MAX_TIP;
@@ -413,15 +422,77 @@ pub struct Mainnet {
     signer: Option<(SendPermit, Wallet)>,
     slippage_bps: u16,
     cu_price_percentile: String,
-    blockhash_slots_to_expiry: u16,
     max_tip: u64,
     max_priority_fee: u64,
     fee_reserve: u64,
-    live: LiveParams,
-    height: AtomicU64,
 }
 
-struct Backend<'a>(&'a Mainnet);
+/// Where a signed transaction is handed over and its fate is read (the tests have their own).
+trait Wire {
+    /// Hand it over, by every way there is. Returns the ways that refused it (none: all took it).
+    fn send(&self, tx_b64: &str) -> impl Future<Output = Vec<String>> + Send;
+    /// `None`: not in a confirmed block (yet). `Some(None)`: confirmed.
+    /// `Some(Some(err))`: confirmed, and it failed.
+    fn status(&self, signature: &str) -> impl Future<Output = Result<Option<Option<String>>, String>> + Send;
+    fn block_height(&self) -> impl Future<Output = Result<u64, String>> + Send;
+}
+
+/// What became of a transaction that was handed over.
+#[derive(Debug, PartialEq)]
+enum Fate {
+    Confirmed,
+    /// In a block, and it failed there: its fee is paid, nothing else happened.
+    Failed(String),
+    /// Its blockhash expired: it can no longer land.
+    Expired,
+    /// Neither seen nor known to be expired when the looking stopped.
+    Unknown,
+}
+
+/// Looks at a transaction before giving up on knowing (two minutes at two seconds).
+const ROUNDS: usize = 60;
+
+/// Hand a signed transaction over again and again until it is confirmed or
+/// its blockhash has expired. Its signature lets it land at most once, however
+/// often and by whichever way it is sent. Also returns who refused it first.
+async fn deliver<W: Wire>(
+    wire: &W,
+    tx_b64: &str,
+    signature: &str,
+    last_valid: u64,
+    every: Duration,
+) -> (Fate, Vec<String>) {
+    let mut refused = Vec::new();
+    let seen = |s: Result<Option<Option<String>>, String>| match s {
+        Ok(Some(None)) => Some(Fate::Confirmed),
+        Ok(Some(Some(err))) => Some(Fate::Failed(err)),
+        _ => None,
+    };
+    for _ in 0..ROUNDS {
+        // a refusal is not the end: the next round sends again, and the status says what happened
+        let no = wire.send(tx_b64).await;
+        if refused.is_empty() {
+            refused = no;
+        }
+        tokio::time::sleep(every).await;
+        if let Some(fate) = seen(wire.status(signature).await) {
+            return (fate, refused);
+        }
+        if wire.block_height().await.is_ok_and(|h| h > last_valid) {
+            // it may have landed in the last block it could
+            return (seen(wire.status(signature).await).unwrap_or(Fate::Expired), refused);
+        }
+    }
+    (Fate::Unknown, refused)
+}
+
+/// One entry of `getSignatureStatuses`, as [`Wire::status`] gives it.
+fn confirmed(status: &Value) -> Option<Option<String>> {
+    let level = status.get("confirmationStatus")?.as_str()?;
+    // `processed` may still be dropped with its fork
+    (level == "confirmed" || level == "finalized")
+        .then(|| status.get("err").filter(|e| !e.is_null()).map(Value::to_string))
+}
 
 /// Quotes asked for one swap before giving up on it for this bar.
 const QUOTES: usize = 3;
@@ -440,29 +511,6 @@ enum No {
 impl From<String> for No {
     fn from(why: String) -> No {
         No::Other(why)
-    }
-}
-
-impl LiveBackend for Backend<'_> {
-    async fn simulate_signed(&self, tx_b64: String) -> Result<SimulateOutcome, String> {
-        self.0.rpc.simulate_signed(&tx_b64).await.map_err(|e| e.to_string())
-    }
-    async fn send_bundle(&self, permit: &SendPermit, txs: Vec<String>) -> Result<String, String> {
-        self.0.jito.send_bundle(permit, &txs).await.map_err(|e| e.to_string())
-    }
-    async fn inflight(&self, id: String) -> Result<Option<InflightStatus>, String> {
-        let v = self.0.jito.inflight_statuses(&[id]).await.map_err(|e| e.to_string())?;
-        Ok(v.into_iter().next().map(|(_, s)| s))
-    }
-    async fn balance(&self, a: Address) -> Result<u64, String> {
-        self.0.rpc.get_balance(&a).await.map_err(|e| e.to_string())
-    }
-    fn block_height(&self) -> Option<u64> {
-        Some(self.0.height.load(Ordering::Relaxed)).filter(|h| *h > 0)
-    }
-    async fn bundle_status(&self, id: String) -> Result<BundleConfirmation, String> {
-        let v = self.0.jito.bundle_statuses(&[id]).await.map_err(|e| e.to_string())?;
-        Ok(v.into_iter().next().map(|s| (s.confirmation_status, s.err)))
     }
 }
 
@@ -522,17 +570,9 @@ impl Mainnet {
             signer,
             slippage_bps: live.slippage_bps,
             cu_price_percentile: cfg.jupiter.compute_unit_price_percentile.clone(),
-            blockhash_slots_to_expiry: cfg.jupiter.blockhash_slots_to_expiry,
             max_tip: cfg.risk.max_jito_tip_lamports,
             max_priority_fee: cfg.risk.max_priority_fee_lamports.min(MAX_PRIORITY_FEE),
             fee_reserve: cfg.risk.min_wallet_sol_for_fees_lamports,
-            live: LiveParams {
-                min_wallet_lamports: cfg.risk.min_wallet_sol_for_fees_lamports,
-                blockhash_margin: 10,
-                poll: Duration::from_millis(cfg.execution.bundle_status_poll_ms),
-                timeout: Duration::from_millis(cfg.execution.bundle_timeout_ms),
-            },
-            height: AtomicU64::new(0),
         })
     }
 
@@ -552,12 +592,13 @@ impl Mainnet {
             dex_filter: if without.is_empty() { DexFilter::Any } else { DexFilter::Exclude(without.to_vec()) },
             cu_price_percentile: self.cu_price_percentile.clone(),
             max_accounts: Some(30),
-            blockhash_slots_to_expiry: self.blockhash_slots_to_expiry,
+            // the longest a blockhash lives: the sending goes on until it expires
+            blockhash_slots_to_expiry: 150,
             for_jito_bundle: true,
         };
         let built = self.jupiter.build(&req, 0).await.map_err(|e| format!("Jupiter: {e}"))?;
         let leg = &built.leg;
-        // the least the block engine takes, or the going rate, never above the configured ceiling
+        // the least Jito forwards, or the going rate, never above the ceiling
         let floor = self.jito.tip_floor().await.map(|f| f.p50).unwrap_or(1_000);
         let tip = floor.clamp(1_000, self.max_tip.clamp(1_000, MAX_TIP));
         let tip_account: Address =
@@ -603,10 +644,11 @@ impl Mainnet {
         }
         let units = sim.units_consumed.ok_or_else(|| "the simulation gave no compute units".to_string())?;
         let cu_limit = ((units as f64 * 1.2) as u32 + 10_000).min(searcher_core::units::MAX_COMPUTE_UNITS_PER_TX);
-        // the priority fee is the limit times the price: keep it under the configured ceiling
-        let price = price.min(self.max_priority_fee.saturating_mul(1_000_000) / u64::from(cu_limit.max(1)));
+        // the priority fee is the limit times the price: what Jupiter suggests, within the floor and the ceiling
+        let per_cu = |lamports: u64| lamports.saturating_mul(1_000_000) / u64::from(cu_limit.max(1));
+        let price = price.max(per_cu(MIN_PRIORITY_FEE)).min(per_cu(self.max_priority_fee));
         let note = format!(
-            "{} {} for at least {} {} (quoted {}) via {via}, {} CU, tip {} lamports",
+            "{} {} for at least {} {} (quoted {}) via {via}, {} CU, priority fee {} + tip {} lamports",
             if sell_sol { "sell" } else { "spend" },
             if sell_sol {
                 format!("{:.6} SOL", amount as f64 / 1e9)
@@ -625,35 +667,89 @@ impl Mainnet {
                 format!("{:.6}", leg.out_amount as f64 / 1e9)
             },
             units,
+            price * u64::from(cu_limit) / 1_000_000,
             tip
         );
-        let Some((permit, wallet)) = &self.signer else {
+        let Some((_, wallet)) = &self.signer else {
             return Ok(Sent::Simulated { out: leg.out_amount, lamports_after: after, note });
         };
-        let tx =
+        if before < self.fee_reserve {
+            return Ok(Sent::NotSent(format!(
+                "the wallet holds {before} lamports, under the fee reserve of {}",
+                self.fee_reserve
+            )));
+        }
+        let mut tx =
             compose_single(&[&built.instructions], &params(cu_limit, price)).map_err(|e| format!("assembling: {e}"))?;
+        // sending goes on until the blockhash expires: it must have a while left
+        let height = self.block_height().await?;
+        if height + 40 > leg.last_valid_block_height {
+            return Ok(Sent::NotSent(format!(
+                "the quote's blockhash is nearly spent (block {height} of {})",
+                leg.last_valid_block_height
+            )));
+        }
+        wallet.sign(&mut tx.tx).map_err(|e| format!("signing: {e}"))?;
+        let signature = tx.tx.signatures.first().map(|s| s.to_string()).unwrap_or_default();
+        let wire = reserialize(&tx.tx).map_err(|e| format!("serialising: {e}"))?;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(wire);
+        // the exact bytes, as signed: any error and nothing is sent
+        let last = self.rpc.simulate_signed(&b64).await.map_err(|e| format!("final simulation unavailable: {e}"))?;
+        if let Some(err) = &last.err {
+            let why = format!("via {via}, as signed ({err}: {})", last.logs.last().cloned().unwrap_or_default());
+            return Err(No::Simulation { via: leg.dex_labels(), why });
+        }
+        let (fate, refused) =
+            deliver(self, &b64, &signature, leg.last_valid_block_height, Duration::from_secs(2)).await;
+        let fate = match fate {
+            Fate::Confirmed => "confirmed".to_string(),
+            Fate::Failed(err) => format!("it landed and failed ({err}): its fee is paid, nothing was swapped"),
+            Fate::Expired => "it expired without landing".to_string(),
+            Fate::Unknown => "nothing was heard of it in two minutes".to_string(),
+        };
+        let refused =
+            if refused.is_empty() { String::new() } else { format!("; refused by {}", refused.join(" and ")) };
+        Ok(Sent::Sent(format!("{note}; {fate}; signature {signature}{refused}")))
+    }
+}
+
+impl Wire for Mainnet {
+    /// To the RPC and, through Jito, straight to the leader: the same
+    /// signature, so at most one of them lands it.
+    async fn send(&self, tx_b64: &str) -> Vec<String> {
+        let Some((permit, _)) = &self.signer else { return vec!["everyone (no signer)".into()] };
+        // simulated as signed a moment ago, and sent again by `deliver`: no preflight, no retries of the node's own
+        let opts = json!({"encoding": "base64", "skipPreflight": true, "maxRetries": 0});
+        let (jito, rpc) = tokio::join!(
+            self.jito.send_transaction(permit, tx_b64),
+            self.rpc.call("sendTransaction", json!([tx_b64, opts]))
+        );
+        let mut refused = Vec::new();
+        if let Err(e) = jito {
+            refused.push(format!("Jito ({e})"));
+        }
+        if let Err(e) = rpc {
+            refused.push(format!("the RPC ({e})"));
+        }
+        refused
+    }
+
+    async fn status(&self, signature: &str) -> Result<Option<Option<String>>, String> {
+        let (v, _) = self
+            .rpc
+            .call("getSignatureStatuses", json!([[signature], {"searchTransactionHistory": false}]))
+            .await
+            .map_err(|e| e.to_string())?;
+        Ok(v.get("value").and_then(|a| a.get(0)).and_then(confirmed))
+    }
+
+    async fn block_height(&self) -> Result<u64, String> {
         let (h, _) = self
             .rpc
-            .call("getBlockHeight", serde_json::json!([{"commitment": "processed"}]))
+            .call("getBlockHeight", json!([{"commitment": "confirmed"}]))
             .await
             .map_err(|e| format!("block height: {e}"))?;
-        self.height.store(h.as_u64().ok_or_else(|| "block height".to_string())?, Ordering::Relaxed);
-        Ok(
-            match execute_live(&Backend(self), permit, wallet, vec![tx], leg.last_valid_block_height, &self.live).await
-            {
-                LiveOutcome::NotSent(why) => Sent::NotSent(why),
-                LiveOutcome::Landed { signatures, slot, .. } => Sent::Sent(format!(
-                    "{note}; landed in slot {slot}, signature {}",
-                    signatures.first().cloned().unwrap_or_default()
-                )),
-                LiveOutcome::Failed { bundle_id, reason, .. } => {
-                    Sent::Sent(format!("{note}; bundle {bundle_id} failed: {reason}"))
-                }
-                LiveOutcome::TimedOut { bundle_id } => {
-                    Sent::Sent(format!("{note}; bundle {bundle_id}: no answer in time"))
-                }
-            },
-        )
+        h.as_u64().ok_or_else(|| "block height".to_string())
     }
 }
 
@@ -1005,6 +1101,103 @@ stop = 0.05
             Ok(other) => panic!("{other:?}"),
             Err(No::Simulation { why, .. }) | Err(No::Other(why)) => panic!("{why}"),
         }
+        // the two reads the sending relies on, against the real node
+        let height = chain.block_height().await.unwrap();
+        assert!(height > 300_000_000, "{height}");
+        // a transaction of the last seconds (Jupiter's program is in one every block): confirmed, failed or not
+        let jupiter = "JUP6LkbZbjS1jKKwapdHNy74zcZ3tLUZoi5QNyVTaV4";
+        let (v, _) = chain.rpc.call("getSignaturesForAddress", json!([jupiter, {"limit": 1}])).await.unwrap();
+        let newest = v[0]["signature"].as_str().unwrap().to_string();
+        let status = chain.status(&newest).await;
+        println!("block height {height}; {newest}: {status:?}");
+        assert!(matches!(status, Ok(Some(_))), "a fresh transaction is in a confirmed block: {status:?}");
+        assert_eq!(chain.status("1111111111111111111111111111111111111111111111111111111111111111").await, Ok(None));
+    }
+
+    /// A wire that answers each look from a script; the last answer repeats.
+    struct Script {
+        sends: Mutex<usize>,
+        refuses: bool,
+        statuses: Mutex<Vec<Result<Option<Option<String>>, String>>>,
+        heights: Mutex<Vec<u64>>,
+    }
+
+    impl Script {
+        fn new(statuses: Vec<Result<Option<Option<String>>, String>>, heights: Vec<u64>) -> Script {
+            Script {
+                sends: Mutex::new(0),
+                refuses: false,
+                statuses: Mutex::new(statuses),
+                heights: Mutex::new(heights),
+            }
+        }
+    }
+
+    fn next<T: Clone>(script: &Mutex<Vec<T>>) -> T {
+        let mut s = script.lock();
+        if s.len() > 1 { s.remove(0) } else { s[0].clone() }
+    }
+
+    impl Wire for Script {
+        async fn send(&self, _tx: &str) -> Vec<String> {
+            *self.sends.lock() += 1;
+            if self.refuses { vec!["Jito (429)".into()] } else { Vec::new() }
+        }
+        async fn status(&self, _signature: &str) -> Result<Option<Option<String>>, String> {
+            next(&self.statuses)
+        }
+        async fn block_height(&self) -> Result<u64, String> {
+            Ok(next(&self.heights))
+        }
+    }
+
+    async fn fate(wire: &Script) -> Fate {
+        deliver(wire, "tx", "sig", 200, Duration::ZERO).await.0
+    }
+
+    #[tokio::test]
+    async fn a_transaction_is_sent_again_until_it_is_confirmed() {
+        let wire = Script::new(vec![Ok(None), Ok(None), Ok(Some(None))], vec![100]);
+        assert_eq!(fate(&wire).await, Fate::Confirmed);
+        assert_eq!(*wire.sends.lock(), 3, "once a round until it shows");
+        // a node that refuses it, or a status that cannot be read, does not end the trying
+        let mut wire = Script::new(vec![Err("timeout".into()), Ok(None), Ok(Some(None))], vec![100]);
+        wire.refuses = true;
+        let (fate, refused) = deliver(&wire, "tx", "sig", 200, Duration::ZERO).await;
+        assert_eq!((fate, refused), (Fate::Confirmed, vec!["Jito (429)".to_string()]), "and who refused is said");
+    }
+
+    #[tokio::test]
+    async fn one_that_lands_and_fails_is_told_apart() {
+        let wire = Script::new(vec![Ok(Some(Some("slippage".into())))], vec![100]);
+        assert_eq!(fate(&wire).await, Fate::Failed("slippage".into()));
+        assert_eq!(*wire.sends.lock(), 1);
+    }
+
+    #[tokio::test]
+    async fn past_its_blockhash_it_is_given_up_after_one_last_look() {
+        let wire = Script::new(vec![Ok(None)], vec![150, 200, 201]);
+        assert_eq!(fate(&wire).await, Fate::Expired);
+        assert_eq!(*wire.sends.lock(), 3, "still valid at block 200, its last");
+        // it landed in the last block it could: the last look sees it
+        let wire = Script::new(vec![Ok(None), Ok(Some(None))], vec![201]);
+        assert_eq!(fate(&wire).await, Fate::Confirmed);
+        // neither seen nor expired (the height cannot be trusted): it stops, and says it does not know
+        let wire = Script::new(vec![Ok(None)], vec![100]);
+        assert_eq!(fate(&wire).await, Fate::Unknown);
+        assert_eq!(*wire.sends.lock(), ROUNDS);
+    }
+
+    #[test]
+    fn only_a_confirmed_status_counts() {
+        let ok = json!({"slot": 9, "confirmations": null, "err": null, "confirmationStatus": "finalized"});
+        assert_eq!(confirmed(&ok), Some(None));
+        let failed =
+            json!({"slot": 9, "err": {"InstructionError": [5, {"Custom": 6001}]}, "confirmationStatus": "confirmed"});
+        assert!(confirmed(&failed).unwrap().unwrap().contains("6001"));
+        let early = json!({"slot": 9, "err": null, "confirmationStatus": "processed"});
+        assert_eq!(confirmed(&early), None, "a processed block may still be dropped");
+        assert_eq!(confirmed(&Value::Null), None, "not seen");
     }
 
     #[tokio::test]

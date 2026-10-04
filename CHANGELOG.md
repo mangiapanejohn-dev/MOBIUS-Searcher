@@ -29,11 +29,12 @@ before 1.0 a minor version may change configuration or behaviour.
   [docs/MODEL_2026-10.md](docs/MODEL_2026-10.md).
 - **One lab rule with real money** (`--trade FILE`, `--dry-run`, `--close`):
   the rule decides at each bar's close as it does on paper; the fill is a
-  real SOL/USDC swap through Jupiter, sent once as a Jito bundle by the
-  engine's own send path and then read back from the wallet's balances. A
+  real SOL/USDC swap through Jupiter, sent as an ordinary transaction (to
+  the RPC and through Jito to the leader, again until it is confirmed or its
+  blockhash has expired) and then read back from the wallet's balances. A
   budget of 1 to 25 USD is set aside as USDC once; at `stop_total_loss` down
-  everything is sold and the run ends for good; the tip is capped at 10,000
-  lamports and the priority fee at 1,000. It can lose money and nothing on
+  everything is sold and the run ends for good; a swap pays at most 16,000
+  lamports in fees. It can lose money and nothing on
   chain prevents it: the file must carry `acknowledge = "ALLOW LOSS"` and the
   config `execution.live_enabled = true`. On paper, at 2 USD and with these
   costs, the shipped example lost 45 % over the year to 2026-10-04. See

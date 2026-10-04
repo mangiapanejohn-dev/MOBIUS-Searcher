@@ -189,6 +189,15 @@ impl JitoClient {
         v.as_str().map(str::to_string).ok_or_else(|| JitoError::Decode("sendBundle result".into()))
     }
 
+    /// One signed transaction, forwarded to the leader as an ordinary
+    /// transaction (the block engine's proxy of `sendTransaction`; it must
+    /// carry a tip of 1,000 lamports or more). Unlike a bundle it can land
+    /// and fail. Returns its signature.
+    pub async fn send_transaction(&self, _permit: &SendPermit, tx_base64: &str) -> Result<String, JitoError> {
+        let v = self.rpc("/api/v1/transactions", "sendTransaction", json!([tx_base64, {"encoding": "base64"}])).await?;
+        v.as_str().map(str::to_string).ok_or_else(|| JitoError::Decode("sendTransaction result".into()))
+    }
+
     pub async fn inflight_statuses(&self, ids: &[String]) -> Result<Vec<(String, InflightStatus)>, JitoError> {
         let v = self.rpc("/api/v1/getInflightBundleStatuses", "getInflightBundleStatuses", json!([ids])).await?;
         Ok(parse_inflight(&v))

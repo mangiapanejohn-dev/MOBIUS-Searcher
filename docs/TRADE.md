@@ -67,13 +67,18 @@ with a new budget; close the old one first.
    otherwise the rule decides as it does on paper, and its sells, then its
    buys, are sent.
 3. **A swap** is quoted and built by Jupiter (without your API key, so it
-   does not use a running session's budget), assembled with a Jito tip,
-   simulated, signed, simulated again as signed, and sent once as a bundle:
-   the same send path as the arbitrage. A quote that fails in simulation
-   (some routes do not hold what they quote) is asked for again without that
-   route's DEXes, three quotes at most; the journal names the routes that
-   failed. Nothing is sent if all three fail, or if in the simulation a buy
-   does not arrive in the wallet as SOL in the amount quoted.
+   does not use a running session's budget), assembled with a priority fee
+   and a small Jito tip, simulated, signed, and simulated again as signed. A
+   quote that fails in simulation (some routes do not hold what they quote)
+   is asked for again without that route's DEXes, three quotes at most; the
+   journal names the routes that failed. Nothing is sent if all three fail,
+   or if in the simulation a buy does not arrive in the wallet as SOL in the
+   amount quoted.
+   It is then sent as an ordinary transaction, to your RPC and through Jito
+   straight to the leader, again every two seconds until it is confirmed or
+   its blockhash has expired (about a minute). The signature is the same
+   every time, so it lands at most once. The journal has the signature and
+   what became of it: confirmed, landed and failed, or expired.
 4. **The account is what the wallet shows.** After a send the wallet's SOL
    and USDC are read; the difference is the fill, every fee inside. A swap
    that did not land changes nothing, and is given up only two minutes after
@@ -87,11 +92,15 @@ runs at a time; a second is refused.
 
 ## What a swap costs
 
-Signature 5,000 lamports, priority fee at most 1,000, tip at most 10,000
-(the going rate, capped): at most 16,000 lamports, about 0.002 USD, whatever
-the size. On a 2 USD trade that is about 10 bp a side, plus about 1 bp lost
-to the route. A sale keeps 16,000 lamports of its lot back to pay for
-itself.
+Signature 5,000 lamports, priority fee 2,000 to 7,000 (what Jupiter
+suggests, within those), tip 1,000 to 4,000 (the going rate, capped): at most
+16,000 lamports, about 0.002 USD, whatever the size. On a 2 USD trade that is
+up to 10 bp a side, plus about 1 bp lost to the route. A sale keeps 16,000
+lamports of its lot back to pay for itself.
+
+A swap that lands and fails (the price moved past `slippage_bps` before it
+was included) swaps nothing and still pays its signature and priority fee,
+from the wallet.
 
 On paper, with these costs, at 2 USD, over the year to 2026-10-04, `dip-3d`
 returned −45.3 % (holding SOL: −46.8 %) in 107 trades; the costs alone were
@@ -105,9 +114,12 @@ have ended it.
   included. What it holds then stays held.
 - **Act between bars.** The stop is looked at when a bar closes. A fall
   inside a bar is seen at its end; the loss can be larger than the stop says.
-- **Make a swap land.** With the tip capped, a bundle may not be included.
-  The rule's order is then sent again only if the rule still wants it at the
-  next bar; the stop's sale is sent again every bar until it lands.
+- **Make a swap land.** It is sent for about a minute; in a crowded minute
+  it may still expire. The rule's order is then sent again only if the rule
+  still wants it at the next bar; the stop's sale is sent again every bar
+  until it lands.
+- **Hide a swap.** An ordinary transaction can be seen before it lands. What
+  anyone can take from it is bounded by `slippage_bps`.
 - **Tell its swaps from another program's in the same seconds.** It reads
   the wallet before and after. A session trading the same wallet at the same
   moment would blur both readings (and the session would count this run's
@@ -119,9 +131,14 @@ have ended it.
 
 When a run ends its USDC stays in the wallet as USDC.
 
-As of 2026-10-04 both directions of the swap were built and simulated on
-mainnet (the buy arrives as SOL in the wallet, the quote less the signature
-and the tip); no swap of this runner had been sent yet.
+As of 2026-10-04: both directions of the swap were built and simulated on
+mainnet (the buy arrives as SOL in the wallet, the quote less the fees). The
+first two swaps this runner sent went as Jito bundles and neither landed (a
+bundle sent once lives only until the next Jito leader; the wallet was
+unchanged, nothing was lost), which is why it now sends ordinary
+transactions. The re-sending and the reading of a transaction's status are
+tested, the status against the real node; a swap sent this way had not yet
+been confirmed when this was written.
 
 ## Stopping and going on
 
