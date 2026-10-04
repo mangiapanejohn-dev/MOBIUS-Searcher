@@ -5,6 +5,14 @@ before 1.0 a minor version may change configuration or behaviour.
 
 ## Unreleased
 
+### Added
+
+- **`scripts/live_tracker.py`**: follows the database of a running session,
+  read-only, and copies every table into a dataset file that retention never
+  prunes, with OKX's best bid and ask once a second beside it (the engine
+  does not record them) and a status line a minute. For keeping real
+  sessions to learn from; see [docs/STORAGE.md](docs/STORAGE.md).
+
 ### Fixed
 
 - **`--doctor` no longer warns about OKX on the shipped configuration.** OKX

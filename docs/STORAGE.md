@@ -52,6 +52,34 @@ section and the `--prune` / `--db-info` flags map onto them.
 Files created before incremental vacuum existed stop growing (freed pages are
 reused) but only shrink after a one-off `VACUUM` (`--prune` does it).
 
+## Keeping everything: the dataset
+
+Retention is right for a database the bot writes for months, and wrong for
+data you want to learn from later. `scripts/live_tracker.py` follows the
+database while a session runs and copies every table, as rows appear, into a
+file that nothing prunes (`data/live-dataset.sqlite` by default, same tables
+and columns):
+
+```bash
+python3 scripts/live_tracker.py            # until stopped; --once for one pass
+```
+
+- It only reads: the live file is opened read-only, in short queries (a
+  reader does not block the writer in WAL), and nothing is sent to Solana,
+  Jupiter or Jito. It can be started and stopped while a session runs.
+- It adds what the engine does not record: OKX's best bid and ask for
+  `SOL-USDC`, once a second, in `okx_bbo` (`--okx INST`, `--no-okx`).
+- Once a minute it prints where the newest session stands: opportunities and
+  the best edge of a fully quoted route, simulations, executions, trades,
+  wallet.
+- The event log arrives as the engine's own blocks (`event_blocks`, deflated
+  JSON lines) plus the events not yet packed (`events`); together they hold
+  every sequence number once.
+
+`python3 scripts/test_live_tracker.py` runs it against a database that
+behaves like the engine's (rows replaced under their key, events packed and
+deleted, rowids taken again after a prune).
+
 ## Sizes to expect
 
 Measured before this design: ~1.4 MB/min on a steady PAPER/LIVE run, and a
