@@ -7,6 +7,17 @@ before 1.0 a minor version may change configuration or behaviour.
 
 ### Added
 
+- **The lab** (`--lab FILE`, `--lab-backtest FILE [--days N]`, `--lab-report`):
+  rules that hold a position, tried on paper. Four kinds of rule (reversal
+  after a down bar, buying a dip under an average, a grid, a breakout) are
+  written in a rules file (`config/lab.toml`), run over past candles or on
+  live prices bar by bar with a paper account, and reported in full: return,
+  deepest fall, the share held in SOL and what holding that share alone
+  returned, what the rule added beyond it with its uncertainty, every trade's
+  average, costs that grow as the trade shrinks, every month. Nothing is
+  signed or sent and no Jupiter request is made; it can run beside a session.
+  On one year of SOL none of the shipped rules made money. See
+  [docs/LAB.md](docs/LAB.md).
 - **`scripts/live_tracker.py`**: follows the database of a running session,
   read-only, and copies every table into a dataset file that retention never
   prunes, with OKX's best bid and ask once a second beside it (the engine

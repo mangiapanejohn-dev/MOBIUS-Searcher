@@ -1,0 +1,58 @@
+# The lab: rules that hold a position, tried on paper. Nothing here is ever
+# signed or sent.
+#
+#   mobius-searcher --lab-backtest config/lab.toml             the last 365 days of candles
+#   mobius-searcher --lab-backtest config/lab.toml --days 90
+#   mobius-searcher --lab config/lab.toml                      live prices, bar by bar, until Ctrl-C
+#   mobius-searcher --lab-report                               what the live runs did so far
+#
+# A live run is named after this file's content: change anything and it is a
+# new run, the old one stays as it was. That is on purpose: a rule tuned
+# after seeing its results is a different rule.
+#
+# Read docs/LAB.md before believing a number: on one year of SOL none of
+# these rules beat simply holding the same share of SOL.
+
+instrument = "SOL-USDT"   # OKX spot instrument: candles for the signals, best bid/ask for live fills
+                          # (SOL-USDC trades too rarely there for short bars to move)
+bar = "15m"               # 1m 5m 15m 30m 1h 4h
+capital_usd = 23.0        # the paper account, starting in USDC; every rule may use all of it
+
+[costs]                   # measured on mainnet at 0.1 SOL on 2026-10-04 (docs/LAB.md)
+route_bps = 1.15          # lost to the route, each side, basis points of the trade
+fixed_fee_lamports = 6366 # network fee, priority fee and tip of one transaction
+
+[stops]                   # shares of the capital; leave out for none
+# daily_loss = 0.01       # down this much since the UTC day began: nothing is bought until the next day
+# total_loss = 0.02       # down this much since the start: nothing is bought again
+
+# In for the bar after a bar that closed down, out after one that did not.
+[[experiment]]
+name = "reversal"
+rule = "sign-reversal"
+
+# In when the close is k deviations under its average of `window` bars
+# (288 bars of 15 minutes = 3 days); out back at the average, or 5 % under the buy.
+[[experiment]]
+name = "dip-3d"
+rule = "dip"
+window = 288
+k = 2.0
+exit_z = 0.0
+stop = 0.05
+
+# A tenth of the capital bought each time the close is 1 % under the last
+# trade; each tenth sold 1 % above its own buy.
+[[experiment]]
+name = "grid-1pct"
+rule = "grid"
+step = 0.01
+lots = 10
+
+# In on a close above the high of the 96 bars before (a day); out on a close
+# under the low of the 48 bars before.
+[[experiment]]
+name = "breakout-1d"
+rule = "breakout"
+entry = 96
+exit = 48

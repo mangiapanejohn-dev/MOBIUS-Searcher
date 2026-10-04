@@ -12,7 +12,7 @@
 //!   mobius-searcher --research-liquidations [DAYS]   past lending liquidations, read from chain
 //!   mobius-searcher --research-pools [--duration N]  pool-to-pool round trips from the pools' accounts
 
-use mobius_searcher::{budget, canary, doctor, engine, envfile, migrate, research, setup};
+use mobius_searcher::{budget, canary, doctor, engine, envfile, lab, migrate, research, setup};
 
 use anyhow::{Context, Result, bail};
 use clap::Parser;
@@ -103,6 +103,21 @@ struct Cli {
     /// The report of every recorded --research-pools run.
     #[arg(long)]
     research_pools_report: bool,
+    /// The lab: run the rules of FILE (see config/lab.toml) on live prices
+    /// with a paper account, bar by bar. Nothing is signed or sent and no
+    /// Jupiter request is made, so it can run beside a session. Stop with
+    /// Ctrl-C or --duration N; the same FILE goes on where it stopped.
+    #[arg(long, value_name = "FILE")]
+    lab: Option<PathBuf>,
+    /// The lab: the rules of FILE over the last --days days of candles.
+    #[arg(long, value_name = "FILE")]
+    lab_backtest: Option<PathBuf>,
+    /// Days of history for --lab-backtest.
+    #[arg(long, default_value_t = 365)]
+    days: u32,
+    /// What every --lab run did so far.
+    #[arg(long)]
+    lab_report: bool,
     /// Price MARKET (e.g. WETH/USDC, SOL/USDT) on every enabled venue that lists it, then exit.
     #[arg(long, value_name = "MARKET")]
     quote: Option<String>,
@@ -291,6 +306,9 @@ fn main() -> Result<()> {
         && cli.research_liquidations.is_none()
         && !cli.research_pools
         && !cli.research_pools_report
+        && cli.lab.is_none()
+        && cli.lab_backtest.is_none()
+        && !cli.lab_report
         && !cli.list_sessions
         && !cli.prune
         && !cli.db_info
@@ -391,6 +409,17 @@ fn main() -> Result<()> {
     if let Some(days) = cli.research_liquidations {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
         return rt.block_on(research::liquidation::run(&cfg, days.max(1), cli.json));
+    }
+    if cli.lab_report {
+        return lab::report(&cfg, cli.json);
+    }
+    if let Some(file) = &cli.lab_backtest {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        return rt.block_on(lab::backtest(&cfg, file, cli.days.max(1), cli.json));
+    }
+    if let Some(file) = &cli.lab {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        return rt.block_on(lab::run(&cfg, file, cli.duration));
     }
     let db_path = cli.db.clone().unwrap_or_else(|| cfg.data_dir().join("mobius.sqlite"));
 

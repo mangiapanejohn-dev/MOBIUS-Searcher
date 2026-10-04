@@ -6,6 +6,7 @@ pub mod doctor;
 pub mod engine;
 pub mod envfile;
 pub mod i18n;
+pub mod lab;
 pub mod migrate;
 pub mod quote;
 pub mod research;

@@ -148,6 +148,33 @@ CREATE INDEX IF NOT EXISTS pool_snap_run ON pool_snap(run_id, pool, ts);
 
 -- Blocks first..next−1 have been searched for events.
 CREATE TABLE IF NOT EXISTS liq_scan (venue TEXT PRIMARY KEY, first INTEGER NOT NULL, next INTEGER NOT NULL);
+
+-- The lab (`--lab`): candles its rules read, and what each paper experiment did.
+CREATE TABLE IF NOT EXISTS lab_bars (
+    inst TEXT NOT NULL, bar TEXT NOT NULL, ts INTEGER NOT NULL,     -- ts: the bar's start, ms
+    open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
+    PRIMARY KEY (inst, bar, ts)
+);
+-- One run per rules file as it was (id = hash of the file): a changed file is a new run.
+CREATE TABLE IF NOT EXISTS lab_runs (
+    id TEXT PRIMARY KEY, started_at INTEGER NOT NULL, version TEXT NOT NULL, manifest TEXT NOT NULL
+);
+-- Where an experiment stands (its account, as JSON) after the bar `bar_ts`.
+CREATE TABLE IF NOT EXISTS lab_state (
+    run_id TEXT NOT NULL, experiment TEXT NOT NULL, bar_ts INTEGER NOT NULL, json TEXT NOT NULL,
+    PRIMARY KEY (run_id, experiment)
+);
+CREATE TABLE IF NOT EXISTS lab_fills (
+    run_id TEXT NOT NULL, experiment TEXT NOT NULL, ts INTEGER NOT NULL, bar_ts INTEGER NOT NULL,
+    side TEXT NOT NULL, price REAL NOT NULL,        -- the side of the book it was filled at
+    bid REAL NOT NULL, ask REAL NOT NULL,           -- the book when the signal was acted on
+    usd REAL NOT NULL, sol REAL NOT NULL, cost_usd REAL NOT NULL
+);
+CREATE TABLE IF NOT EXISTS lab_equity (
+    run_id TEXT NOT NULL, experiment TEXT NOT NULL, bar_ts INTEGER NOT NULL,
+    close REAL NOT NULL, equity REAL NOT NULL, sol_value REAL NOT NULL,
+    PRIMARY KEY (run_id, experiment, bar_ts)
+);
 "#;
 
 pub struct ResearchStore {
@@ -341,7 +368,120 @@ pub struct LiqEvent {
     pub err: Option<String>,
 }
 
+/// A candle: start (ms), open, high, low, close.
+pub type LabBar = (i64, f64, f64, f64, f64);
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct LabFill {
+    pub ts: i64,
+    pub bar_ts: i64,
+    pub buy: bool,
+    pub price: f64,
+    pub bid: f64,
+    pub ask: f64,
+    pub usd: f64,
+    pub sol: f64,
+    pub cost_usd: f64,
+}
+
 impl ResearchStore {
+    pub fn insert_lab_bars(&self, inst: &str, bar: &str, bars: &[LabBar]) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        for b in bars {
+            tx.execute(
+                "INSERT OR REPLACE INTO lab_bars VALUES (?1,?2,?3,?4,?5,?6,?7)",
+                params![inst, bar, b.0, b.1, b.2, b.3, b.4],
+            )?;
+        }
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// Candles from `from` (ms) on, oldest first.
+    pub fn lab_bars(&self, inst: &str, bar: &str, from: i64) -> Result<Vec<LabBar>, StoreError> {
+        let mut st = self.conn.prepare(
+            "SELECT ts, open, high, low, close FROM lab_bars WHERE inst = ?1 AND bar = ?2 AND ts >= ?3 ORDER BY ts",
+        )?;
+        let rows =
+            st.query_map(params![inst, bar, from], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Registers the run unless it exists (a rules file keeps its run).
+    pub fn begin_lab_run(&self, id: &str, started_at: i64, version: &str, manifest: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR IGNORE INTO lab_runs VALUES (?1,?2,?3,?4)",
+            params![id, started_at, version, manifest],
+        )?;
+        Ok(())
+    }
+
+    /// Every lab run: id, start (ms), the rules file as it was.
+    pub fn lab_runs(&self) -> Result<Vec<(String, i64, String)>, StoreError> {
+        let mut st = self.conn.prepare("SELECT id, started_at, manifest FROM lab_runs ORDER BY started_at")?;
+        let rows = st.query_map([], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// The last bar an experiment has seen and its account then.
+    pub fn lab_state(&self, run: &str, experiment: &str) -> Result<Option<(i64, String)>, StoreError> {
+        Ok(self
+            .conn
+            .query_row(
+                "SELECT bar_ts, json FROM lab_state WHERE run_id = ?1 AND experiment = ?2",
+                params![run, experiment],
+                |r| Ok((r.get(0)?, r.get(1)?)),
+            )
+            .optional()?)
+    }
+
+    /// One bar of one experiment (`key`: run and experiment), whole or not at all: its fills, its equity, its account.
+    pub fn record_lab_bar(
+        &self,
+        (run, experiment): (&str, &str),
+        bar: &LabBar,
+        fills: &[LabFill],
+        equity: f64,
+        sol_value: f64,
+        state: &str,
+    ) -> Result<(), StoreError> {
+        let tx = self.conn.unchecked_transaction()?;
+        for f in fills {
+            tx.execute(
+                "INSERT INTO lab_fills VALUES (?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11)",
+                params![
+                    run,
+                    experiment,
+                    f.ts,
+                    f.bar_ts,
+                    if f.buy { "buy" } else { "sell" },
+                    f.price,
+                    f.bid,
+                    f.ask,
+                    f.usd,
+                    f.sol,
+                    f.cost_usd
+                ],
+            )?;
+        }
+        tx.execute(
+            "INSERT OR REPLACE INTO lab_equity VALUES (?1,?2,?3,?4,?5,?6)",
+            params![run, experiment, bar.0, bar.4, equity, sol_value],
+        )?;
+        tx.execute("INSERT OR REPLACE INTO lab_state VALUES (?1,?2,?3,?4)", params![run, experiment, bar.0, state])?;
+        tx.commit()?;
+        Ok(())
+    }
+
+    /// An experiment's equity at each bar it saw: bar start (ms), close, equity, value held in SOL.
+    pub fn lab_equity(&self, run: &str, experiment: &str) -> Result<Vec<(i64, f64, f64, f64)>, StoreError> {
+        let mut st = self.conn.prepare(
+            "SELECT bar_ts, close, equity, sol_value FROM lab_equity WHERE run_id = ?1 AND experiment = ?2 ORDER BY bar_ts",
+        )?;
+        let rows = st.query_map(params![run, experiment], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
     pub fn open(path: &Path) -> Result<Self, StoreError> {
         if let Some(dir) = path.parent() {
             let _ = std::fs::create_dir_all(dir);
@@ -1093,5 +1233,53 @@ mod tests {
         s.set_liq_scan("base", 100, 200).unwrap();
         s.set_liq_scan("base", 50, 300).unwrap();
         assert_eq!(s.liq_scan("base").unwrap(), Some((50, 300)));
+    }
+
+    #[test]
+    fn a_lab_run_keeps_its_first_rules_and_each_bar_whole() {
+        let s = ResearchStore::open_in_memory().unwrap();
+        s.insert_lab_bars("SOL-USDT", "15m", &[(900_000, 1.0, 2.0, 0.5, 1.5), (0, 1.0, 1.0, 1.0, 1.0)]).unwrap();
+        s.insert_lab_bars("SOL-USDT", "15m", &[(900_000, 1.0, 2.0, 0.5, 1.6)]).unwrap();
+        assert_eq!(
+            s.lab_bars("SOL-USDT", "15m", 0).unwrap(),
+            vec![(0, 1.0, 1.0, 1.0, 1.0), (900_000, 1.0, 2.0, 0.5, 1.6)]
+        );
+        assert_eq!(s.lab_bars("SOL-USDT", "15m", 1).unwrap().len(), 1);
+        assert!(s.lab_bars("SOL-USDT", "1m", 0).unwrap().is_empty());
+
+        s.begin_lab_run("abc", 10, "0.3.0", "first").unwrap();
+        s.begin_lab_run("abc", 99, "0.3.0", "changed").unwrap();
+        assert_eq!(s.lab_runs().unwrap(), vec![("abc".to_string(), 10, "first".to_string())]);
+
+        assert_eq!(s.lab_state("abc", "grid").unwrap(), None);
+        let fill = LabFill {
+            ts: 5,
+            bar_ts: 0,
+            buy: true,
+            price: 1.0,
+            bid: 0.99,
+            ask: 1.0,
+            usd: 23.0,
+            sol: 22.9,
+            cost_usd: 0.003,
+        };
+        s.record_lab_bar(
+            ("abc", "grid"),
+            &(0, 1.0, 1.0, 1.0, 1.0),
+            std::slice::from_ref(&fill),
+            23.0,
+            0.0,
+            "{\"a\":1}",
+        )
+        .unwrap();
+        s.record_lab_bar(("abc", "grid"), &(900_000, 1.0, 2.0, 0.5, 1.6), &[], 36.6, 36.6, "{\"a\":2}").unwrap();
+        // the same bar again (a restart): its row is replaced, not doubled
+        s.record_lab_bar(("abc", "grid"), &(900_000, 1.0, 2.0, 0.5, 1.6), &[], 36.7, 36.7, "{\"a\":3}").unwrap();
+        assert_eq!(s.lab_state("abc", "grid").unwrap(), Some((900_000, "{\"a\":3}".to_string())));
+        assert_eq!(s.lab_equity("abc", "grid").unwrap(), vec![(0, 1.0, 23.0, 0.0), (900_000, 1.6, 36.7, 36.7)]);
+        assert!(s.lab_equity("abc", "other").unwrap().is_empty());
+        let fills: i64 =
+            s.conn().query_row("SELECT count(*) FROM lab_fills WHERE side = 'buy'", [], |r| r.get(0)).unwrap();
+        assert_eq!(fills, 1);
     }
 }
