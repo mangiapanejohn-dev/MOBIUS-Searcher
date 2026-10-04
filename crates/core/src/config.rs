@@ -197,7 +197,7 @@ impl VenueConfig {
             kind: VenueKind::Okx,
             enabled: true,
             rest_url: "https://www.okx.com".into(),
-            markets: v(&["SOL-USDT", "SOL-USDC", "SOL-USD"]),
+            markets: v(&["SOL-USDT", "SOL-USDC"]),
             watchlist: v(&["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "JUP-USDT", "USDC-USDT"]),
             api_key_env: "OKX_API_KEY".into(),
             secret_env: "OKX_API_SECRET".into(),

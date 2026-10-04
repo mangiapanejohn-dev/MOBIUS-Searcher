@@ -37,7 +37,7 @@ data_dir = ""
 kind = "okx"
 enabled = true
 rest_url = "https://www.okx.com"     # regional hosts (e.g. my.okx.com) work too
-markets = ["SOL-USDT", "SOL-USDC", "SOL-USD"]
+markets = ["SOL-USDT", "SOL-USDC"]
 watchlist = ["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "JUP-USDT", "USDC-USDT"]
 # Only needed once OKX trading lands; public market data needs no key.
 api_key_env = "OKX_API_KEY"

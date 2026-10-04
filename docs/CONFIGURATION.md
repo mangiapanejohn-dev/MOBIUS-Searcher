@@ -55,7 +55,7 @@ connector `kind`, endpoints, credential variable names and instruments.
 kind = "okx"
 enabled = true
 rest_url = "https://www.okx.com"      # regional hosts (e.g. my.okx.com) work too
-markets = ["SOL-USDT", "SOL-USDC", "SOL-USD"]   # the Markets page cycles these (p)
+markets = ["SOL-USDT", "SOL-USDC"]   # the Markets page cycles these (p)
 watchlist = ["BTC-USDT", "ETH-USDT", "SOL-USDT"] # the ticker strip
 trading = false                       # market data only
 ```

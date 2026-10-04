@@ -29,7 +29,7 @@ impl Default for OkxSource {
         let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect();
         Self {
             rest_url: "https://www.okx.com".into(),
-            markets: v(&["SOL-USDT", "SOL-USDC", "SOL-USD"]),
+            markets: v(&["SOL-USDT", "SOL-USDC"]),
             watchlist: v(&["BTC-USDT", "ETH-USDT", "SOL-USDT", "XRP-USDT", "JUP-USDT", "USDC-USDT"]),
         }
     }
