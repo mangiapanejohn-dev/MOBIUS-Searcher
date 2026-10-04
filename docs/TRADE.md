@@ -47,6 +47,7 @@ and a `[live]` section ([config/trade.toml](../config/trade.toml)):
 | `stop_total_loss` | Share of the budget. When the budget is worth this much less, everything held is sold and the run ends for good. |
 | `slippage_bps` | A swap filling more than this under its quote fails on chain instead (default 30, 1 to 300). |
 | `acknowledge` | Must be `ALLOW LOSS`. |
+| `dexes` | Optional: the only DEXes a swap may route through, by Jupiter's names, e.g. `["Whirlpool", "Meteora DLMM", "Raydium CLMM"]`. Left out: any. |
 
 `[stops] daily_loss` works as on paper (nothing is bought for the rest of the
 day). `[stops] total_loss` is refused: the total stop is the one in `[live]`.
@@ -71,12 +72,14 @@ with a new budget; close the old one first.
    and a small Jito tip, simulated, signed, and simulated again as signed. A
    quote that fails in simulation (some routes do not hold what they quote)
    is asked for again without that route's DEXes, three quotes at most; the
-   journal names the routes that failed. Nothing is sent if all three fail,
-   or if in the simulation a buy does not arrive in the wallet as SOL in the
-   amount quoted.
-   It is then sent as an ordinary transaction, to your RPC and through Jito
-   straight to the leader, again every two seconds until it is confirmed or
-   its blockhash has expired (about a minute). The signature is the same
+   journal names the routes that failed. The same goes for a route that in
+   the simulation would cost the wallet anything beyond what it swaps and
+   its fees. Nothing is sent if all three fail, or if in the simulation a buy
+   does not arrive in the wallet as SOL in the amount quoted.
+   It is then given a blockhash of your own RPC node and sent as an ordinary
+   transaction, to that node and through Jito straight to the leader, again
+   every two seconds until it is confirmed or its blockhash has expired
+   (about a minute). The signature is the same
    every time, so it lands at most once. The journal has the signature and
    what became of it: confirmed, landed and failed, or expired.
 4. **The account is what the wallet shows.** After a send the wallet's SOL

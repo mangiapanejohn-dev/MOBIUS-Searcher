@@ -23,6 +23,7 @@ budget_usd = 2.0          # set aside as USDC once, never topped up (1 to 25)
 stop_total_loss = 0.5     # the budget worth half of this: everything is sold, the run ends for good
 slippage_bps = 30         # a swap that would fill more than 0.30 % under its quote fails on chain instead
 acknowledge = ""          # write ALLOW LOSS between the quotes yourself; nothing is sent without it
+# dexes = ["Whirlpool", "Meteora DLMM", "Raydium CLMM"]  # only these DEXes (Jupiter's names); left out: any
 
 # In when the close is 2 deviations under its average of 288 bars (3 days);
 # out back at the average, or 5 % under the buy.

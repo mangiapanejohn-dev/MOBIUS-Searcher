@@ -34,7 +34,8 @@ before 1.0 a minor version may change configuration or behaviour.
   blockhash has expired) and then read back from the wallet's balances. A
   budget of 1 to 25 USD is set aside as USDC once; at `stop_total_loss` down
   everything is sold and the run ends for good; a swap pays at most 16,000
-  lamports in fees. It can lose money and nothing on
+  lamports in fees, and is not sent if in the simulation it would cost the
+  wallet anything else. It can lose money and nothing on
   chain prevents it: the file must carry `acknowledge = "ALLOW LOSS"` and the
   config `execution.live_enabled = true`. On paper, at 2 USD and with these
   costs, the shipped example lost 45 % over the year to 2026-10-04. See

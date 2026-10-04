@@ -64,6 +64,8 @@ const MAX_TIP: u64 = 4_000;
 const SELL_HOLDBACK: u64 = 5_000 + MAX_PRIORITY_FEE + MAX_TIP;
 /// A swap sent this long ago, ms, can no longer land: its blockhash lives about a minute.
 pub const SETTLED_AFTER_MS: i64 = 120_000;
+/// Rent of a token account, lamports: what opening one costs the wallet.
+const TOKEN_ACCOUNT_RENT: u64 = 2_039_280;
 /// SOL the wallet must keep beyond its fee reserve when the budget is set
 /// aside: the rent of a USDC account it may have to open, and fees.
 const FUND_HEADROOM: u64 = 3_000_000;
@@ -81,6 +83,9 @@ pub struct Live {
     /// Must be `ALLOW LOSS`.
     #[serde(default)]
     pub acknowledge: String,
+    /// The only DEXes a swap may route through, by Jupiter's names. Empty: any.
+    #[serde(default)]
+    pub dexes: Vec<String>,
 }
 
 fn default_slippage() -> u16 {
@@ -425,6 +430,7 @@ pub struct Mainnet {
     max_tip: u64,
     max_priority_fee: u64,
     fee_reserve: u64,
+    dexes: Vec<String>,
 }
 
 /// Where a signed transaction is handed over and its fate is read (the tests have their own).
@@ -484,6 +490,31 @@ async fn deliver<W: Wire>(
         }
     }
     (Fate::Unknown, refused)
+}
+
+/// The DEXes a quote may use: the ones the file allows (any, when it names
+/// none) without the ones whose route just failed. `None`: none is left.
+fn routes(allowed: &[String], without: &[String]) -> Option<DexFilter> {
+    if allowed.is_empty() {
+        return Some(if without.is_empty() { DexFilter::Any } else { DexFilter::Exclude(without.to_vec()) });
+    }
+    let left: Vec<String> = allowed.iter().filter(|d| !without.contains(d)).cloned().collect();
+    (!left.is_empty()).then_some(DexFilter::Only(left))
+}
+
+/// Lamports a simulated swap takes from the wallet beyond what it swaps and
+/// its fees: none, unless it opens a token account at the wallet's expense
+/// (its rent is about a quarter of a dollar, on a swap of two). Jupiter's
+/// routes through a third token were seen not to (2026-10-04); this is the
+/// check that it stays so. For a buy it is what is missing even from the
+/// least the route promised, so only a shortfall larger than the slippage
+/// shows.
+fn beyond_fees(sell_sol: bool, amount: u64, min_out: u64, fee: u64, (before, after): (u64, u64)) -> u64 {
+    if sell_sol {
+        before.saturating_sub(after).saturating_sub(amount + fee)
+    } else {
+        min_out.saturating_sub(after.saturating_sub(before) + fee)
+    }
 }
 
 /// One entry of `getSignatureStatuses`, as [`Wire::status`] gives it.
@@ -581,6 +612,7 @@ impl Mainnet {
             max_tip: cfg.risk.max_jito_tip_lamports,
             max_priority_fee: cfg.risk.max_priority_fee_lamports.min(MAX_PRIORITY_FEE),
             fee_reserve: cfg.risk.min_wallet_sol_for_fees_lamports,
+            dexes: live.dexes.clone(),
         })
     }
 
@@ -597,7 +629,8 @@ impl Mainnet {
             taker: self.taker,
             slippage: SlippageSpec::Fixed(self.slippage_bps),
             mode: RoutingMode::Normal,
-            dex_filter: if without.is_empty() { DexFilter::Any } else { DexFilter::Exclude(without.to_vec()) },
+            dex_filter: routes(&self.dexes, without)
+                .ok_or_else(|| "every DEX the file allows has failed in simulation".to_string())?,
             cu_price_percentile: self.cu_price_percentile.clone(),
             max_accounts: Some(30),
             // the longest a blockhash lives: the sending goes on until it expires
@@ -612,19 +645,22 @@ impl Mainnet {
         let tip_account: Address =
             searcher_jito::KNOWN_TIP_ACCOUNTS[0].parse().map_err(|_| "tip account".to_string())?;
         let none = HashSet::new();
-        let params = |cu_limit: u32, cu_price: u64| AssemblyParams {
+        let params = |cu_limit: u32, cu_price: u64, blockhash: [u8; 32]| AssemblyParams {
             payer: self.taker,
             cu_limit,
             cu_price_micro: cu_price,
             tip: Some((tip_account, tip)),
             dont_front: None,
             existing_atas: &none,
-            blockhash: built.instructions.blockhash,
+            blockhash,
         };
         let price = leg.cu_price_micro.unwrap_or(0);
         // without a priority fee: at the largest limit it would not be the one paid
-        let probe = compose_single(&[&built.instructions], &params(searcher_core::units::MAX_COMPUTE_UNITS_PER_TX, 0))
-            .map_err(|e| format!("assembling: {e}"))?;
+        let probe = compose_single(
+            &[&built.instructions],
+            &params(searcher_core::units::MAX_COMPUTE_UNITS_PER_TX, 0, built.instructions.blockhash),
+        )
+        .map_err(|e| format!("assembling: {e}"))?;
         let b64 = base64::engine::general_purpose::STANDARD.encode(&probe.wire);
         let before =
             self.rpc.get_balance(&self.taker).await.map_err(|e| format!("the wallet could not be read: {e}"))?;
@@ -649,6 +685,15 @@ impl Mainnet {
                     leg.out_amount
                 )));
             }
+        }
+        // the swap may cost the wallet what it swaps and its fees, nothing else: a route that
+        // would is asked for again without its DEXes. The one account a wallet may have to
+        // open is its first for USDC.
+        let extra = beyond_fees(sell_sol, amount, leg.min_out, 5_000 + tip, (before, after));
+        if extra > 0 && !(sell_sol && extra <= TOKEN_ACCOUNT_RENT && !self.holds_a_usdc_account().await?) {
+            let why =
+                format!("via {via} (it would cost the wallet {extra} lamports beyond what it swaps and its fees)");
+            return Err(No::Simulation { via: leg.dex_labels(), why });
         }
         let units = sim.units_consumed.ok_or_else(|| "the simulation gave no compute units".to_string())?;
         let cu_limit = ((units as f64 * 1.2) as u32 + 10_000).min(searcher_core::units::MAX_COMPUTE_UNITS_PER_TX);
@@ -687,9 +732,12 @@ impl Mainnet {
                 self.fee_reserve
             )));
         }
-        let tx =
-            compose_single(&[&built.instructions], &params(cu_limit, price)).map_err(|e| format!("assembling: {e}"))?;
-        let (signature, fate, refused) = match self.sign_and_send(wallet, tx, leg.last_valid_block_height).await {
+        // a blockhash of the node it is simulated and sent through: the one Jupiter gives
+        // is one its own node knows, and ours may not have it yet
+        let (blockhash, last_valid) = self.latest_blockhash().await?;
+        let tx = compose_single(&[&built.instructions], &params(cu_limit, price, blockhash))
+            .map_err(|e| format!("assembling: {e}"))?;
+        let (signature, fate, refused) = match self.sign_and_send(wallet, tx, last_valid).await {
             Ok(sent) => sent,
             Err(Unsent::Simulation(why)) => {
                 return Err(No::Simulation { via: leg.dex_labels(), why: format!("via {via}, as signed ({why})") });
@@ -705,6 +753,29 @@ impl Mainnet {
         let refused =
             if refused.is_empty() { String::new() } else { format!("; refused by {}", refused.join(" and ")) };
         Ok(Sent::Sent(format!("{note}; {fate}; signature {signature}{refused}")))
+    }
+
+    /// The node's newest confirmed blockhash and the last block height it is valid at.
+    async fn latest_blockhash(&self) -> Result<([u8; 32], u64), String> {
+        let (v, _) = self
+            .rpc
+            .call("getLatestBlockhash", json!([{"commitment": "confirmed"}]))
+            .await
+            .map_err(|e| format!("blockhash: {e}"))?;
+        let hash: Option<Address> = v.pointer("/value/blockhash").and_then(Value::as_str).and_then(|s| s.parse().ok());
+        let last = v.pointer("/value/lastValidBlockHeight").and_then(Value::as_u64);
+        hash.map(|h| h.0).zip(last).ok_or_else(|| "blockhash: not in the node's answer".to_string())
+    }
+
+    async fn holds_a_usdc_account(&self) -> Result<bool, String> {
+        let of = json!({"mint": well_known::USDC_MINT});
+        let how = json!({"encoding": "jsonParsed", "commitment": "processed"});
+        let (v, _) = self
+            .rpc
+            .call("getTokenAccountsByOwner", json!([self.taker.to_string(), of, how]))
+            .await
+            .map_err(|e| format!("the wallet's USDC account could not be read: {e}"))?;
+        Ok(v.get("value").and_then(Value::as_array).is_some_and(|a| !a.is_empty()))
     }
 
     /// Sign, simulate the exact bytes as signed (any error and nothing is
@@ -789,22 +860,22 @@ impl Chain for Mainnet {
     }
 
     async fn swap(&self, sell_sol: bool, amount: u64) -> Sent {
-        let (mut without, mut failed) = (Vec::new(), Vec::new());
+        let (mut without, mut failed): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
         for _ in 0..QUOTES {
-            match self.try_swap(sell_sol, amount, &without).await {
-                Ok(sent) if failed.is_empty() => return sent,
-                Ok(sent) => {
-                    // said in the journal: which routes did not hold
-                    let also = |note: String| format!("{note}; before it, failed in simulation: {}", failed.join("; "));
-                    return match sent {
-                        Sent::NotSent(why) => Sent::NotSent(also(why)),
-                        Sent::Simulated { out, lamports_after, note } => {
-                            Sent::Simulated { out, lamports_after, note: also(note) }
-                        }
-                        Sent::Sent(note) => Sent::Sent(also(note)),
-                    };
+            // said in the journal: which routes did not hold
+            let also = |note: String| {
+                if failed.is_empty() {
+                    note
+                } else {
+                    format!("{note}; before it, failed in simulation: {}", failed.join("; "))
                 }
-                Err(No::Other(why)) => return Sent::NotSent(why),
+            };
+            match self.try_swap(sell_sol, amount, &without).await {
+                Ok(Sent::NotSent(why)) | Err(No::Other(why)) => return Sent::NotSent(also(why)),
+                Ok(Sent::Simulated { out, lamports_after, note }) => {
+                    return Sent::Simulated { out, lamports_after, note: also(note) };
+                }
+                Ok(Sent::Sent(note)) => return Sent::Sent(also(note)),
                 Err(No::Simulation { via, why }) => {
                     without.extend(via);
                     failed.push(why);
@@ -1177,10 +1248,9 @@ stop = 0.05
         assert_eq!(balance().await, 1_000_000_000, "test SOL from the validator's faucet");
 
         // a transfer of `lamports` to `other`, assembled as a swap is: limit, price, instructions
-        let (rpc, none) = (&chain.rpc, &HashSet::new());
+        let (chain, none) = (&chain, &HashSet::new());
         let transfer = |lamports: u64| async move {
-            let (v, _) = rpc.call("getLatestBlockhash", json!([{"commitment": "confirmed"}])).await.unwrap();
-            let hash: Address = v["value"]["blockhash"].as_str().unwrap().parse().unwrap();
+            let (blockhash, last_valid) = chain.latest_blockhash().await.unwrap();
             let params = AssemblyParams {
                 payer: me,
                 cu_limit: 10_000,
@@ -1188,9 +1258,9 @@ stop = 0.05
                 tip: Some((other, lamports)),
                 dont_front: None,
                 existing_atas: none,
-                blockhash: hash.0,
+                blockhash,
             };
-            (compose_single(&[], &params).unwrap(), v["value"]["lastValidBlockHeight"].as_u64().unwrap())
+            (compose_single(&[], &params).unwrap(), last_valid)
         };
         const FEE: u64 = 5_000 + 1_000;
 
@@ -1210,7 +1280,7 @@ stop = 0.05
         let b64 = base64::engine::general_purpose::STANDARD.encode(reserialize(&tx.tx).unwrap());
         let every = Duration::from_millis(500);
         for round in 0..3 {
-            let (fate, _) = deliver(&chain, &b64, &signature, last_valid, every).await;
+            let (fate, _) = deliver(chain, &b64, &signature, last_valid, every).await;
             assert_eq!(fate, Fate::Confirmed, "round {round}");
         }
         println!("2. {signature}: delivered three times, paid for once");
@@ -1229,7 +1299,7 @@ stop = 0.05
         wallet.sign(&mut tx.tx).unwrap();
         let signature = tx.tx.signatures[0].to_string();
         let b64 = base64::engine::general_purpose::STANDARD.encode(reserialize(&tx.tx).unwrap());
-        let (fate, _) = deliver(&chain, &b64, &signature, last_valid, every).await;
+        let (fate, _) = deliver(chain, &b64, &signature, last_valid, every).await;
         println!("4. {signature}: {fate:?}");
         assert!(matches!(&fate, Fate::Failed(err) if err.contains("InstructionError")), "{fate:?}");
         assert_eq!(balance().await, 1_000_000_000 - 2 * (1_000_000 + FEE) - FEE);
@@ -1308,6 +1378,32 @@ stop = 0.05
         let wire = Script::new(vec![Ok(None)], vec![100]);
         assert_eq!(fate(&wire).await, Fate::Unknown);
         assert_eq!(*wire.sends.lock(), ROUNDS);
+    }
+
+    #[test]
+    fn a_swap_may_cost_the_wallet_its_fees_and_nothing_else() {
+        let (fee, sol) = (9_000, 188_116_340);
+        // a sale of 16,594,000 lamports: the wallet is down by them and the fee
+        assert_eq!(beyond_fees(true, 16_594_000, 0, fee, (sol, sol - 16_594_000 - fee)), 0);
+        // a route that opened a token account at the wallet's expense would show as its rent
+        let after = sol - 16_594_000 - fee - TOKEN_ACCOUNT_RENT;
+        assert_eq!(beyond_fees(true, 16_594_000, 0, fee, (sol, after)), TOKEN_ACCOUNT_RENT);
+        // a buy quoted 16,550,000, at least 16,500,000: the quote less the fee arrives
+        assert_eq!(beyond_fees(false, 2_000_000, 16_500_000, fee, (sol, sol + 16_550_000 - fee)), 0);
+        assert_eq!(beyond_fees(false, 2_000_000, 16_500_000, fee, (sol, sol + 16_500_000 - fee)), 0, "at its minimum");
+        let after = sol + 16_550_000 - fee - TOKEN_ACCOUNT_RENT;
+        assert_eq!(beyond_fees(false, 2_000_000, 16_500_000, fee, (sol, after)), TOKEN_ACCOUNT_RENT - 50_000);
+    }
+
+    #[test]
+    fn a_quote_keeps_to_the_dexes_the_file_allows_without_the_ones_that_failed() {
+        let (any, some): (Vec<String>, Vec<String>) = (Vec::new(), vec!["Whirlpool".into(), "Meteora DLMM".into()]);
+        let failed = vec!["Whirlpool".to_string()];
+        assert_eq!(routes(&any, &[]), Some(DexFilter::Any));
+        assert_eq!(routes(&any, &failed), Some(DexFilter::Exclude(failed.clone())));
+        assert_eq!(routes(&some, &[]), Some(DexFilter::Only(some.clone())));
+        assert_eq!(routes(&some, &failed), Some(DexFilter::Only(vec!["Meteora DLMM".into()])));
+        assert_eq!(routes(&some, &some), None, "none is left");
     }
 
     #[test]
