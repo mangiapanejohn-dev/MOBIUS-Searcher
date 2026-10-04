@@ -136,19 +136,58 @@ have ended it.
 
 When a run ends its USDC stays in the wallet as USDC.
 
-As of 2026-10-04: both directions of the swap were built and simulated on
-mainnet (the buy arrives as SOL in the wallet, the quote less the fees). The
-first two swaps this runner sent went as Jito bundles and neither landed (a
-bundle sent once lives only until the next Jito leader; the wallet was
-unchanged, nothing was lost), which is why it now sends ordinary
-transactions. The re-sending and the reading of a transaction's status are
-tested, the status against the real node; a swap sent this way had not yet
-been confirmed when this was written.
+## What has been tried, and what has not
+
+As of 2026-10-04:
+
+- **On mainnet, read-only:** both directions of the swap built and simulated
+  (the buy arrives as SOL in the wallet, the quote less its fees); a fresh
+  transaction's status read as confirmed.
+- **On mainnet, for real:** the first run sent its funding swap as a single
+  Jito bundle at bar after bar (five by the time this was written, tips of
+  1,721 to 10,000 lamports). None landed: a
+  bundle sent once lives only until the next Jito leader, and two minutes
+  later the block engine no longer knew them. The wallet was unchanged and
+  nothing was lost; this is why swaps are now ordinary transactions.
+- **On a local copy of mainnet, with test SOL** (below): the whole runner,
+  with swaps built by Jupiter against a copied Meteora SOL/USDC pool. Budget
+  set aside (opening the wallet's USDC account), three buys and three sales,
+  a stop of the program while holding and the same command going on, a stop
+  at 0.01 % down that sold on its third try and ended the run, a close by
+  hand while holding, a second copy refused. Every swap was confirmed and
+  the account matched the wallet to the last unit of USDC; the wallet's
+  other SOL never went down.
+- **Not yet:** a swap sent the new way and confirmed on mainnet. What the
+  local copy cannot show is how readily a public RPC node and Jito's
+  `sendTransaction` get a transaction into a block.
+
+## Trying it without money
+
+```bash
+python3 scripts/trade_fork.py /tmp/mobius-fork
+```
+
+makes a throwaway key, a config that points only at a local
+`solana-test-validator`, and a rules file that trades every few minutes, and
+prints three commands: the validator (with Jupiter's program and one DEX's
+SOL/USDC pools copied from mainnet as they are now), test SOL for the
+wallet, and the runner. Everything the runner does with real money it then
+does there. The copy is frozen while Jupiter quotes the live pools: now and
+then a quote names an account that was not copied, the runner says so and
+tries again at the next bar; after an hour or two make a new copy.
+
+The sending alone, against a plain local validator:
+
+```bash
+solana-test-validator --rpc-port 18899 --faucet-port 19900 --ledger /tmp/mobius-ledger
+MOBIUS_TEST_VALIDATOR=http://127.0.0.1:18899 cargo test -p mobius-searcher --lib on_a_local_validator -- --ignored --nocapture
+```
 
 ## Stopping and going on
 
 Ctrl-C stops the program and leaves what the run holds as it is; the same
-command goes on from there. `--close` sells what is held and ends the run.
+command goes on from there. `--close` sells what is held and ends the run
+(stop the running program first: one at a time).
 A run that ended (by the stop or by `--close`) does not start again; a
 changed file is a new run.
 

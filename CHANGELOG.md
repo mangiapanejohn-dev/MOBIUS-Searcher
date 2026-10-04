@@ -38,8 +38,9 @@ before 1.0 a minor version may change configuration or behaviour.
   wallet anything else. It can lose money and nothing on
   chain prevents it: the file must carry `acknowledge = "ALLOW LOSS"` and the
   config `execution.live_enabled = true`. On paper, at 2 USD and with these
-  costs, the shipped example lost 45 % over the year to 2026-10-04. See
-  [docs/TRADE.md](docs/TRADE.md).
+  costs, the shipped example lost 45 % over the year to 2026-10-04.
+  `scripts/trade_fork.py` sets up a local copy of mainnet on which the whole
+  runner can be tried with test SOL. See [docs/TRADE.md](docs/TRADE.md).
 - **`scripts/live_tracker.py`**: follows the database of a running session,
   read-only, and copies every table into a dataset file that retention never
   prunes, with OKX's best bid and ask once a second beside it (the engine
