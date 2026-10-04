@@ -69,9 +69,11 @@ with a new budget; close the old one first.
 3. **A swap** is quoted and built by Jupiter (without your API key, so it
    does not use a running session's budget), assembled with a Jito tip,
    simulated, signed, simulated again as signed, and sent once as a bundle:
-   the same send path as the arbitrage. It is not sent if the simulation
-   fails, or if in the simulation a buy does not arrive in the wallet as SOL
-   in the amount quoted.
+   the same send path as the arbitrage. A quote that fails in simulation
+   (some routes do not hold what they quote) is asked for again without that
+   route's DEXes, three quotes at most; the journal names the routes that
+   failed. Nothing is sent if all three fail, or if in the simulation a buy
+   does not arrive in the wallet as SOL in the amount quoted.
 4. **The account is what the wallet shows.** After a send the wallet's SOL
    and USDC are read; the difference is the fill, every fee inside. A swap
    that did not land changes nothing, and is given up only two minutes after

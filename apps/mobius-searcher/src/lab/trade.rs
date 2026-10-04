@@ -423,6 +423,26 @@ pub struct Mainnet {
 
 struct Backend<'a>(&'a Mainnet);
 
+/// Quotes asked for one swap before giving up on it for this bar.
+const QUOTES: usize = 3;
+
+/// Why a quote did not become a swap.
+enum No {
+    /// Its simulation failed (the quote went stale, or its route does not
+    /// hold what it quoted): another quote, without these DEXes, may do.
+    Simulation {
+        via: Vec<String>,
+        why: String,
+    },
+    Other(String),
+}
+
+impl From<String> for No {
+    fn from(why: String) -> No {
+        No::Other(why)
+    }
+}
+
 impl LiveBackend for Backend<'_> {
     async fn simulate_signed(&self, tx_b64: String) -> Result<SimulateOutcome, String> {
         self.0.rpc.simulate_signed(&tx_b64).await.map_err(|e| e.to_string())
@@ -520,7 +540,7 @@ impl Mainnet {
         self.taker
     }
 
-    async fn try_swap(&self, sell_sol: bool, amount: u64) -> Result<Sent, String> {
+    async fn try_swap(&self, sell_sol: bool, amount: u64, without: &[String]) -> Result<Sent, No> {
         let (sol, usdc) = (mint(well_known::WSOL_MINT), mint(well_known::USDC_MINT));
         let req = BuildRequest {
             input_mint: if sell_sol { sol } else { usdc },
@@ -529,7 +549,7 @@ impl Mainnet {
             taker: self.taker,
             slippage: SlippageSpec::Fixed(self.slippage_bps),
             mode: RoutingMode::Normal,
-            dex_filter: DexFilter::Any,
+            dex_filter: if without.is_empty() { DexFilter::Any } else { DexFilter::Exclude(without.to_vec()) },
             cu_price_percentile: self.cu_price_percentile.clone(),
             max_accounts: Some(30),
             blockhash_slots_to_expiry: self.blockhash_slots_to_expiry,
@@ -560,11 +580,10 @@ impl Mainnet {
         let before =
             self.rpc.get_balance(&self.taker).await.map_err(|e| format!("the wallet could not be read: {e}"))?;
         let sim = self.rpc.simulate(&b64, &[self.taker]).await.map_err(|e| format!("simulation unavailable: {e}"))?;
+        let via = leg.dex_labels().join(" + ");
         if let Some(err) = &sim.err {
-            return Ok(Sent::NotSent(format!(
-                "the simulation failed ({err}): {}",
-                sim.logs.last().cloned().unwrap_or_default()
-            )));
+            let why = format!("via {via} ({err}: {})", sim.logs.last().cloned().unwrap_or_default());
+            return Err(No::Simulation { via: leg.dex_labels(), why });
         }
         let Some(after) = sim.post_account_lamports.first().copied().flatten() else {
             return Ok(Sent::NotSent("the simulation did not show the wallet after the swap".into()));
@@ -582,12 +601,12 @@ impl Mainnet {
                 )));
             }
         }
-        let units = sim.units_consumed.ok_or("the simulation gave no compute units")?;
+        let units = sim.units_consumed.ok_or_else(|| "the simulation gave no compute units".to_string())?;
         let cu_limit = ((units as f64 * 1.2) as u32 + 10_000).min(searcher_core::units::MAX_COMPUTE_UNITS_PER_TX);
         // the priority fee is the limit times the price: keep it under the configured ceiling
         let price = price.min(self.max_priority_fee.saturating_mul(1_000_000) / u64::from(cu_limit.max(1)));
         let note = format!(
-            "{} {} for at least {} {} (quoted {}), {} CU, tip {} lamports",
+            "{} {} for at least {} {} (quoted {}) via {via}, {} CU, tip {} lamports",
             if sell_sol { "sell" } else { "spend" },
             if sell_sol {
                 format!("{:.6} SOL", amount as f64 / 1e9)
@@ -618,7 +637,7 @@ impl Mainnet {
             .call("getBlockHeight", serde_json::json!([{"commitment": "processed"}]))
             .await
             .map_err(|e| format!("block height: {e}"))?;
-        self.height.store(h.as_u64().ok_or("block height")?, Ordering::Relaxed);
+        self.height.store(h.as_u64().ok_or_else(|| "block height".to_string())?, Ordering::Relaxed);
         Ok(
             match execute_live(&Backend(self), permit, wallet, vec![tx], leg.last_valid_block_height, &self.live).await
             {
@@ -647,7 +666,29 @@ impl Chain for Mainnet {
     }
 
     async fn swap(&self, sell_sol: bool, amount: u64) -> Sent {
-        self.try_swap(sell_sol, amount).await.unwrap_or_else(Sent::NotSent)
+        let (mut without, mut failed) = (Vec::new(), Vec::new());
+        for _ in 0..QUOTES {
+            match self.try_swap(sell_sol, amount, &without).await {
+                Ok(sent) if failed.is_empty() => return sent,
+                Ok(sent) => {
+                    // said in the journal: which routes did not hold
+                    let also = |note: String| format!("{note}; before it, failed in simulation: {}", failed.join("; "));
+                    return match sent {
+                        Sent::NotSent(why) => Sent::NotSent(also(why)),
+                        Sent::Simulated { out, lamports_after, note } => {
+                            Sent::Simulated { out, lamports_after, note: also(note) }
+                        }
+                        Sent::Sent(note) => Sent::Sent(also(note)),
+                    };
+                }
+                Err(No::Other(why)) => return Sent::NotSent(why),
+                Err(No::Simulation { via, why }) => {
+                    without.extend(via);
+                    failed.push(why);
+                }
+            }
+        }
+        Sent::NotSent(format!("{QUOTES} quotes failed in simulation: {}", failed.join("; ")))
     }
 
     fn fee_reserve(&self) -> u64 {
@@ -948,6 +989,21 @@ stop = 0.05
                 assert!(arrived > out as i64 * 99 / 100 - 5_000 - MAX_TIP as i64, "arrived {arrived} of {out} quoted");
             }
             other => panic!("{other:?}"),
+        }
+        // the quote asked for after a route failed in simulation: without that route's DEXes
+        let first = match chain.try_swap(false, 2_000_000, &[]).await {
+            Ok(Sent::Simulated { note, .. }) => note,
+            _ => panic!("the first quote"),
+        };
+        let via: Vec<String> =
+            first.split(" via ").nth(1).unwrap().split(',').next().unwrap().split(" + ").map(String::from).collect();
+        match chain.try_swap(false, 2_000_000, &via).await {
+            Ok(Sent::Simulated { note, .. }) => {
+                println!("first {first}\nwithout {via:?}: {note}");
+                assert!(via.iter().all(|d| !note.contains(d.as_str())), "{note}");
+            }
+            Ok(other) => panic!("{other:?}"),
+            Err(No::Simulation { why, .. }) | Err(No::Other(why)) => panic!("{why}"),
         }
     }
 
