@@ -325,7 +325,8 @@ fn header(plan: &Plan, what: &str, bars: &[Bar]) -> String {
         bars.len(),
         date(first),
         date(last),
-        &plan.id[..8],
+        // a real run is filed as `trade-` and the file's name: eight characters of that say nothing
+        &plan.id[..plan.id.len().min(if plan.id.starts_with("trade-") { 14 } else { 8 })],
         plan.capital,
         plan.costs.route_bps,
         plan.costs.fixed_fee_lamports,

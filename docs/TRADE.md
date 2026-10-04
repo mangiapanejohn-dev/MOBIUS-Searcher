@@ -150,8 +150,9 @@ As of 2026-10-04:
   later the block engine no longer knew them. The wallet was unchanged and
   nothing was lost; this is why swaps are now ordinary transactions.
 - **On a local copy of mainnet, with test SOL** (below): the whole runner,
-  with swaps built by Jupiter against a copied Meteora SOL/USDC pool. Budget
-  set aside (opening the wallet's USDC account), three buys and three sales,
+  with swaps built by Jupiter against a copied Meteora SOL/USDC pool, debug
+  and release builds. Budget set aside (opening the wallet's USDC account),
+  five buys and five sales,
   a stop of the program while holding and the same command going on, a stop
   at 0.01 % down that sold on its third try and ended the run, a close by
   hand while holding, a second copy refused. Every swap was confirmed and
