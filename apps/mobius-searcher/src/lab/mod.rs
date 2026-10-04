@@ -11,6 +11,7 @@
 pub mod model;
 pub mod rules;
 pub mod stats;
+pub mod trade;
 
 use anyhow::{Context, Result, bail};
 use model::Model;
@@ -44,6 +45,8 @@ struct File {
     costs: Costs,
     #[serde(default)]
     stops: Stops,
+    /// Only `--trade` reads it: the same file on paper and with real money.
+    live: Option<trade::Live>,
     #[serde(default)]
     experiment: Vec<toml::Table>,
 }
@@ -79,6 +82,8 @@ pub struct Plan {
     pub costs: Costs,
     pub stops: Stops,
     pub experiments: Vec<Experiment>,
+    /// What `--trade` may do with real money, when the file says.
+    pub live: Option<trade::Live>,
 }
 
 /// Bar length in ms and OKX's name for it.
@@ -100,6 +105,11 @@ pub fn parse(text: &str) -> Result<Plan> {
     if file.capital_usd <= 0.0 {
         bail!("capital_usd must be greater than zero");
     }
+    if let Some(live) = &file.live {
+        live.check().map_err(anyhow::Error::msg)?;
+    }
+    // with a [live] section the budget is the rule's capital, on paper too
+    let capital = file.live.as_ref().map_or(file.capital_usd, |l| l.budget_usd);
     let mut experiments = Vec::new();
     for mut t in file.experiment {
         let name = match t.remove("name") {
@@ -124,10 +134,11 @@ pub fn parse(text: &str) -> Result<Plan> {
         instrument: file.instrument,
         bar: file.bar,
         bar_ms,
-        capital: file.capital_usd,
+        capital,
         costs: file.costs,
         stops: file.stops,
         experiments,
+        live: file.live,
     })
 }
 
@@ -264,12 +275,12 @@ async fn bars_since(
         }
         _ => fetched = history(http, plan, inst, now_ms(), from).await?,
     }
-    save(store, plan, inst, &fetched)?;
+    save_bars(store, plan, inst, &fetched)?;
     let all = store.lab_bars(inst, &plan.bar, from)?;
     Ok(all.into_iter().map(|b| Bar { ts: b.0, open: b.1, high: b.2, low: b.3, close: b.4, volume: b.5 }).collect())
 }
 
-fn save(store: &ResearchStore, plan: &Plan, inst: &str, bars: &[Bar]) -> Result<()> {
+fn save_bars(store: &ResearchStore, plan: &Plan, inst: &str, bars: &[Bar]) -> Result<()> {
     let rows: Vec<_> = bars.iter().map(|b| (b.ts, b.open, b.high, b.low, b.close, b.volume)).collect();
     Ok(store.insert_lab_bars(inst, &plan.bar, &rows)?)
 }
@@ -427,13 +438,13 @@ pub async fn run(cfg: &Config, file: &Path, duration: Option<u64>) -> Result<()>
             let have = other_bars.last().map_or(0, |b| b.ts);
             match history(&http, &plan, inst, now_ms(), have + 1).await {
                 Ok(f) => {
-                    save(&store, &plan, inst, &f)?;
+                    save_bars(&store, &plan, inst, &f)?;
                     other_bars.extend(f);
                 }
                 Err(e) => eprintln!("{}  candles of {inst}: {e:#}", searcher_core::Ts::now().hms()),
             }
         }
-        save(&store, &plan, &plan.instrument, &fresh)?;
+        save_bars(&store, &plan, &plan.instrument, &fresh)?;
         bars.extend(fresh);
         let other = beside(&bars, &other_bars);
         let last = *bars.last().expect("just extended");
@@ -531,6 +542,271 @@ pub async fn run(cfg: &Config, file: &Path, duration: Option<u64>) -> Result<()>
     Ok(())
 }
 
+/// `--trade FILE`: the file's one rule with real money (see [`trade`]).
+/// `dry_run`: build and simulate the first swap, sign and send nothing.
+/// `close`: sell what the run holds and end it.
+pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, duration: Option<u64>) -> Result<()> {
+    use trade::{Chain, Mainnet, State, Trader};
+    let plan = load(file)?;
+    let Some(live) = plan.live.clone() else {
+        bail!("{}: --trade needs a [live] section (budget_usd, stop_total_loss, acknowledge)", file.display());
+    };
+    let [e] = plan.experiments.as_slice() else {
+        bail!("{}: --trade runs one rule: the file has {} experiments", file.display(), plan.experiments.len());
+    };
+    if plan.stops.total_loss.is_some() {
+        bail!(
+            "{}: with real money the total stop is [live] stop_total_loss (it sells everything and ends the run): \
+             take [stops] total_loss out",
+            file.display()
+        );
+    }
+    let _lock = if dry_run {
+        None
+    } else {
+        live.consent().map_err(anyhow::Error::msg)?;
+        // one at a time: two would each read the other's swaps in the wallet as their own
+        std::fs::create_dir_all(cfg.data_dir())?;
+        let path = cfg.data_dir().join("trade.lock");
+        let lock = std::fs::File::create(&path).with_context(|| format!("opening {}", path.display()))?;
+        if lock.try_lock().is_err() {
+            bail!("another --trade is running (it holds {}): stop it first", path.display());
+        }
+        Some(lock)
+    };
+    let chain = Mainnet::new(cfg, &live, dry_run)?;
+    let http = http()?;
+    let db = cfg.data_dir().join("research.sqlite");
+    let store = ResearchStore::open(&db).with_context(|| format!("opening {}", db.display()))?;
+    let run = format!("trade-{}", plan.id);
+    let now = || searcher_core::Ts::now().hms();
+    println!(
+        "{} · {} · rule `{}` on {} {} · wallet {}\n\
+         budget {:.2} USD, set aside as USDC once · at {:.0} % down everything is sold and the run ends · slippage {} bp",
+        if dry_run { "DRY RUN: nothing is signed or sent" } else { "REAL MONEY" },
+        &run[..14],
+        e.name,
+        plan.instrument,
+        plan.bar,
+        chain.taker(),
+        live.budget_usd,
+        live.stop_total_loss * 100.0,
+        live.slippage_bps
+    );
+    let (lamports, usdc) = chain.balances().await.map_err(|e| anyhow::anyhow!("reading the wallet: {e}"))?;
+    println!("the wallet holds {:.6} SOL and {:.4} USDC", lamports as f64 / 1e9, usdc as f64 / 1e6);
+    let (bid, _) = book(&http, &plan).await?;
+    if dry_run {
+        // the first swap a real run would send, up to the signature
+        let mut state = State::default();
+        let mut t = Trader {
+            chain: &chain,
+            live: &live,
+            state: &mut state,
+            said: Vec::new(),
+            settle_wait: Duration::ZERO,
+            save: None,
+        };
+        t.fund(bid, now_ms()).await;
+        for line in t.said {
+            println!("{}  {line}", now());
+        }
+        return Ok(());
+    }
+    store.begin_lab_run(&run, now_ms(), env!("CARGO_PKG_VERSION"), &plan.manifest)?;
+    // the bar the saved state belongs to
+    let seen = std::cell::Cell::new(0);
+    let mut state = match store.lab_state(&run, &e.name)? {
+        Some((ts, json)) => {
+            seen.set(ts);
+            serde_json::from_str(&json).context("the saved state of this run")?
+        }
+        None => State::default(),
+    };
+    let journal = |lines: Vec<String>| -> Result<()> {
+        for line in lines {
+            println!("{}  {line}", now());
+            store.insert_lab_journal(&run, now_ms(), &line)?;
+        }
+        Ok(())
+    };
+    let save = |state: &State, bar_ts: i64| -> Result<()> {
+        Ok(store.set_lab_state(&run, &e.name, bar_ts, &serde_json::to_string(state)?)?)
+    };
+    // between bars: before a swap is sent and after it is accounted for
+    let write = |state: &State| {
+        if let Err(err) = save(state, seen.get()) {
+            eprintln!("the state could not be written: {err:#}");
+        }
+    };
+    if let Some(why) = &state.ended {
+        println!("this run has ended ({why}); a changed file starts a new one");
+        return Ok(());
+    }
+    // a swap sent just before the program was stopped may still land: wait until it cannot
+    if let Some(p) = &state.pending {
+        let wait = trade::SETTLED_AFTER_MS - (now_ms() - p.ts);
+        if wait > 0 {
+            println!(
+                "a swap was under way {} s ago: waiting {} s to see what became of it",
+                (now_ms() - p.ts) / 1000,
+                wait / 1000 + 1
+            );
+            tokio::time::sleep(Duration::from_millis(wait as u64)).await;
+        }
+    }
+    if close {
+        let mut t = Trader {
+            chain: &chain,
+            live: &live,
+            state: &mut state,
+            said: Vec::new(),
+            settle_wait: Duration::from_secs(2),
+            save: Some(&write),
+        };
+        t.reconcile(now_ms()).await;
+        if t.state.pending.is_none() {
+            t.say_closing();
+            if t.sell_all(now_ms(), bid).await {
+                let why = format!("closed by hand at {:.4} USD of {:.2}", t.state.account.cash, live.budget_usd);
+                t.said.push(format!("the run has ended: {why}; its USDC stays in the wallet"));
+                t.state.ended = Some(why);
+            }
+        }
+        let said = std::mem::take(&mut t.said);
+        journal(said)?;
+        save(&state, seen.get())?;
+        return Ok(());
+    }
+    println!("it starts in 10 seconds; Ctrl-C now and nothing happens");
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => return Ok(()),
+        _ = tokio::time::sleep(Duration::from_secs(10)) => {}
+    }
+    let _awake = crate::budget::KeepAwake::start();
+    let warmup = e.rule.warmup() as i64 + 4;
+    let since = now_ms() - warmup * plan.bar_ms;
+    let mut bars = bars_since(&store, &http, &plan, &plan.instrument, since).await?;
+    let mut other_bars = match other_of(&plan) {
+        Some(inst) => bars_since(&store, &http, &plan, inst, since).await?,
+        None => Vec::new(),
+    };
+    if seen.get() == 0 {
+        seen.set(bars.last().map_or(0, |b| b.ts));
+    }
+    // the budget is set aside before the first bar
+    {
+        let mut t = Trader {
+            chain: &chain,
+            live: &live,
+            state: &mut state,
+            said: Vec::new(),
+            settle_wait: Duration::from_secs(2),
+            save: Some(&write),
+        };
+        t.reconcile(now_ms()).await;
+        if t.state.pending.is_none() {
+            t.fund(bid, now_ms()).await;
+        }
+        let said = std::mem::take(&mut t.said);
+        journal(said)?;
+        save(&state, seen.get())?;
+    }
+    let started = std::time::Instant::now();
+    let stop = tokio::signal::ctrl_c();
+    tokio::pin!(stop);
+    while state.ended.is_none() {
+        tokio::select! {
+            _ = &mut stop => break,
+            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+        }
+        if duration.is_some_and(|d| started.elapsed().as_secs() >= d) {
+            break;
+        }
+        let newest = bars.last().map_or(0, |b| b.ts);
+        let fresh = match history(&http, &plan, &plan.instrument, now_ms(), newest + 1).await {
+            Ok(f) => f,
+            Err(err) => {
+                eprintln!("{}  candles: {err:#}", now());
+                continue;
+            }
+        };
+        if fresh.is_empty() {
+            continue;
+        }
+        if let Some(inst) = other_of(&plan) {
+            let have = other_bars.last().map_or(0, |b| b.ts);
+            if let Ok(f) = history(&http, &plan, inst, now_ms(), have + 1).await {
+                save_bars(&store, &plan, inst, &f)?;
+                other_bars.extend(f);
+            }
+        }
+        save_bars(&store, &plan, &plan.instrument, &fresh)?;
+        bars.extend(fresh);
+        let other = beside(&bars, &other_bars);
+        let last = *bars.last().expect("just extended");
+        let late = now_ms() - (last.ts + plan.bar_ms);
+        let on_time = (late as f64) <= plan.bar_ms as f64 * LATE;
+        let quote = if on_time { book(&http, &plan).await.ok() } else { None };
+        let Some((bid, _)) = quote else {
+            println!(
+                "{}  bar closed at {:.2}, seen {} s late or without a book: nothing done",
+                now(),
+                last.close,
+                late / 1000
+            );
+            continue;
+        };
+        let sol_before = state.account.sol();
+        seen.set(last.ts);
+        let mut t = Trader {
+            chain: &chain,
+            live: &live,
+            state: &mut state,
+            said: Vec::new(),
+            settle_wait: Duration::from_secs(2),
+            save: Some(&write),
+        };
+        t.on_bar(&plan, e, &bars, &other, bid, now_ms()).await;
+        let said = std::mem::take(&mut t.said);
+        journal(said)?;
+        let equity = state.account.cash + state.account.sol() * bid;
+        let row = (last.ts, last.open, last.high, last.low, last.close, last.volume);
+        store.record_lab_bar(
+            (&run, &e.name),
+            &row,
+            &[],
+            equity,
+            sol_before * last.close,
+            &serde_json::to_string(&state)?,
+        )?;
+        println!(
+            "{}  bar closed at {:.2} · the budget is worth {:.4} USD ({:+.1} %){}",
+            now(),
+            last.close,
+            equity,
+            (equity / live.budget_usd - 1.0) * 100.0,
+            if state.account.lots.is_empty() { "" } else { " · in SOL" }
+        );
+        let keep = warmup as usize + 8;
+        if bars.len() > keep * 2 {
+            bars.drain(..bars.len() - keep);
+        }
+        if other_bars.len() > keep * 2 {
+            other_bars.drain(..other_bars.len() - keep);
+        }
+    }
+    match &state.ended {
+        Some(why) => println!("the run has ended: {why}"),
+        None => println!(
+            "stopped; what the run holds stays as it is ({:.6} SOL, {:.4} USD). The same command goes on; --close sells and ends it",
+            state.account.sol(),
+            state.account.cash
+        ),
+    }
+    Ok(())
+}
+
 /// `--lab-report`: every live paper run, from what it recorded.
 pub fn report(cfg: &Config, json: bool) -> Result<()> {
     let db = cfg.data_dir().join("research.sqlite");
@@ -543,12 +819,17 @@ pub fn report(cfg: &Config, json: bool) -> Result<()> {
     let mut out = Vec::new();
     for (id, _, manifest) in runs {
         let plan = parse(&manifest).with_context(|| format!("the rules of run {id}"))?;
+        let plan = Plan { id: id.clone(), ..plan };
         let mut all = Vec::new();
         let mut seen: Vec<Bar> = Vec::new();
         for e in &plan.experiments {
             let rows = store.lab_equity(&id, &e.name)?;
             let acct = match store.lab_state(&id, &e.name)? {
-                Some((_, json)) => serde_json::from_str(&json)?,
+                // a run with real money keeps its account inside its state
+                Some((_, json)) => match serde_json::from_str::<trade::State>(&json) {
+                    Ok(state) if json.contains("\"account\"") => state.account,
+                    _ => serde_json::from_str(&json)?,
+                },
                 None => Account::new(plan.capital),
             };
             let points: Vec<Point> =
@@ -564,7 +845,16 @@ pub fn report(cfg: &Config, json: bool) -> Result<()> {
         if json {
             out.push(serde_json::json!({ "run": id, "experiments": all }));
         } else {
-            println!("{}", stats::render(&header(&plan, "paper, live prices", &seen), &all));
+            let what = if id.starts_with("trade-") { "REAL MONEY" } else { "paper, live prices" };
+            let mut head = header(&plan, what, &seen);
+            // the hash in the header is the file's; a real run is filed under its own name
+            if id.starts_with("trade-") {
+                head = head.replace("costs ", "the costs below are the wallet's own · modelled costs ");
+            }
+            println!("{}", stats::render(&head, &all));
+            for (ts, line) in store.lab_journal(&id)? {
+                println!("  {} {}  {line}", date(ts), searcher_core::Ts(ts * 1000).hms());
+            }
         }
     }
     if json {

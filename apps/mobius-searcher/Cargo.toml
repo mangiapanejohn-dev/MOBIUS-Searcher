@@ -39,6 +39,7 @@ toml.workspace = true
 toml_edit.workspace = true
 qrcode.workspace = true
 reqwest.workspace = true
+base64.workspace = true
 
 [dev-dependencies]
 rqrr.workspace = true

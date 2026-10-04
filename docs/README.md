@@ -14,6 +14,7 @@
 | [STORAGE.md](STORAGE.md) | what is recorded, compression, retention |
 | [MODEL_2026-10.md](MODEL_2026-10.md) | a model trained to say when to be in SOL: what it learned and why it did not pass |
 | [LAB.md](LAB.md) | the lab: buy-and-hold rules on paper (backtest and live), and how to read what they did |
+| [TRADE.md](TRADE.md) | one lab rule with real money and a small budget: what has to be true, what it does, what it cannot do |
 | [RESEARCH.md](RESEARCH.md) | the API research behind the design |
 
 | Results and operations | |

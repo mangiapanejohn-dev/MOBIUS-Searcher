@@ -1,0 +1,35 @@
+# REAL MONEY: one rule of the lab, run with a small budget from your wallet.
+# Read docs/TRADE.md first. On a year of SOL this rule lost money
+# (docs/LAB.md); it is here because it was asked for, not because it pays.
+#
+#   mobius-searcher --lab-backtest config/trade.toml    the rule on past candles, on paper
+#   mobius-searcher --trade config/trade.toml --dry-run build and simulate the first swap; signs and sends nothing
+#   mobius-searcher --trade config/trade.toml           real swaps, until Ctrl-C or the stop
+#   mobius-searcher --trade config/trade.toml --close   sell what the run holds and end it
+#   mobius-searcher --lab-report                        what it did, swap by swap
+#
+# A run is named after this file's content: change anything and it is a new
+# run with a new budget; the old one stays as it was (close it first).
+
+instrument = "SOL-USDT"   # OKX candles decide; the swaps are SOL/USDC on Solana, through Jupiter
+bar = "15m"
+
+[costs]                   # only for --lab-backtest and --lab; with real money the cost is what the wallet shows
+route_bps = 1.15
+fixed_fee_lamports = 16000 # the most one swap here pays: signature 5,000, priority fee up to 1,000, tip up to 10,000
+
+[live]
+budget_usd = 2.0          # set aside as USDC once, never topped up (1 to 25)
+stop_total_loss = 0.5     # the budget worth half of this: everything is sold, the run ends for good
+slippage_bps = 30         # a swap that would fill more than 0.30 % under its quote fails on chain instead
+acknowledge = ""          # write ALLOW LOSS between the quotes yourself; nothing is sent without it
+
+# In when the close is 2 deviations under its average of 288 bars (3 days);
+# out back at the average, or 5 % under the buy.
+[[experiment]]
+name = "dip-3d"
+rule = "dip"
+window = 288
+k = 2.0
+exit_z = 0.0
+stop = 0.05

@@ -286,6 +286,23 @@ impl Account {
         }
         done
     }
+
+    /// A buy as the chain settled it: `usd` left and `sol` arrived, every cost inside.
+    pub fn bought(&mut self, usd: f64, sol: f64, ts: i64, signal_close: f64) {
+        self.cash = (self.cash - usd).max(0.0);
+        self.turnover += usd;
+        self.lots.push(Lot { price: usd / sol, sol, usd, opened: ts });
+        self.reference = Some(signal_close);
+    }
+
+    /// The sale of lot `i` as the chain settled it: `usd` arrived, every cost inside.
+    pub fn sold(&mut self, i: usize, usd: f64, ts: i64, signal_close: f64) {
+        let lot = self.lots.remove(i);
+        self.cash += usd;
+        self.turnover += usd;
+        self.trades.push(Trade { opened: lot.opened, closed: ts, usd: lot.usd, net: usd - lot.usd });
+        self.reference = Some(signal_close);
+    }
 }
 
 /// Stops of an experiment, as shares of its capital. `None`: no stop.
@@ -309,6 +326,21 @@ pub fn step(
     (bars, ctx): (&[Bar], Ctx),
     (buy_price, sell_price, ts): (f64, f64, i64),
 ) -> (Vec<Filled>, f64) {
+    let Some(bar) = bars.last() else { return (Vec::new(), acct.equity(0.0)) };
+    let (orders, equity) = orders(rule, stops, capital, acct, (bars, ctx));
+    let fills = acct.fill(&orders, buy_price, sell_price, ts, bar.close, costs);
+    (fills, equity)
+}
+
+/// What the rule wants at the close of the last of `bars`, and the equity
+/// there. Keeps the account's day and stops; fills nothing.
+pub fn orders(
+    rule: &Rule,
+    stops: &Stops,
+    capital: f64,
+    acct: &mut Account,
+    (bars, ctx): (&[Bar], Ctx),
+) -> (Vec<Order>, f64) {
     let Some(bar) = bars.last() else { return (Vec::new(), acct.equity(0.0)) };
     acct.reference.get_or_insert(bar.close);
     let equity = acct.equity(bar.close);
@@ -339,8 +371,7 @@ pub fn step(
         }
         _ => rule.decide(bars, acct, capital, may_buy),
     };
-    let fills = acct.fill(&orders, buy_price, sell_price, ts, bar.close, costs);
-    (fills, equity)
+    (orders, equity)
 }
 
 #[cfg(test)]

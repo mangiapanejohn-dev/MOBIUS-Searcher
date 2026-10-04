@@ -59,6 +59,7 @@ or LIVE, and run the [canary](#canary-the-first-real-trade) once first.
 | `mobius-searcher --research-report [RUN\|latest\|all]` | what the research runs recorded, as whole distributions (`--json`) |
 | `mobius-searcher --research-pools [--duration N]` | round trips between the watched pools, worked out from the pools' own accounts ([Pools](#pools)); `--research-pools-report` prints every recorded run |
 | `mobius-searcher --lab FILE` | rules that hold a position, on paper: live prices bar by bar ([docs/LAB.md](LAB.md)); `--lab-backtest FILE [--days N]` runs them over past candles, `--lab-report` prints the live runs |
+| `mobius-searcher --trade FILE` | **real money**: the one rule of FILE with a small budget from the wallet, real SOL/USDC swaps ([docs/TRADE.md](TRADE.md)); needs `acknowledge = "ALLOW LOSS"` in the file and `execution.live_enabled`. `--dry-run` simulates the first swap and sends nothing, `--close` sells what the run holds and ends it |
 | `mobius-searcher --research-liquidations [DAYS]` | past lending liquidations read back from chain: what each paid and how long it had been available ([Liquidations](#liquidations)) |
 | `mobius-searcher --canary` | one real, loss-bounded trade through the LIVE path, then a reconciliation ([Canary](#canary-the-first-real-trade)) |
 | `mobius-searcher --quote WETH/USDC --size 0.5` | price a market on every enabled venue that lists it |

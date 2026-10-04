@@ -170,6 +170,8 @@ CREATE TABLE IF NOT EXISTS lab_fills (
     bid REAL NOT NULL, ask REAL NOT NULL,           -- the book when the signal was acted on
     usd REAL NOT NULL, sol REAL NOT NULL, cost_usd REAL NOT NULL
 );
+-- What a run with real money did, line by line, as it happened (never rewritten).
+CREATE TABLE IF NOT EXISTS lab_journal (run_id TEXT NOT NULL, ts INTEGER NOT NULL, line TEXT NOT NULL);
 CREATE TABLE IF NOT EXISTS lab_equity (
     run_id TEXT NOT NULL, experiment TEXT NOT NULL, bar_ts INTEGER NOT NULL,
     close REAL NOT NULL, equity REAL NOT NULL, sol_value REAL NOT NULL,
@@ -471,6 +473,27 @@ impl ResearchStore {
         )?;
         tx.execute("INSERT OR REPLACE INTO lab_state VALUES (?1,?2,?3,?4)", params![run, experiment, bar.0, state])?;
         tx.commit()?;
+        Ok(())
+    }
+
+    pub fn insert_lab_journal(&self, run: &str, ts: i64, line: &str) -> Result<(), StoreError> {
+        self.conn.execute("INSERT INTO lab_journal VALUES (?1,?2,?3)", params![run, ts, line])?;
+        Ok(())
+    }
+
+    /// A run's journal, oldest first: time (ms) and line.
+    pub fn lab_journal(&self, run: &str) -> Result<Vec<(i64, String)>, StoreError> {
+        let mut st = self.conn.prepare("SELECT ts, line FROM lab_journal WHERE run_id = ?1 ORDER BY rowid")?;
+        let rows = st.query_map(params![run], |r| Ok((r.get(0)?, r.get(1)?)))?;
+        Ok(rows.collect::<Result<_, _>>()?)
+    }
+
+    /// Saves an experiment's state alone (between the bars of a run with real money).
+    pub fn set_lab_state(&self, run: &str, experiment: &str, bar_ts: i64, state: &str) -> Result<(), StoreError> {
+        self.conn.execute(
+            "INSERT OR REPLACE INTO lab_state VALUES (?1,?2,?3,?4)",
+            params![run, experiment, bar_ts, state],
+        )?;
         Ok(())
     }
 

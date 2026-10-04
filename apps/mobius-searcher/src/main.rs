@@ -118,6 +118,18 @@ struct Cli {
     /// What every --lab run did so far.
     #[arg(long)]
     lab_report: bool,
+    /// REAL MONEY: run the one rule of FILE with a small budget from your
+    /// wallet (docs/TRADE.md). It can lose money: the file must carry a
+    /// [live] section with `acknowledge = "ALLOW LOSS"`, and your config
+    /// execution.live_enabled = true. Stop with Ctrl-C; the same FILE goes on.
+    #[arg(long, value_name = "FILE")]
+    trade: Option<PathBuf>,
+    /// With --trade: build and simulate the first swap, sign and send nothing.
+    #[arg(long, requires = "trade")]
+    dry_run: bool,
+    /// With --trade: sell what the run holds and end it.
+    #[arg(long, requires = "trade")]
+    close: bool,
     /// Price MARKET (e.g. WETH/USDC, SOL/USDT) on every enabled venue that lists it, then exit.
     #[arg(long, value_name = "MARKET")]
     quote: Option<String>,
@@ -309,6 +321,7 @@ fn main() -> Result<()> {
         && cli.lab.is_none()
         && cli.lab_backtest.is_none()
         && !cli.lab_report
+        && cli.trade.is_none()
         && !cli.list_sessions
         && !cli.prune
         && !cli.db_info
@@ -420,6 +433,10 @@ fn main() -> Result<()> {
     if let Some(file) = &cli.lab {
         let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
         return rt.block_on(lab::run(&cfg, file, cli.duration));
+    }
+    if let Some(file) = &cli.trade {
+        let rt = tokio::runtime::Builder::new_multi_thread().enable_all().build()?;
+        return rt.block_on(lab::trade(&cfg, file, cli.dry_run, cli.close, cli.duration));
     }
     let db_path = cli.db.clone().unwrap_or_else(|| cfg.data_dir().join("mobius.sqlite"));
 

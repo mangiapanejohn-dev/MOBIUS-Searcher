@@ -180,7 +180,8 @@ What the trained model did is in [MODEL_2026-10.md](MODEL_2026-10.md).
 
 ## What it does not do
 
-- It does not trade, and there is no switch that makes it trade.
+- It does not trade. Running one of its rules with real money is a separate
+  command with its own switches and limits: [TRADE.md](TRADE.md).
 - It does not model a queue: a resting order is not simulated, only taking
   the other side of the book.
 - A backtest on candles cannot know the order of events inside a bar.
