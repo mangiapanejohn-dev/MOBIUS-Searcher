@@ -261,6 +261,10 @@ fn every_page_renders_at_every_size() {
                 if ascii {
                     assert!(out.is_ascii(), "non-ascii in ascii mode page {p} {w}x{h}:\n{out}");
                 }
+                // the way to the key list is on screen at every size
+                let footer = out.lines().last().unwrap_or_default();
+                assert!(footer.ends_with("? help") || footer.ends_with("q quit"), "page {p} {w}x{h}: {footer}");
+                assert!(footer.contains("? help"), "page {p} {w}x{h}: {footer}");
             }
         }
     }
@@ -530,4 +534,115 @@ fn threshold_panel_renders_and_warns_before_allowing_losses() {
     vm.loss_possible = true;
     a.thresholds = None;
     assert!(buffer_text(&snapshot(&mut a, &vm, 120, 40)).contains("LOSS ALLOWED"));
+}
+
+// ───────────────────────────── keys act on what is on the page ─────────────────────────────
+
+fn press(a: &mut App, vm: &ViewModel, c: KeyCode) {
+    a.on_key(KeyEvent::new(c, KeyModifiers::NONE), vm);
+}
+
+#[test]
+fn keys_do_not_move_lists_that_are_not_on_the_page() {
+    let vm = populated();
+    let mut a = app(false);
+    // Risk and System show neither the stream nor the opportunity list
+    for page in ['6', '7'] {
+        press(&mut a, &vm, KeyCode::Char(page));
+        for k in [KeyCode::Char('j'), KeyCode::Char('k'), KeyCode::PageUp, KeyCode::Enter, KeyCode::Char('f')] {
+            press(&mut a, &vm, k);
+        }
+        assert_eq!((a.stream_offset, a.log_offset), (0, 0), "page {page}");
+        assert!(a.detail.is_none(), "page {page}: Enter opened a line of a stream that is not shown");
+    }
+    // Trades: the opportunity selection and its filter stay as they were
+    press(&mut a, &vm, KeyCode::Char('5'));
+    for k in [KeyCode::Char('j'), KeyCode::Char('j'), KeyCode::Char('f'), KeyCode::PageDown] {
+        press(&mut a, &vm, k);
+    }
+    assert_eq!(a.opp_selected, None);
+    assert_eq!(a.opp_filter, searcher_tui::app::OppFilter::All);
+    // where the list is shown the same keys work
+    press(&mut a, &vm, KeyCode::Char('3'));
+    press(&mut a, &vm, KeyCode::Char('j'));
+    press(&mut a, &vm, KeyCode::Char('f'));
+    assert_eq!(a.opp_filter, searcher_tui::app::OppFilter::GrossPositive);
+    press(&mut a, &vm, KeyCode::Char('8'));
+    press(&mut a, &vm, KeyCode::Char('k'));
+    assert_eq!(a.log_offset, 1);
+}
+
+#[test]
+fn footer_keys_belong_to_the_page() {
+    let vm = populated();
+    let mut a = app(false);
+    let footer = |a: &mut App| buffer_text(&snapshot(a, &vm, 160, 50)).lines().last().unwrap_or_default().to_string();
+    assert!(footer(&mut a).contains("f filter"));
+    for page in ['5', '6', '7'] {
+        press(&mut a, &vm, KeyCode::Char(page));
+        let f = footer(&mut a);
+        assert!(!f.contains("j/k") && !f.contains("f filter") && !f.contains("detail"), "page {page}: {f}");
+    }
+    // narrow: the page is named, the others keep their digit, the help stays
+    press(&mut a, &vm, KeyCode::Char('3'));
+    let f = buffer_text(&snapshot(&mut a, &vm, 80, 24)).lines().last().unwrap_or_default().to_string();
+    assert!(f.contains("3 Opportunities") && f.contains(" 2  3") && f.ends_with("? help"), "{f}");
+}
+
+#[test]
+fn a_long_detail_scrolls_and_a_short_one_takes_only_its_lines() {
+    let mut vm = populated();
+    vm.apply(&Event::Stage(StageEvent {
+        ts: Ts(T0 + 700_000_000),
+        opportunity: OpportunityId(1),
+        stage: Stage::Simulation,
+        ok: false,
+        subject: "fail".into(),
+        value: "200ms".into(),
+        detail: (1..=60).map(|i| format!("log line {i}")).collect::<Vec<_>>().join("\n"),
+    }));
+    let mut a = app(false);
+    press(&mut a, &vm, KeyCode::Tab);
+    press(&mut a, &vm, KeyCode::Tab);
+    press(&mut a, &vm, KeyCode::Tab);
+    press(&mut a, &vm, KeyCode::Enter);
+    assert!(a.detail.is_some());
+    let out = buffer_text(&snapshot(&mut a, &vm, 120, 40));
+    assert!(out.contains("log line 1") && !out.contains("log line 60"), "{out}");
+    assert!(out.contains("↑↓ scroll · Esc close"), "{out}");
+    press(&mut a, &vm, KeyCode::PageDown);
+    for _ in 0..200 {
+        press(&mut a, &vm, KeyCode::Char('j'));
+    }
+    let out = buffer_text(&snapshot(&mut a, &vm, 120, 40));
+    assert!(out.contains("log line 60"), "the end is reachable and the scroll stops there:\n{out}");
+    assert!((a.detail_scroll as usize) < 60, "clamped to the text: {}", a.detail_scroll);
+    press(&mut a, &vm, KeyCode::Esc);
+    assert!(a.detail.is_none());
+    // a short detail: a small box, the page stays visible around it
+    press(&mut a, &vm, KeyCode::Char('k'));
+    press(&mut a, &vm, KeyCode::Char('k'));
+    press(&mut a, &vm, KeyCode::Enter);
+    let out = buffer_text(&snapshot(&mut a, &vm, 120, 40));
+    assert!(out.contains("Esc close") && !out.contains("↑↓ scroll"), "{out}");
+    assert!(out.contains("GRAPH WORKSPACE"), "the page above the box is still shown:\n{out}");
+}
+
+#[test]
+fn routes_and_statuses_fit_the_opportunities_page_at_120_columns() {
+    let mut vm = populated();
+    let mut o = opp(900, T0 + 650_000_000, -40_000, OppStatus::Skipped(SkipReason::EdgeTooSmall));
+    o.label = "Raydium CLMM → Meteora DLMM".into();
+    vm.apply(&Event::Opportunity(Box::new(o)));
+    let mut a = app(false);
+    press(&mut a, &vm, KeyCode::Char('3'));
+    let out = buffer_text(&snapshot(&mut a, &vm, 120, 40));
+    let row = out.lines().find(|l| l.contains("Raydium CLMM → Meteora DLMM")).expect("the longest route, whole");
+    assert!(row.contains("EDGE_TOO_SMALL"), "{row}");
+    // narrower, the route gives way with an ellipsis instead of a cut word
+    let out = buffer_text(&snapshot(&mut a, &vm, 100, 30));
+    assert!(out.contains("Raydium CLMM → Meteora DLMM"), "one column at 100: room for the whole route\n{out}");
+    press(&mut a, &vm, KeyCode::Char('1'));
+    let out = buffer_text(&snapshot(&mut a, &vm, 100, 30));
+    assert!(!out.contains("Raydium CLMM → Meteora DLM "), "{out}");
 }

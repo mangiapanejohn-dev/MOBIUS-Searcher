@@ -3,6 +3,43 @@
 All notable changes to MØBIUS. Versions follow [Semantic Versioning](https://semver.org/);
 before 1.0 a minor version may change configuration or behaviour.
 
+## Unreleased
+
+### Fixed
+
+- **`--doctor` no longer warns about OKX on the shipped configuration.** OKX
+  stopped listing `SOL-USD` (it answers "Instrument ID doesn't exist"; it
+  still did on 2026-09-17), so the default `markets` of `[venues.okx]` are
+  now `SOL-USDT` and `SOL-USDC`. A `markets` list of your own that still
+  names it keeps the warning, as it should.
+- **Keys no longer act on lists that are not on the page.** On Risk and
+  System, `j`/`k` scrolled the event stream of the Overview and `⏎` opened
+  one of its lines; on Trades, `j`/`k` and `f` moved and filtered the
+  opportunity list. The footer named those keys there too. Now each page's
+  footer lists the keys that do something on it, and the others do nothing.
+- One line of the key help was two columns too long for an 80-column
+  terminal and wrapped.
+
+### Changed
+
+- **Text that does not fit ends in `…`** instead of stopping mid-word: routes
+  in the opportunity list and the event stream, venue names in the quote
+  book, status codes, error lines on System, descriptions in the graph
+  picker. At 120 columns the Opportunities page now shows the longest route
+  (`Raydium CLMM → Meteora DLMM`) and its status whole.
+- **`? help` is always in the footer**, at every terminal size; the kill
+  switch and the page's first keys come next, the rest as room allows. Below
+  120 columns the footer names the page you are on and keeps the others'
+  digits (it used to cut every name to three letters).
+- **Overlays say how to close them**, on their bottom border. A detail
+  (`⏎` on a stream or log line) is as tall as its text instead of filling
+  the screen, and a long one scrolls (`j`/`k`, PgUp/PgDn, the wheel). The key
+  help is grouped (Navigate, Graphs, Markets, Trading, Mouse) with the keys
+  in the accent colour; the graph picker is as wide as its descriptions.
+- Risk: the reasons opportunities were not executed show their share; counts
+  have thousands separators. System: pipeline and network values start in
+  one column next to their labels.
+
 ## 0.3.0 — 2026-10-03
 
 A research release: new measurements, and no strategy that sends anything.

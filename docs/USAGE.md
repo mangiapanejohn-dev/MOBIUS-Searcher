@@ -96,7 +96,7 @@ Display options: `--glyphs unicode|ascii`, `--color truecolor|ansi256|none`,
 | `Tab` | cycle focus between panels |
 | `K` | **kill switch** — stop new trades (any page); `K` again, then `y`, to release |
 | `j`/`k`, `↑`/`↓` | select / scroll |
-| `⏎` | inspect / detail · `Esc` back to live |
+| `⏎` | inspect / detail (`j`/`k` scroll a long one) · `Esc` back to live |
 | `←`/`→` | move the cursor (Shift ×10) · `Alt+←/→` pan · `Home`/`End` |
 | `a` / `b` / `x` | mark A / B at the cursor, clear — differences in the A/B inspector |
 | `[` / `]` | timeframe (Markets page: candle bar 1s–1D) |
@@ -106,7 +106,7 @@ Display options: `--glyphs unicode|ascii`, `--color truecolor|ansi256|none`,
 | `p` · `t` · `o` | Markets page: next pair · quote book / last trades · bottom tabs |
 | `y` / `n` | approve / decline a pending CONFIRM transaction |
 | `T` | thresholds panel: stage · review · apply ([Thresholds](#thresholds)) |
-| `?` | keys (with the logo) |
+| `?` | keys, by group (with the logo); the footer shows the ones of the page you are on |
 | `q` | quit (graceful; the recording is flushed) |
 
 **Mouse:** click tabs, panels and rows (click the selected opportunity again

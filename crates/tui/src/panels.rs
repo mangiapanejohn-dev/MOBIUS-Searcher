@@ -3,7 +3,7 @@
 //! thin rules instead of boxed cards.
 
 use crate::app::{App, Focus, Hit};
-use crate::chart::{put, text, width};
+use crate::chart::{put, text, text_fit, width};
 use crate::hub::{MarkerKind, ViewModel};
 use crate::theme::{Glyphs, Theme};
 use ratatui::buffer::Buffer;
@@ -135,6 +135,17 @@ pub fn kv(buf: &mut Buffer, x: u16, y: u16, w: u16, k: &str, v: &str, vs: Style,
     }
 }
 
+/// Key and value in two left-aligned columns, so the rows of a block line up.
+/// A value too long for its column starts right after the key when that fits.
+pub fn kv_cols(buf: &mut Buffer, x: u16, y: u16, w: u16, k: &str, v: &str, th: &Theme) {
+    let mut kw = 34.min(w / 2);
+    if width(v) > w - kw && width(k) + 2 + width(v) <= w {
+        kw = width(k) + 2;
+    }
+    text_fit(buf, x, y, k, kw.saturating_sub(1), th.muted());
+    text_fit(buf, x + kw, y, v, w - kw, th.text());
+}
+
 // ───────────────────────────── opportunity table ─────────────────────────────
 
 pub fn opportunity_table(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, focused: bool) {
@@ -147,9 +158,9 @@ pub fn opportunity_table(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel
         return;
     }
     let w = body.width;
-    let show_status = w >= 58;
+    let show_status = w >= 66;
     let show_age = w >= 40;
-    let (cg, cn, ca, cs) = (7u16, 7u16, if show_age { 6 } else { 0 }, if show_status { 15 } else { 0 });
+    let (cg, cn, ca, cs) = (7u16, 7u16, if show_age { 5 } else { 0 }, if show_status { 15 } else { 0 });
     let route_w = w.saturating_sub(2 + cg + cn + ca + cs + 3);
     let cols = |x0: u16| (x0 + 2, x0 + 2 + route_w + 1, x0 + 2 + route_w + 1 + cg + 1, x0 + 2 + route_w + cg + cn + 3);
     let (xr, xg, xn, xa) = cols(body.x);
@@ -189,7 +200,7 @@ pub fn opportunity_table(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel
             (false, true) => th.text(),
             (false, false) => th.faint(),
         };
-        text(buf, xr, y, &label, route_w, route_style);
+        text_fit(buf, xr, y, &label, route_w, route_style);
         if is_priced(o) {
             let gs = edge(o.eval.gross_edge);
             text(buf, xg + cg.saturating_sub(width(&gs)), y, &gs, cg, th.pnl(o.eval.gross_pnl as f64));
@@ -207,7 +218,7 @@ pub fn opportunity_table(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel
         }
         if show_status {
             let st = if priced { status_style(&o.status, th) } else { th.faint() };
-            text(buf, xs, y, &status_label(&o.status), cs, st);
+            text_fit(buf, xs, y, &status_label(&o.status), cs, st);
         }
     }
     if list.is_empty() {
@@ -234,7 +245,7 @@ impl Lines<'_> {
         if let Some(y) = self.row() {
             let kw = 18.min(self.area.width / 2);
             text(self.buf, self.area.x, y, k, kw, th.muted());
-            text(self.buf, self.area.x + kw, y, v, self.area.width - kw, vs);
+            text_fit(self.buf, self.area.x + kw, y, v, self.area.width - kw, vs);
         }
     }
     fn money(&mut self, k: &str, lamports: i64, note: &str, vs: Style, th: &Theme) {
@@ -247,14 +258,14 @@ impl Lines<'_> {
             if !note.is_empty() {
                 let nx = self.area.x + kw + 14;
                 if nx < self.area.right() {
-                    text(self.buf, nx, y, note, self.area.right() - nx, th.faint());
+                    text_fit(self.buf, nx, y, note, self.area.right() - nx, th.faint());
                 }
             }
         }
     }
     fn line(&mut self, s: &str, st: Style) {
         if let Some(y) = self.row() {
-            text(self.buf, self.area.x, y, s, self.area.width, st);
+            text_fit(self.buf, self.area.x, y, s, self.area.width, st);
         }
     }
     fn gap(&mut self) {
@@ -591,7 +602,7 @@ pub fn event_stream(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, foc
             (true, false) => th.warn(),
             _ => th.text(),
         };
-        text(buf, x_subj, y, &s.subject, subj_w, subj_style);
+        text_fit(buf, x_subj, y, &s.subject, subj_w, subj_style);
         let vw = width(&s.value).min(val_w);
         let vs = if s.stage == Stage::Paper || s.stage == Stage::Opportunity || s.stage == Stage::Skip {
             if s.value.starts_with('+') {
@@ -642,23 +653,45 @@ pub fn overlay(buf: &mut Buffer, full: Rect, w: u16, h: u16, title: &str, th: &T
     inner
 }
 
-pub fn wrap_text(buf: &mut Buffer, area: Rect, body: &str, style: Style) {
-    let mut y = area.y;
-    for raw in body.lines() {
-        let mut line = raw.to_string();
-        loop {
-            if y >= area.bottom() {
-                return;
-            }
-            let fit: String = line.chars().take(area.width as usize).collect();
-            text(buf, area.x, y, &fit, area.width, style);
-            y += 1;
-            if line.chars().count() <= area.width as usize {
-                break;
-            }
-            line = line.chars().skip(area.width as usize).collect();
+/// Keys of an overlay, on its bottom border (`inner` as [`overlay`] returned it).
+pub fn overlay_hint(buf: &mut Buffer, inner: Rect, hint: &str, th: &Theme) {
+    let w = width(hint) + 2;
+    if w + 2 <= inner.width {
+        text(buf, inner.right() - w, inner.bottom(), &format!(" {hint} "), w, th.muted().bg(th.select_bg));
+    }
+}
+
+/// `s` broken between words into lines of at most `w` columns.
+pub fn wrap_words(s: &str, w: u16) -> Vec<String> {
+    let mut out = vec![String::new()];
+    for word in s.split(' ') {
+        let line = out.last_mut().expect("starts with one line");
+        if line.is_empty() {
+            line.push_str(word);
+        } else if width(line) + 1 + width(word) <= w {
+            line.push(' ');
+            line.push_str(word);
+        } else {
+            out.push(word.to_string());
         }
     }
+    out
+}
+
+/// `body` as lines of at most `w` columns (long lines continue on the next).
+pub fn wrap_lines(body: &str, w: u16) -> Vec<String> {
+    let w = w.max(1) as usize;
+    let mut out = Vec::new();
+    for raw in body.lines() {
+        let chars: Vec<char> = raw.chars().collect();
+        if chars.is_empty() {
+            out.push(String::new());
+        }
+        for part in chars.chunks(w) {
+            out.push(part.iter().collect());
+        }
+    }
+    out
 }
 
 #[cfg(test)]

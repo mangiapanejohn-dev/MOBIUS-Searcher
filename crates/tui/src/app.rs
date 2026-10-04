@@ -55,6 +55,16 @@ impl Page {
         }
     }
 
+    /// The opportunity list is on this page (its keys act on something visible).
+    pub fn lists_opps(self) -> bool {
+        matches!(self, Page::Overview | Page::Opportunities)
+    }
+
+    /// The event stream (Overview) or the log (Logs) is on this page.
+    pub fn has_stream(self) -> bool {
+        matches!(self, Page::Overview | Page::Logs)
+    }
+
     /// Focus regions available on this page, in Tab order.
     pub fn focuses(self) -> &'static [Focus] {
         match self {
@@ -230,6 +240,8 @@ pub struct App {
     pub log_offset: usize,
     pub inspector_scroll: u16,
     pub detail: Option<Detail>,
+    /// First line shown of a detail longer than its overlay.
+    pub detail_scroll: u16,
     pub picker: Option<usize>,
     pub help: bool,
     pub kill_release_prompt: bool,
@@ -274,6 +286,7 @@ impl App {
             log_offset: 0,
             inspector_scroll: 0,
             detail: None,
+            detail_scroll: 0,
             picker: None,
             help: false,
             kill_release_prompt: false,
@@ -423,8 +436,15 @@ impl App {
             return out;
         }
         if self.detail.is_some() {
-            if matches!(k.code, KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q')) {
-                self.detail = None;
+            // the renderer clamps the scroll to the text
+            match k.code {
+                KeyCode::Esc | KeyCode::Enter | KeyCode::Char('q') => self.detail = None,
+                KeyCode::Down | KeyCode::Char('j') => self.detail_scroll = self.detail_scroll.saturating_add(1),
+                KeyCode::Up | KeyCode::Char('k') => self.detail_scroll = self.detail_scroll.saturating_sub(1),
+                KeyCode::PageDown => self.detail_scroll = self.detail_scroll.saturating_add(10),
+                KeyCode::PageUp => self.detail_scroll = self.detail_scroll.saturating_sub(10),
+                KeyCode::Home => self.detail_scroll = 0,
+                _ => {}
             }
             return out;
         }
@@ -539,7 +559,7 @@ impl App {
                 }
             }
             KeyCode::Char('+') | KeyCode::Char('=') => self.picker = Some(0),
-            KeyCode::Char('f') if matches!(self.focus, Focus::Opportunities) => {
+            KeyCode::Char('f') if self.focus == Focus::Opportunities && self.page.lists_opps() => {
                 self.opp_filter = self.opp_filter.next();
                 self.opp_selected = None;
             }
@@ -569,6 +589,9 @@ impl App {
                     self.timeline.step(s, step, first, latest)
                 }
             }
+            // a list that is not on the page is not moved from it
+            (Focus::Opportunities, _) if !self.page.lists_opps() => {}
+            (Focus::Stream, _) if !self.page.has_stream() => {}
             (Focus::Opportunities, KeyCode::Down | KeyCode::Char('j')) => self.move_opp(vm, 1),
             (Focus::Opportunities, KeyCode::Up | KeyCode::Char('k')) => self.move_opp(vm, -1),
             (Focus::Opportunities, KeyCode::PageDown) => self.move_opp(vm, 10),
@@ -788,6 +811,10 @@ impl App {
             self.picker = Some((sel as i64 + dir).rem_euclid(n as i64) as usize);
             return;
         }
+        if self.detail.is_some() {
+            self.detail_scroll = (self.detail_scroll as i64 + dir * 3).clamp(0, u16::MAX as i64) as u16;
+            return;
+        }
         if self.modal() {
             return;
         }
@@ -829,6 +856,7 @@ impl App {
     fn open_log_detail(&mut self, vm: &ViewModel, offset: usize) {
         if let Some(l) = crate::ui::merged_log(vm).into_iter().rev().nth(offset) {
             self.detail = Some(Detail { title: format!("{} · {}", l.ts.hms_millis(), l.kind), body: l.detail });
+            self.detail_scroll = 0;
         }
     }
 
@@ -845,10 +873,10 @@ impl App {
             );
             if let Some(o) = vm.opps.get(&s.opportunity) {
                 body.push_str(&format!(
-                    "\n\nroute       {}\nstatus      {:?}\nnet         {} lamports ({})",
+                    "\n\nroute       {}\nstatus      {}\nnet         {} lamports ({})",
                     o.route.dex_path(),
-                    o.status,
-                    o.eval.expected_net,
+                    crate::panels::status_label(&o.status),
+                    crate::panels::signed_thousands(o.eval.expected_net),
                     o.eval.net_edge
                 ));
                 if let Some(sim) = &o.simulation {
@@ -861,6 +889,7 @@ impl App {
                 }
             }
             self.detail = Some(Detail { title: format!("{} · {}", s.ts.hms_millis(), s.stage.label()), body });
+            self.detail_scroll = 0;
         }
     }
 }

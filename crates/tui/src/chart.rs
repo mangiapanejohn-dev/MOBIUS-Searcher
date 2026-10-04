@@ -16,7 +16,7 @@ use ratatui::style::{Modifier, Style};
 use searcher_core::Ts;
 use searcher_core::metrics::Unit;
 use searcher_core::series::TimeSeries;
-use unicode_width::UnicodeWidthStr;
+use unicode_width::{UnicodeWidthChar, UnicodeWidthStr};
 
 pub struct ChartInput<'a> {
     pub title: &'a str,
@@ -72,6 +72,25 @@ pub fn text(buf: &mut Buffer, x: u16, y: u16, s: &str, max_w: u16, style: Style)
     let s = crate::theme::fold(s);
     let (end_x, _) = buf.set_stringn(x, y, s.as_ref(), max_w as usize, style);
     end_x.saturating_sub(x)
+}
+
+/// Like [`text`], for data that may be longer than its column: what does not
+/// fit ends in an ellipsis instead of stopping mid-word.
+pub fn text_fit(buf: &mut Buffer, x: u16, y: u16, s: &str, max_w: u16, style: Style) -> u16 {
+    if width(s) <= max_w || max_w < 2 {
+        return text(buf, x, y, s, max_w, style);
+    }
+    let s = crate::theme::fold(s);
+    let (mut kept, mut w) = (String::new(), 0usize);
+    for c in s.chars() {
+        let cw = UnicodeWidthChar::width(c).unwrap_or(0);
+        if w + cw + 1 > max_w as usize {
+            break;
+        }
+        kept.push(c);
+        w += cw;
+    }
+    text(buf, x, y, &format!("{}…", kept.trim_end()), max_w, style)
 }
 
 pub fn width(s: &str) -> u16 {
@@ -525,6 +544,20 @@ pub fn sparkline(values: &[u32], width: usize, g: &Glyphs) -> String {
 mod tests {
     use super::*;
     use crate::theme::Depth;
+
+    #[test]
+    fn text_that_does_not_fit_ends_in_an_ellipsis() {
+        let area = Rect::new(0, 0, 30, 2);
+        let mut buf = Buffer::empty(area);
+        let row = |buf: &Buffer, y: u16| (0..30).map(|x| buf[(x, y)].symbol()).collect::<String>();
+        assert_eq!(text_fit(&mut buf, 0, 0, "Raydium CLMM → Meteora DLMM", 20, Style::new()), 20);
+        assert_eq!(row(&buf, 0).trim_end(), "Raydium CLMM → Mete…");
+        // what fits is written as it is; a cut after a space drops the space
+        text_fit(&mut buf, 0, 1, "Whirlpool", 20, Style::new());
+        assert_eq!(row(&buf, 1).trim_end(), "Whirlpool");
+        text_fit(&mut buf, 0, 1, "Meteora DLMM → Whirlpool", 14, Style::new());
+        assert_eq!(row(&buf, 1).trim_end(), "Meteora DLMM…");
+    }
 
     fn series(n: i64, f: impl Fn(i64) -> f64) -> TimeSeries {
         let mut s = TimeSeries::default();

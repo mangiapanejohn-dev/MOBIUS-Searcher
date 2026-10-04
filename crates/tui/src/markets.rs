@@ -7,7 +7,7 @@
 
 use crate::app::{App, Hit};
 use crate::cex::{BARS, Candle, CexState, Ticker, Trade};
-use crate::chart::{put, text, width};
+use crate::chart::{put, text, text_fit, width};
 use crate::hub::{Quote, ViewModel};
 use crate::kline::{Kline, VWMA_LEN, price, render_kline};
 use crate::panels::{age, edge, now_ts, signed_thousands, sol_amount};
@@ -168,7 +168,7 @@ pub fn page_markets(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
     pair_header(buf, Rect { height: 2, ..body }, app, vm, cex.as_ref(), ticker.as_ref());
     rule(buf, body.x, body.right(), body.y + 2, app);
 
-    let book_w = if main.width >= 100 { 40 } else { 0 };
+    let book_w = if main.width >= 100 { 42 } else { 0 };
     let chart = Rect { width: main.width.saturating_sub(book_w + u16::from(book_w > 0) * 2), ..main };
     chart_panel(buf, chart, app, vm, cex.as_ref());
     if book_w > 0 {
@@ -373,7 +373,7 @@ fn book_row(buf: &mut Buffer, area: Rect, y: u16, cols: [&str; 4], styles: [Styl
     let (pw, bw, aw) = (10u16, 7u16, 6u16);
     let vw = area.width.saturating_sub(pw + bw + aw + 3);
     text(buf, area.x, y, cols[0], pw, styles[0]);
-    text(buf, area.x + pw + 1, y, cols[1], vw, styles[1]);
+    text_fit(buf, area.x + pw + 1, y, cols[1], vw, styles[1]);
     let bx = area.x + pw + 1 + vw + 1;
     text(buf, bx + bw.saturating_sub(width(cols[2])), y, cols[2], bw, styles[2]);
     text(buf, area.right().saturating_sub(width(cols[3])), y, cols[3], aw, styles[3]);
@@ -715,7 +715,7 @@ fn cells(buf: &mut Buffer, area: Rect, y: u16, cols: &[(u16, &str)], vals: &[Str
         let next = cols.get(i + 1).map(|(n, _)| *n).unwrap_or(area.width);
         let w = next.saturating_sub(*x + 1).min(area.width.saturating_sub(*x));
         if area.x + x < area.right() && w > 0 {
-            text(buf, area.x + x, y, v, w, st);
+            text_fit(buf, area.x + x, y, v, w, st);
         }
     }
 }

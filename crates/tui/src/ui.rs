@@ -1,7 +1,7 @@
 //! Frame layout: header, pages, footer, overlays.
 
 use crate::app::{App, Focus, Hit, Page};
-use crate::chart::{ChartInput, put, render_chart, sparkline, text, width};
+use crate::chart::{ChartInput, put, render_chart, sparkline, text, text_fit, width};
 use crate::hub::{Marker, ViewModel};
 use crate::panels::*;
 use crate::theme::set_ascii;
@@ -55,7 +55,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, vm: &ViewModel) {
         Page::System => page_system(buf, body, app, vm),
         Page::Logs => page_logs(buf, body, app, vm),
     }
-    draw_footer(buf, footer, app);
+    draw_footer(buf, footer, app, vm);
     if app.help {
         help_overlay(buf, area, app);
     }
@@ -63,9 +63,17 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, vm: &ViewModel) {
         picker_overlay(buf, area, app, sel);
     }
     if let Some(d) = &app.detail {
-        let inner = overlay(buf, area, 100, area.height - 4, &d.title, &th, &app.glyphs);
+        let w = 100.min(area.width.saturating_sub(2));
+        let lines = wrap_lines(&d.body, w.saturating_sub(4));
+        let inner = overlay(buf, area, w, (lines.len() as u16 + 2).min(area.height - 4), &d.title, &th, &app.glyphs);
         app.hit(outer(inner), Hit::Overlay);
-        wrap_text(buf, inner, &d.body, th.text().bg(th.select_bg));
+        let hidden = lines.len().saturating_sub(inner.height as usize);
+        let top = (app.detail_scroll as usize).min(hidden);
+        for (line, y) in lines.iter().skip(top).zip(inner.y..inner.bottom()) {
+            text(buf, inner.x, y, line, inner.width, th.text().bg(th.select_bg));
+        }
+        overlay_hint(buf, inner, if hidden > 0 { "↑↓ scroll · Esc close" } else { "Esc close" }, &th);
+        app.detail_scroll = top as u16;
     }
     if let Some(p) = &app.thresholds {
         thresholds_overlay(buf, area, app, vm, p);
@@ -76,10 +84,11 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, vm: &ViewModel) {
             buf,
             inner.x,
             inner.y + 1,
-            "press y to resume trading, any other key to cancel",
+            "New trades are allowed again once released.",
             inner.width,
             th.text().bg(th.select_bg),
         );
+        overlay_hint(buf, inner, "y release · any other key cancels", &th);
     }
 }
 
@@ -186,51 +195,64 @@ fn signed_usd(u: UsdMicros) -> String {
     if u.0 > 0 { format!("+{u}") } else { u.to_string() }
 }
 
-fn draw_footer(buf: &mut Buffer, area: Rect, app: &App) {
+/// Keys that do something on this page with this focus, most useful first.
+fn page_keys(app: &App, vm: &ViewModel) -> Vec<&'static str> {
+    const GRAPH: [&str; 7] = ["←→ cursor", "a/b mark", "x clear", "[ ] zoom", "+ graph", "c candle", "s style"];
+    match (app.page, app.focus) {
+        (Page::Markets, _) => {
+            let c = if app.market_style == ChartStyle::Line { "c candles" } else { "c line" };
+            vec!["[ ] bar", "p pair", c, "←→ candle", "t/o tabs"]
+        }
+        (Page::Graphs, _) => GRAPH.to_vec(),
+        (Page::Trades, _) => GRAPH[..4].to_vec(),
+        (Page::Risk, _) if vm.replay => Vec::new(),
+        (Page::Risk, _) => vec!["T thresholds"],
+        (Page::System, _) => Vec::new(),
+        (Page::Logs, _) => vec!["j/k scroll", "⏎ detail", "End live"],
+        (_, Focus::Graphs) => GRAPH.iter().copied().chain(["tab focus"]).collect(),
+        (_, Focus::Opportunities) => vec!["j/k select", "⏎ inspect", "f filter", "tab focus", "a/b mark"],
+        (_, Focus::Inspector) => vec!["j/k scroll", "⏎ back", "tab focus"],
+        (_, Focus::Stream) => vec!["j/k scroll", "⏎ detail", "End live", "tab focus"],
+    }
+}
+
+fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel) {
     let th = &app.theme;
     let mut x = area.x + 1;
+    // Narrow terminals name the page they are on and keep the others' digits;
+    // the narrowest keep digits only, so that `? help` still fits.
     let long = area.width >= 120;
+    let named = area.width >= 26 + width(app.page.label()) + 12;
     for (i, p) in Page::ALL.iter().enumerate() {
-        let label = if long {
-            format!("{} {}", i + 1, p.label())
-        } else if area.width >= 90 {
-            format!("{} {}", i + 1, &p.label()[..3.min(p.label().len())])
-        } else {
-            format!("{}", i + 1)
-        };
-        let st = if *p == app.page { th.accent_bold() } else { th.faint() };
+        let on = *p == app.page;
+        let label = if long || (on && named) { format!("{} {}", i + 1, p.label()) } else { format!("{}", i + 1) };
+        let st = if on { th.accent_bold() } else { th.faint() };
         let w = text(buf, x, area.y, &label, 20, st);
         app.hit(Rect { x, y: area.y, width: w, height: 1 }, Hit::Page(*p));
         x += w + 2;
     }
-    let hint = match (app.page, app.focus) {
-        (_, _) if app.status_text().is_some() => app.status_text().unwrap_or("").to_string(),
-        (Page::Markets, _) => {
-            let c = if app.market_style == crate::workspace::ChartStyle::Line { "c candles" } else { "c line" };
-            format!("[ ] bar  p pair  {c}  ←→ candle  t/o tabs  K kill  ? help")
-        }
-        (Page::Graphs, _) | (_, Focus::Graphs) => {
-            "←→ cursor  a/b mark  x clear  [ ] zoom  + graph  c candle  s style  K kill  ? help".into()
-        }
-        (_, Focus::Opportunities) => "j/k select  ⏎ inspect  f filter  tab focus  a/b mark  K kill  ? help".into(),
-        (_, Focus::Stream) => "j/k scroll  ⏎ detail  End live  tab focus  K kill  ? help".into(),
-        _ => "tab focus  j/k scroll  K kill  ? help  q quit".into(),
-    };
-    // Whole hint items only: drop trailing ones that do not fit (a status
-    // message is shown as is).
+    // Whole items only. When they do not all fit, `q quit` goes first, then
+    // the page's own keys from the end down to two, then the kill switch,
+    // then those two; `? help` stays (a status message is shown as is).
     let room = area.right().saturating_sub(x + 2);
-    let hint = if app.status_text().is_some() || width(&hint) <= room {
-        hint
-    } else {
-        let mut kept = String::new();
-        for item in hint.split("  ").filter(|i| !i.is_empty()) {
-            let next = if kept.is_empty() { item.to_string() } else { format!("{kept}  {item}") };
-            if width(&next) > room {
-                break;
+    let hint = match app.status_text() {
+        Some(s) => s.to_string(),
+        None => {
+            let mut own = page_keys(app, vm);
+            let mut fixed = vec!["K kill", "? help", "q quit"];
+            let over = |own: &[&str], fixed: &[&str]| width(&[own, fixed].concat().join("  ")) > room;
+            if over(&own, &fixed) {
+                fixed.pop();
             }
-            kept = next;
+            while over(&own, &fixed) && own.len() > 2 {
+                own.pop();
+            }
+            if over(&own, &fixed) {
+                fixed.remove(0);
+            }
+            while over(&own, &fixed) && own.pop().is_some() {}
+            [own, fixed].concat().join("  ")
         }
-        kept
     };
     let hw = width(&hint).min(room);
     let st = if app.status_text().is_some() { th.accent() } else { th.faint() };
@@ -376,7 +398,7 @@ fn page_overview(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
     let body = inset(body);
     let f = app.focus;
     if body.width >= 100 {
-        let (left, right) = split_h(body, 44);
+        let (left, right) = split_h(body, 46);
         let (opps, stream) = split_v(left, 58);
         let (graphs, insp) = split_v(right, 60);
         opportunity_table(buf, opps, app, vm, f == Focus::Opportunities);
@@ -399,7 +421,7 @@ fn page_overview(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
 fn page_opportunities(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
     let body = inset(body);
     if body.width >= 100 {
-        let (l, r) = split_h(body, 52);
+        let (l, r) = split_h(body, 56);
         opportunity_table(buf, l, app, vm, app.focus == Focus::Opportunities);
         inspector(buf, r, app, vm, app.focus == Focus::Inspector);
     } else {
@@ -499,7 +521,8 @@ fn page_trades(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
         text(buf, tb.x + 92, y, &format!("{usd:>12}"), tb.width.saturating_sub(92), th.pnl(t.net as f64));
     }
     if vm.trades.is_empty() {
-        text(buf, tb.x, tb.y + 1, "no trades — nothing has passed simulation + risk yet", tb.width, th.faint());
+        let why = "no trades — nothing has passed simulation + risk yet · 6 Risk shows why";
+        text_fit(buf, tb.x, tb.y + 1, why, tb.width, th.faint());
     }
     let (t0, t1) = window(app, vm);
     let markers: Vec<Marker> = vm.markers.iter().filter(|m| m.ts >= t0 && m.ts <= t1).cloned().collect();
@@ -536,7 +559,9 @@ fn page_risk(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
     let g = &app.glyphs;
     let body = inset(body);
     let (l, r) = if body.width >= 100 { split_h(body, 48) } else { split_v(body, 50) };
-    let lb = section(buf, l, "RISK", false, "K / click: kill switch", th, g);
+    let keys = if vm.replay { "K / click: kill switch" } else { "K / click: kill switch · T thresholds" };
+    let lb = section(buf, l, "RISK", false, keys, th, g);
+    let kw = lb.width.min(60);
     let mut y = lb.y;
     let (ks, kst) = match &vm.kill {
         Some((true, reason, ts)) => {
@@ -544,18 +569,18 @@ fn page_risk(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
         }
         _ => ("armed · not engaged".to_string(), Style::new().fg(th.profit)),
     };
-    kv(buf, lb.x, y, lb.width, "Kill switch", &ks, kst, th);
-    app.hit(Rect { x: lb.x, y, width: lb.width, height: 1 }, Hit::Kill);
+    kv(buf, lb.x, y, kw, "Kill switch", &ks, kst, th);
+    app.hit(Rect { x: lb.x, y, width: kw, height: 1 }, Hit::Kill);
     y += 1;
-    kv(buf, lb.x, y, lb.width, "Mode", vm.mode().label(), th.accent(), th);
+    kv(buf, lb.x, y, kw, "Mode", vm.mode().label(), th.accent(), th);
     y += 1;
     kv(
         buf,
         lb.x,
         y,
-        lb.width,
+        kw,
         "Risk checks",
-        &format!("{} · {} approved", vm.risk_checked, vm.risk_approved),
+        &format!("{} checked · {} approved", thousands(vm.risk_checked as i64), thousands(vm.risk_approved as i64)),
         th.text(),
         th,
     );
@@ -567,7 +592,7 @@ fn page_risk(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
             if y >= lb.bottom() {
                 break;
             }
-            kv(buf, lb.x, y, lb.width, k, v, th.text(), th);
+            kv(buf, lb.x, y, kw, k, v, th.text(), th);
             y += 1;
         }
     }
@@ -575,15 +600,17 @@ fn page_risk(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
     let mut rows: Vec<(String, u64)> = vm.skip_counts.iter().map(|(k, v)| (k.code().to_string(), *v)).collect();
     rows.sort_by_key(|r| std::cmp::Reverse(r.1));
     let max = rows.iter().map(|r| r.1).max().unwrap_or(0);
+    let total: u64 = rows.iter().map(|r| r.1).sum();
     let mut y = rb.y;
     for (k, n) in &rows {
         if y >= rb.bottom() {
             break;
         }
-        text(buf, rb.x, y, k, 18, th.text());
-        text(buf, rb.x + 19, y, &format!("{n:>6}"), 6, th.muted());
-        let bw = rb.width.saturating_sub(28);
-        text(buf, rb.x + 27, y, &bar(*n, max, bw, g), bw, th.accent_dim_style());
+        text_fit(buf, rb.x, y, k, 20, th.text());
+        text(buf, rb.x + 21, y, &format!("{:>9}", thousands(*n as i64)), 9, th.muted());
+        text(buf, rb.x + 31, y, &format!("{:>5.1}%", *n as f64 / total.max(1) as f64 * 100.0), 6, th.faint());
+        let bw = rb.width.saturating_sub(39);
+        text(buf, rb.x + 39, y, &bar(*n, max, bw, g), bw, th.accent_dim_style());
         y += 1;
     }
     if !vm.risk_violations.is_empty() && y + 2 < rb.bottom() {
@@ -661,7 +688,7 @@ fn page_system(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
         let ok = snap.last_success.map(|t| age(t.age_ms(now))).unwrap_or_else(|| "never".into());
         text(buf, xc + 31, y, &ok, 8, th.faint());
         if let Some(e) = &snap.last_error {
-            text(buf, sb.x + 15, y + 1, e, w.saturating_sub(15), th.faint());
+            text_fit(buf, sb.x + 15, y + 1, e, w.saturating_sub(15), th.faint());
         }
     }
     let y = sb.y + 2 + ServiceId::ALL.len() as u16 * 2;
@@ -684,26 +711,23 @@ fn page_system(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
                 )
             })
             .unwrap_or_else(|| "—".into());
-        kv(buf, sb.x, yy, w.min(100), "Jito landed tips (lamports)", &tip, th.text(), th);
-        yy += 1;
-        kv(buf, sb.x, yy, w.min(100), "Simulations", &format!("{} · {} failed", vm.sims, vm.sim_failed), th.text(), th);
-        yy += 1;
-        kv(
-            buf,
-            sb.x,
-            yy,
-            w.min(100),
-            "Block height",
-            &vm.block_height.map(|b| b.to_string()).unwrap_or_else(|| "—".into()),
-            th.text(),
-            th,
-        );
-        yy += 1;
-        kv(buf, sb.x, yy, w.min(100), "UI events dropped (display only)", &vm.ui_dropped.to_string(), th.text(), th);
-        yy += 1;
-        if let Some(s) = &vm.session {
-            kv(buf, sb.x, yy, w.min(100), "Session", &s.session_id, th.text(), th);
+        let sims = format!("{} · {} failed", thousands(vm.sims as i64), thousands(vm.sim_failed as i64));
+        let height = vm.block_height.map(|b| b.to_string()).unwrap_or_else(|| "—".into());
+        let session = vm.session.as_ref().map(|s| s.session_id.clone());
+        let rows = [
+            ("Jito landed tips (lamports)", Some(tip)),
+            ("Simulations", Some(sims)),
+            ("Block height", Some(height)),
+            ("UI events dropped (display only)", Some(vm.ui_dropped.to_string())),
+            ("Session", session),
+        ];
+        for (k, v) in rows {
+            if let Some(v) = v {
+                kv_cols(buf, sb.x, yy, w, k, &v, th);
+            }
+            yy += 1;
         }
+        yy -= 1;
         yy += 2;
         network_and_feeds(buf, Rect { y: yy, height: sb.bottom().saturating_sub(yy), ..sb }, app, vm, now);
     }
@@ -713,7 +737,6 @@ fn page_system(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
 /// Jupiter rate limit).
 fn network_and_feeds(buf: &mut Buffer, r: Rect, app: &App, vm: &ViewModel, now: Ts) {
     let th = &app.theme;
-    let w = r.width.min(100);
     let mut y = r.y;
     let fits = |y: u16| y < r.bottom();
     if !fits(y) {
@@ -738,9 +761,9 @@ fn network_and_feeds(buf: &mut Buffer, r: Rect, app: &App, vm: &ViewModel, now: 
             ))
         })
         .unwrap_or_else(|| "—".into());
-    for (k, v) in [("Network TPS", tps), ("Priority fee · per-slot min, watched pools", fees)] {
+    for (k, v) in [("Network TPS", tps), ("Priority fee (pools, slot min)", fees)] {
         if fits(y) {
-            kv(buf, r.x, y, w, k, &v, th.text(), th);
+            kv_cols(buf, r.x, y, r.width, k, &v, th);
             y += 1;
         }
     }
@@ -854,7 +877,7 @@ fn thresholds_overlay(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, p
         buf,
         inner.x,
         y,
-        &format!("now: {now}"),
+        &format!(" now: {now}"),
         inner.width,
         if vm.loss_possible { th.warn() } else { th.muted().bg(th.select_bg) },
     );
@@ -898,16 +921,15 @@ fn thresholds_overlay(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, p
         }
         Mode::Ack(buf) => ("type the words exactly, then ⏎ · Esc back", format!("type {ACK}:  {buf}▏")),
     };
-    text(
-        buf,
-        inner.x,
-        y,
-        &format!(" {extra}"),
-        inner.width,
-        if matches!(p.mode, Mode::Ack(_)) { th.warn() } else { bg },
-    );
+    // the explanation takes a second line on narrow terminals; an error follows it
+    let lines = wrap_words(&extra, inner.width.saturating_sub(2));
+    let st = if matches!(p.mode, Mode::Ack(_)) { th.warn() } else { bg };
+    for (i, line) in lines.iter().take(2).enumerate() {
+        text(buf, inner.x + 1, y + i as u16, line, inner.width.saturating_sub(2), st);
+    }
     if let Some(e) = &p.error {
-        text(buf, inner.x, y + 1, &format!(" {e}"), inner.width, th.warn());
+        let ey = y + lines.len().clamp(1, 2) as u16;
+        text_fit(buf, inner.x + 1, ey, e, inner.width.saturating_sub(2), th.warn());
     }
     text(buf, inner.x, y + 3, &format!(" {hint}"), inner.width, th.muted().bg(th.select_bg));
 }
@@ -915,7 +937,16 @@ fn thresholds_overlay(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, p
 fn help_overlay(buf: &mut Buffer, area: Rect, app: &App) {
     let th = &app.theme;
     let (lw, lh) = crate::brand::logo_size();
-    let rows = HELP.lines().count() as u16;
+    let keys: u16 = HELP.iter().map(|(_, rows)| rows.len() as u16).sum();
+    let titled = HELP.iter().filter(|(name, _)| !name.is_empty()).count() as u16;
+    // Group titles when there is room for them, blank lines between the
+    // groups when there is room for those too.
+    let (titles, gaps) = match area.height.saturating_sub(6) {
+        h if h >= keys + 2 * titled => (true, true),
+        h if h >= keys + titled => (true, false),
+        _ => (false, false),
+    };
+    let rows = keys + if titles { titled } else { 0 } + if gaps { titled } else { 0 };
     // Logo beside the keys when there is room (and art + Unicode glyphs).
     let with_logo =
         crate::brand::can_draw_logo(th, &app.glyphs) && area.width >= lw + 86 && area.height >= lh.max(rows) + 6;
@@ -923,46 +954,95 @@ fn help_overlay(buf: &mut Buffer, area: Rect, app: &App) {
     let title = format!("{} · keys · v{}", crate::brand::NAME, env!("CARGO_PKG_VERSION"));
     let mut inner = overlay(buf, area, w, h, &title, th, &app.glyphs);
     app.hit(outer(inner), Hit::Overlay);
+    overlay_hint(buf, inner, "any key closes", th);
     if with_logo {
         let logo_area = Rect { width: lw + 2, ..inner };
         crate::brand::draw_logo(buf, logo_area, th, &app.glyphs, app.logo_image.as_ref(), "");
         inner = Rect { x: inner.x + lw + 4, width: inner.width.saturating_sub(lw + 4), ..inner };
     }
-    inner.y += inner.height.saturating_sub(rows) / 2;
-    wrap_text(buf, inner, HELP, th.text().bg(th.select_bg));
+    let bg = th.select_bg;
+    let mut y = inner.y + inner.height.saturating_sub(rows) / 2;
+    for (i, (name, group)) in HELP.iter().enumerate() {
+        if gaps && i > 0 {
+            y += 1;
+        }
+        if titles && !name.is_empty() && y < inner.bottom() {
+            text(buf, inner.x, y, &name.to_uppercase(), inner.width, th.header(false).bg(bg));
+            y += 1;
+        }
+        for (key, what) in group.iter() {
+            if y >= inner.bottom() {
+                return;
+            }
+            // without its title a page's own group names the page on each row
+            let what = if titles || *name != HELP_PAGE { what.to_string() } else { format!("{name}: {what}") };
+            text(buf, inner.x, y, key, HELP_KEY_W, th.accent().bg(bg));
+            text(buf, inner.x + HELP_KEY_W, y, &what, inner.width.saturating_sub(HELP_KEY_W), th.text().bg(bg));
+            y += 1;
+        }
+    }
 }
 
-/// Key help; every line fits the 74-column overlay (also after ASCII folding).
-const HELP: &str = "\
-1-8        Overview Markets Opportunities Graphs Trades Risk System Logs
-tab        cycle focus: opportunities · graphs · inspector · stream
-K          KILL SWITCH — stop new trades (any page); K again → release (y)
-j/k ↑/↓    select / scroll     ⏎ inspect / detail     Esc back to live
-←/→ h/l    move cursor over samples (Shift ×10)   Alt+←/→ pan   Home/End
-a / b / x  mark A / mark B at cursor / clear   → Δ in the A/B inspector
-[ / ]      timeframe 1m · 5m · 15m · 1h · session
-Markets    [ ] bar 1s–1D · p pair · t book/trades · o tabs · ←→ candle
-+          add/remove graph metrics   -/Del remove active graph
-Shift+↑/↓  reorder graphs     c line/candle     s box/braille line
-f          filter opportunities (all · gross>0 · executable · skipped)
-y / n      approve / decline a pending CONFIRM transaction
-T          thresholds: stage · review · apply (losses need typed ALLOW LOSS)
-click      tabs · rows (again: inspect) · graph = cursor, drag to scrub
-wheel      scroll lists · zoom graphs      right-click graph  mark A, B
-q          quit (graceful; recording is flushed)";
+const HELP_KEY_W: u16 = 11;
+/// The group whose keys work on one page only.
+const HELP_PAGE: &str = "Markets";
+
+/// Key help by group: 11 columns of key and at most 63 of text, so every row
+/// fits the 74-column overlay (also after ASCII folding).
+const HELP: [(&str, &[(&str, &str)]); 6] = [
+    (
+        "Navigate",
+        &[
+            ("1-8", "Overview Markets Opportunities Graphs Trades Risk System Logs"),
+            ("tab", "cycle focus: opportunities · graphs · inspector · stream"),
+            ("j/k ↑/↓", "select / scroll     ⏎ inspect / detail     Esc back to live"),
+            ("f", "filter opportunities (all · gross>0 · executable · skipped)"),
+        ],
+    ),
+    (
+        "Graphs",
+        &[
+            ("←/→ h/l", "move cursor over samples (Shift ×10)   Alt+←/→ pan   Home/End"),
+            ("a / b / x", "mark A / mark B at cursor / clear   → Δ in the A/B inspector"),
+            ("[ / ]", "timeframe 1m · 5m · 15m · 1h · session"),
+            ("+", "add/remove graph metrics   -/Del remove active graph"),
+            ("Shift+↑/↓", "reorder graphs     c line/candle     s box/braille line"),
+        ],
+    ),
+    (
+        HELP_PAGE,
+        &[
+            ("[ / ]", "bar 1s–1D    p pair    c line/candles    ←/→ candle"),
+            ("t / o", "book or trades / tabs under the chart"),
+        ],
+    ),
+    (
+        "Trading",
+        &[
+            ("K", "KILL SWITCH — stop new trades (any page); K again → release (y)"),
+            ("y / n", "approve / decline a pending CONFIRM transaction"),
+            ("T", "thresholds: stage, review, apply (losses need typed ALLOW LOSS)"),
+        ],
+    ),
+    (
+        "Mouse",
+        &[
+            ("click", "tabs · rows (again: inspect) · graph = cursor, drag to scrub"),
+            ("wheel", "scroll lists · zoom graphs      right-click graph  mark A, B"),
+        ],
+    ),
+    ("", &[("q", "quit (graceful; recording is flushed)")]),
+];
 
 fn picker_overlay(buf: &mut Buffer, area: Rect, app: &App, sel: usize) {
     let th = &app.theme;
-    let inner = overlay(
-        buf,
-        area,
-        60,
-        MetricId::ALL.len() as u16 + 4,
-        "Graph metrics  (⏎ toggle · Esc close)",
-        th,
-        &app.glyphs,
-    );
+    let bg = th.select_bg;
+    // wide enough for the longest description; the screen's width at most
+    let (name_w, what_w) = (29, MetricId::ALL.iter().map(|m| width(m.source())).max().unwrap_or(0));
+    let inner =
+        overlay(buf, area, name_w + what_w + 4, MetricId::ALL.len() as u16 + 4, "Graph metrics", th, &app.glyphs);
     app.hit(outer(inner), Hit::Overlay);
+    overlay_hint(buf, inner, "⏎ toggle · Esc close", th);
     for (i, m) in MetricId::ALL.iter().enumerate() {
         let y = inner.y + 1 + i as u16;
         if y >= inner.bottom() {
@@ -970,8 +1050,30 @@ fn picker_overlay(buf: &mut Buffer, area: Rect, app: &App, sel: usize) {
         }
         app.hit(Rect { x: inner.x, y, width: inner.width, height: 1 }, Hit::PickerItem(i));
         let on = app.workspace.contains(*m);
-        let st = if i == sel { th.accent_bold().bg(th.select_bg) } else { th.text().bg(th.select_bg) };
-        let line = format!("{} {:<24} {}", if on { "[x]" } else { "[ ]" }, m.label(), m.source());
-        text(buf, inner.x, y, &line, inner.width, st);
+        let (name, what) = if i == sel { (th.accent_bold(), th.accent()) } else { (th.text(), th.muted()) };
+        let line = format!("{} {}", if on { "[x]" } else { "[ ]" }, m.label());
+        text(buf, inner.x, y, &line, name_w - 1, name.bg(bg));
+        text_fit(buf, inner.x + name_w, y, m.source(), inner.width.saturating_sub(name_w), what.bg(bg));
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn help_rows_fit_their_columns_in_ascii_too() {
+        for (name, rows) in HELP {
+            for (key, what) in rows {
+                // the page's own group carries its name when the titles are off
+                let what = if name == HELP_PAGE { format!("{name}: {what}") } else { what.to_string() };
+                for ascii in [false, true] {
+                    set_ascii(ascii);
+                    assert!(width(key) < HELP_KEY_W, "{key}");
+                    assert!(width(&what) <= 74 - HELP_KEY_W, "{what}");
+                }
+            }
+        }
+        set_ascii(false);
     }
 }
