@@ -152,7 +152,7 @@ CREATE TABLE IF NOT EXISTS liq_scan (venue TEXT PRIMARY KEY, first INTEGER NOT N
 -- The lab (`--lab`): candles its rules read, and what each paper experiment did.
 CREATE TABLE IF NOT EXISTS lab_bars (
     inst TEXT NOT NULL, bar TEXT NOT NULL, ts INTEGER NOT NULL,     -- ts: the bar's start, ms
-    open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL,
+    open REAL NOT NULL, high REAL NOT NULL, low REAL NOT NULL, close REAL NOT NULL, vol REAL NOT NULL,
     PRIMARY KEY (inst, bar, ts)
 );
 -- One run per rules file as it was (id = hash of the file): a changed file is a new run.
@@ -368,8 +368,8 @@ pub struct LiqEvent {
     pub err: Option<String>,
 }
 
-/// A candle: start (ms), open, high, low, close.
-pub type LabBar = (i64, f64, f64, f64, f64);
+/// A candle: start (ms), open, high, low, close, volume.
+pub type LabBar = (i64, f64, f64, f64, f64, f64);
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct LabFill {
@@ -389,8 +389,8 @@ impl ResearchStore {
         let tx = self.conn.unchecked_transaction()?;
         for b in bars {
             tx.execute(
-                "INSERT OR REPLACE INTO lab_bars VALUES (?1,?2,?3,?4,?5,?6,?7)",
-                params![inst, bar, b.0, b.1, b.2, b.3, b.4],
+                "INSERT OR REPLACE INTO lab_bars VALUES (?1,?2,?3,?4,?5,?6,?7,?8)",
+                params![inst, bar, b.0, b.1, b.2, b.3, b.4, b.5],
             )?;
         }
         tx.commit()?;
@@ -400,10 +400,11 @@ impl ResearchStore {
     /// Candles from `from` (ms) on, oldest first.
     pub fn lab_bars(&self, inst: &str, bar: &str, from: i64) -> Result<Vec<LabBar>, StoreError> {
         let mut st = self.conn.prepare(
-            "SELECT ts, open, high, low, close FROM lab_bars WHERE inst = ?1 AND bar = ?2 AND ts >= ?3 ORDER BY ts",
+            "SELECT ts, open, high, low, close, vol FROM lab_bars WHERE inst = ?1 AND bar = ?2 AND ts >= ?3 ORDER BY ts",
         )?;
-        let rows =
-            st.query_map(params![inst, bar, from], |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?)))?;
+        let rows = st.query_map(params![inst, bar, from], |r| {
+            Ok((r.get(0)?, r.get(1)?, r.get(2)?, r.get(3)?, r.get(4)?, r.get(5)?))
+        })?;
         Ok(rows.collect::<Result<_, _>>()?)
     }
 
@@ -488,6 +489,16 @@ impl ResearchStore {
         }
         let conn = Connection::open(path)?;
         conn.busy_timeout(std::time::Duration::from_secs(5))?;
+        // candles cached before they carried their volume: only a cache, made again
+        let old: i64 = conn.query_row(
+            "SELECT count(*) FROM pragma_table_info('lab_bars') WHERE name = 'close'
+               AND NOT EXISTS (SELECT 1 FROM pragma_table_info('lab_bars') WHERE name = 'vol')",
+            [],
+            |r| r.get(0),
+        )?;
+        if old > 0 {
+            conn.execute_batch("DROP TABLE lab_bars")?;
+        }
         conn.execute_batch(SCHEMA)?;
         Ok(Self { conn })
     }
@@ -1238,11 +1249,12 @@ mod tests {
     #[test]
     fn a_lab_run_keeps_its_first_rules_and_each_bar_whole() {
         let s = ResearchStore::open_in_memory().unwrap();
-        s.insert_lab_bars("SOL-USDT", "15m", &[(900_000, 1.0, 2.0, 0.5, 1.5), (0, 1.0, 1.0, 1.0, 1.0)]).unwrap();
-        s.insert_lab_bars("SOL-USDT", "15m", &[(900_000, 1.0, 2.0, 0.5, 1.6)]).unwrap();
+        s.insert_lab_bars("SOL-USDT", "15m", &[(900_000, 1.0, 2.0, 0.5, 1.5, 7.0), (0, 1.0, 1.0, 1.0, 1.0, 3.0)])
+            .unwrap();
+        s.insert_lab_bars("SOL-USDT", "15m", &[(900_000, 1.0, 2.0, 0.5, 1.6, 8.0)]).unwrap();
         assert_eq!(
             s.lab_bars("SOL-USDT", "15m", 0).unwrap(),
-            vec![(0, 1.0, 1.0, 1.0, 1.0), (900_000, 1.0, 2.0, 0.5, 1.6)]
+            vec![(0, 1.0, 1.0, 1.0, 1.0, 3.0), (900_000, 1.0, 2.0, 0.5, 1.6, 8.0)]
         );
         assert_eq!(s.lab_bars("SOL-USDT", "15m", 1).unwrap().len(), 1);
         assert!(s.lab_bars("SOL-USDT", "1m", 0).unwrap().is_empty());
@@ -1265,21 +1277,42 @@ mod tests {
         };
         s.record_lab_bar(
             ("abc", "grid"),
-            &(0, 1.0, 1.0, 1.0, 1.0),
+            &(0, 1.0, 1.0, 1.0, 1.0, 3.0),
             std::slice::from_ref(&fill),
             23.0,
             0.0,
             "{\"a\":1}",
         )
         .unwrap();
-        s.record_lab_bar(("abc", "grid"), &(900_000, 1.0, 2.0, 0.5, 1.6), &[], 36.6, 36.6, "{\"a\":2}").unwrap();
+        s.record_lab_bar(("abc", "grid"), &(900_000, 1.0, 2.0, 0.5, 1.6, 8.0), &[], 36.6, 36.6, "{\"a\":2}").unwrap();
         // the same bar again (a restart): its row is replaced, not doubled
-        s.record_lab_bar(("abc", "grid"), &(900_000, 1.0, 2.0, 0.5, 1.6), &[], 36.7, 36.7, "{\"a\":3}").unwrap();
+        s.record_lab_bar(("abc", "grid"), &(900_000, 1.0, 2.0, 0.5, 1.6, 8.0), &[], 36.7, 36.7, "{\"a\":3}").unwrap();
         assert_eq!(s.lab_state("abc", "grid").unwrap(), Some((900_000, "{\"a\":3}".to_string())));
         assert_eq!(s.lab_equity("abc", "grid").unwrap(), vec![(0, 1.0, 23.0, 0.0), (900_000, 1.6, 36.7, 36.7)]);
         assert!(s.lab_equity("abc", "other").unwrap().is_empty());
         let fills: i64 =
             s.conn().query_row("SELECT count(*) FROM lab_fills WHERE side = 'buy'", [], |r| r.get(0)).unwrap();
         assert_eq!(fills, 1);
+    }
+
+    #[test]
+    fn a_candle_cache_from_before_volumes_is_made_again() {
+        let path = std::env::temp_dir().join(format!("mobius-lab-cache-{}.sqlite", std::process::id()));
+        let _ = std::fs::remove_file(&path);
+        {
+            let old = Connection::open(&path).unwrap();
+            old.execute_batch(
+                "CREATE TABLE lab_bars (inst TEXT, bar TEXT, ts INTEGER, open REAL, high REAL, low REAL, close REAL,
+                 PRIMARY KEY (inst, bar, ts)); INSERT INTO lab_bars VALUES ('SOL-USDT','15m',0,1,1,1,1);",
+            )
+            .unwrap();
+        }
+        let s = ResearchStore::open(&path).unwrap();
+        assert!(s.lab_bars("SOL-USDT", "15m", 0).unwrap().is_empty(), "the old rows had no volume: fetched again");
+        s.insert_lab_bars("SOL-USDT", "15m", &[(0, 1.0, 1.0, 1.0, 1.0, 5.0)]).unwrap();
+        drop(s);
+        // and a current file is left as it is
+        assert_eq!(ResearchStore::open(&path).unwrap().lab_bars("SOL-USDT", "15m", 0).unwrap().len(), 1);
+        let _ = std::fs::remove_file(&path);
     }
 }

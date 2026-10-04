@@ -1,0 +1,14 @@
+self-test passed: features use the past only; trees and logistic regression learn; the account adds up
+198899 bars of SOL and BTC together, 2021-01-31 to 2026-10-04; 0 of them missing at the exchange and filled with the last close; 26 features
+rolling: 12 tests of ~3 months after 2 years of training each, 2023-02-07 to 2026-02-03; kept aside: 2026-04-04 to 2026-10-04
+  logistic regression    4 bars  AUC 0.532  in SOL   36%  after a signal +4.6 bp vs +1.0 always  return  +206.2%  same SOL  +126.4%  rule adds   +79.7%  a day +6.0 [-7.5, +19.2] bp  folds + 7/12  trades 4219  (1 s)
+  boosted trees          4 bars  AUC 0.535  in SOL   36%  after a signal +4.3 bp vs +1.0 always  return  +338.0%  same SOL  +125.5%  rule adds  +212.6%  a day +8.8 [-3.1, +20.8] bp  folds + 6/12  trades 4038  (50 s)
+  logistic regression   16 bars  AUC 0.533  in SOL   47%  after a signal +14.4 bp vs +3.9 always  return +1016.5%  same SOL  +168.1%  rule adds  +848.4%  a day +16.0 [+2.8, +28.7] bp  folds + 9/12  trades 1094  (1 s)
+  boosted trees         16 bars  AUC 0.537  in SOL   50%  after a signal +14.0 bp vs +3.9 always  return +2388.3%  same SOL  +180.7%  rule adds +2207.6%  a day +23.1 [+10.3, +35.6] bp  folds + 11/12  trades 1171  (50 s)
+  logistic regression   96 bars  AUC 0.515  in SOL   70%  after a signal +23.0 bp vs +23.0 always  return  +876.1%  same SOL  +258.0%  rule adds  +618.1%  a day +11.7 [+0.1, +23.6] bp  folds + 6/12  trades 242  (1 s)
+  boosted trees         96 bars  AUC 0.528  in SOL   66%  after a signal +59.3 bp vs +23.0 always  return  +364.9%  same SOL  +243.6%  rule adds  +121.3%  a day +6.1 [-5.8, +18.1] bp  folds + 5/12  trades 258  (50 s)
+
+chosen by the rolling tests: boosted trees, 16 bars
+on the six months kept aside (2026-04-04 to 2026-10-04; SOL +50.2 %): AUC 0.499 · return +21.4 % · max fall -28.7 % · in SOL 39 % · same SOL +19.6 % · rule adds +1.8 % · a day +2.4 [-20.4, +28.7] bp · trades 141 · net a trade 16.4 bp
+the bar set beforehand (interval above zero on the months kept aside, and two thirds of the rolling tests positive): NOT PASSED
+model and every result written to docs/runs/direction-model-2026-10-04.json

@@ -4,9 +4,10 @@
 //! Rules keep no state of their own, so an account saved after a bar is all
 //! that is needed to go on later.
 
+use super::model::Model;
 use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, PartialEq)]
+#[derive(Clone, Copy, Debug, Default, PartialEq)]
 pub struct Bar {
     /// Start of the bar, ms since the epoch.
     pub ts: i64,
@@ -14,6 +15,7 @@ pub struct Bar {
     pub high: f64,
     pub low: f64,
     pub close: f64,
+    pub volume: f64,
 }
 
 /// What a trade costs. The fixed part does not shrink with the trade, so a
@@ -64,6 +66,10 @@ pub enum Rule {
     /// In on a close above the high of the `entry` bars before; out on a
     /// close under the low of the `exit` bars before.
     Breakout { entry: usize, exit: usize },
+    /// A trained model (the file `scripts/direction_model.py train` writes):
+    /// in when it gives a rise at least its threshold, out its horizon after
+    /// the last time it did.
+    Model { file: String },
 }
 
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -80,6 +86,7 @@ impl Rule {
             Rule::Dip { window, .. } => *window,
             Rule::Grid { .. } => 1,
             Rule::Breakout { entry, exit } => entry.max(exit) + 1,
+            Rule::Model { .. } => super::model::HISTORY,
         }
     }
 
@@ -151,8 +158,18 @@ impl Rule {
                 let low = before[before.len() - exit..].iter().map(|b| b.low).fold(f64::MAX, f64::min);
                 if acct.lots.is_empty() { all_in(close > high) } else { all_in(close >= low) }
             }
+            // decided in `step`, which has the model and the other coin's candles
+            Rule::Model { .. } => Vec::new(),
         }
     }
+}
+
+/// What a step may look at besides the candles: the model of a model rule
+/// and the other coin's closes, one for each bar.
+#[derive(Clone, Copy, Default)]
+pub struct Ctx<'a> {
+    pub model: Option<&'a Model>,
+    pub other: &'a [f64],
 }
 
 /// SOL bought at one time.
@@ -191,6 +208,9 @@ pub struct Account {
     pub day: Option<(i64, f64)>,
     /// The total-loss stop was hit: no new buying, for good.
     pub frozen: bool,
+    /// A model rule holds until this bar (its start, ms).
+    #[serde(default)]
+    pub hold_until: Option<i64>,
 }
 
 /// What one order did, for the record.
@@ -286,7 +306,7 @@ pub fn step(
     costs: &Costs,
     capital: f64,
     acct: &mut Account,
-    bars: &[Bar],
+    (bars, ctx): (&[Bar], Ctx),
     (buy_price, sell_price, ts): (f64, f64, i64),
 ) -> (Vec<Filled>, f64) {
     let Some(bar) = bars.last() else { return (Vec::new(), acct.equity(0.0)) };
@@ -301,7 +321,24 @@ pub fn step(
     }
     let day_start = acct.day.map_or(equity, |(_, e)| e);
     let paused = stops.daily_loss.is_some_and(|s| equity <= day_start - capital * s);
-    let orders = rule.decide(bars, acct, capital, !acct.frozen && !paused);
+    let may_buy = !acct.frozen && !paused;
+    let orders = match (rule, ctx.model) {
+        (Rule::Model { .. }, Some(model)) => {
+            let on = model.signal(bars, ctx.other);
+            if on && bars.len() >= 2 {
+                let bar_ms = bar.ts - bars[bars.len() - 2].ts;
+                acct.hold_until = Some(bar.ts + model.horizon_bars as i64 * bar_ms);
+            }
+            if acct.lots.is_empty() {
+                if on && may_buy && acct.cash > 0.0 { vec![Order::Buy { usd: acct.cash }] } else { Vec::new() }
+            } else if acct.hold_until.is_none_or(|t| bar.ts >= t) {
+                (0..acct.lots.len()).map(|lot| Order::Sell { lot }).collect()
+            } else {
+                Vec::new()
+            }
+        }
+        _ => rule.decide(bars, acct, capital, may_buy),
+    };
     let fills = acct.fill(&orders, buy_price, sell_price, ts, bar.close, costs);
     (fills, equity)
 }
@@ -314,7 +351,14 @@ mod tests {
         closes
             .iter()
             .enumerate()
-            .map(|(i, &c)| Bar { ts: i as i64 * 900_000, open: c, high: c * 1.001, low: c * 0.999, close: c })
+            .map(|(i, &c)| Bar {
+                ts: i as i64 * 900_000,
+                open: c,
+                high: c * 1.001,
+                low: c * 0.999,
+                close: c,
+                volume: 1.0,
+            })
             .collect()
     }
 
@@ -326,7 +370,7 @@ mod tests {
         let mut a = Account::new(100.0);
         for i in 0..b.len() - 1 {
             let next = b[i + 1].close;
-            step(rule, stops, costs, 100.0, &mut a, &b[..=i], (next, next, b[i + 1].ts));
+            step(rule, stops, costs, 100.0, &mut a, (&b[..=i], Ctx::default()), (next, next, b[i + 1].ts));
         }
         a
     }

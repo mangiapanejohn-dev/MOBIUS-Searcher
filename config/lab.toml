@@ -49,6 +49,17 @@ rule = "grid"
 step = 0.01
 lots = 10
 
+# A trained model (docs/LAB.md): in when it gives a rise at least its
+# threshold, out its horizon after the last time it did. It stays out on the
+# days it was trained on. Train one first:
+#   python3 scripts/direction_model.py fetch && python3 scripts/direction_model.py train
+# The one in the repository was trained on 2026-10-04 and did not pass its
+# own test (docs/MODEL_2026-10.md); it is here to be watched, not trusted.
+# [[experiment]]
+# name = "model"
+# rule = "model"
+# file = "docs/runs/direction-model-2026-10-04.json"
+
 # In on a close above the high of the 96 bars before (a day); out on a close
 # under the low of the 48 bars before.
 [[experiment]]

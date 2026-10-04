@@ -18,6 +18,15 @@ before 1.0 a minor version may change configuration or behaviour.
   signed or sent and no Jupiter request is made; it can run beside a session.
   On one year of SOL none of the shipped rules made money. See
   [docs/LAB.md](docs/LAB.md).
+- **A trained model as a lab rule** (`rule = "model"`), and the script that
+  trains one (`scripts/direction_model.py`): a logistic regression and
+  boosted trees on 26 features of SOL's and BTC's 15-minute candles since
+  2021, three horizons, rolling tests, six months kept aside and looked at
+  once. The model trained on 2026-10-04 predicts a little in the rolling
+  tests (rebounds after short falls, and the hour) and nothing on the months
+  kept aside: it did not pass, and is in the lab only. The lab builds the same features in
+  Rust, checked against the Python on a fixture. See
+  [docs/MODEL_2026-10.md](docs/MODEL_2026-10.md).
 - **`scripts/live_tracker.py`**: follows the database of a running session,
   read-only, and copies every table into a dataset file that retention never
   prunes, with OKX's best bid and ask once a second beside it (the engine

@@ -57,6 +57,8 @@ Four kinds of rule, each decided at a bar's close:
 | `grid` | One of `lots` equal parts bought each time the close is `step` under the last trade; each part sold `step` above its own buy. | `step`, `lots` |
 | `breakout` | In on a close above the high of the `entry` bars before; out on a close under the low of the `exit` bars before. | `entry`, `exit` |
 
+| `model` | A trained model ([below](#a-trained-model-as-a-rule)): in when it gives a rise at least its threshold, out its horizon after the last time it did. | `file` |
+
 A misspelt setting or an unknown rule is refused, with the experiment named.
 
 **A live run is named after the file's content.** Start `--lab` again with the
@@ -131,6 +133,50 @@ its ten unsold lots were worth 39.7 % less than they cost.
 The numbers were checked against a second implementation written separately
 (Python, the same cached candles): return, deepest fall and both halves of the
 year agree to the last printed digit for the dip, grid and breakout rules.
+
+## A trained model as a rule
+
+`scripts/direction_model.py` trains a model of SOL's next move and writes it
+to a file the lab can run:
+
+```bash
+python3 scripts/direction_model.py fetch     # SOL and BTC 15-minute candles since 2021, from OKX
+python3 scripts/direction_model.py train     # writes data/direction-model.json
+```
+
+```toml
+[[experiment]]
+name = "model"
+rule = "model"
+file = "docs/runs/direction-model-2026-10-04.json"   # the one trained on 2026-10-04; as written, or beside the rules file
+```
+
+- The model sees 26 numbers at each bar's close, all from that bar and the
+  ones before it: SOL's return over six lookbacks, how far the close is from
+  three averages and inside two ranges, volatility and volume against their
+  own past, the bar's shape, BTC's returns and SOL's against them, the hour
+  and the weekday, the run of down bars. A check in the script changes the
+  future and requires the past's features to stay as they were.
+- Two kinds are fitted, a logistic regression and boosted trees, for three
+  horizons (1 hour, 4 hours, 1 day): six configurations, all reported. Each
+  is trained on two years and tested on the three months after, rolling
+  forward; the last six months are kept aside and looked at once, for the one
+  configuration the rolling tests chose.
+- The rule a model makes: in when its probability of a rise is in the top
+  fifth of what it gave in training (and above a half), out `horizon` bars
+  after the last such bar. The lab's costs.
+- The bar it has to clear is fixed before the look: on the months kept aside,
+  the interval of `… a day` above zero, and two thirds of the rolling tests
+  positive. The file says whether it passed.
+- In the lab a model **stays out on every day it was trained on** (it has
+  seen those answers), so a backtest only counts the bars after. The lab
+  builds the same 26 numbers in Rust; they are checked against the Python on
+  a fixture of real bars, as are both kinds of model.
+
+A model rule needs `instrument = "SOL-USDT"` and `bar = "15m"` (what it was
+trained on); the lab then also keeps BTC-USDT candles.
+
+What the trained model did is in [MODEL_2026-10.md](MODEL_2026-10.md).
 
 ## What it does not do
 

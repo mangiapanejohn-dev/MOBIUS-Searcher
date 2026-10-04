@@ -8,11 +8,13 @@
 //! A rules file is frozen by its content: its run is named after a hash of
 //! the file, so a changed file is a new run and cannot rewrite an old one.
 
+pub mod model;
 pub mod rules;
 pub mod stats;
 
 use anyhow::{Context, Result, bail};
-use rules::{Account, Bar, Costs, Rule, Stops, step};
+use model::Model;
+use rules::{Account, Bar, Costs, Ctx, Rule, Stops, step};
 use searcher_core::config::Config;
 use searcher_storage::ResearchStore;
 use searcher_storage::research::LabFill;
@@ -20,9 +22,12 @@ use searcher_telemetry::proxy;
 use serde::Deserialize;
 use stats::{Point, Stats, date, stats};
 use std::path::Path;
+use std::sync::Arc;
 use std::time::Duration;
 
 const OKX: &str = "https://www.okx.com/api/v5/market";
+/// What a model rule was trained on: these candles, and this coin beside them.
+const MODEL_ON: (&str, &str, &str) = ("SOL-USDT", "15m", "BTC-USDT");
 /// A signal older than this share of a bar is not acted on (the machine slept).
 const LATE: f64 = 1.0 / 3.0;
 
@@ -58,6 +63,8 @@ fn default_capital() -> f64 {
 pub struct Experiment {
     pub name: String,
     pub rule: Rule,
+    /// The model of a model rule, once its file is read.
+    pub model: Option<Arc<Model>>,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -104,7 +111,7 @@ pub fn parse(text: &str) -> Result<Plan> {
         }
         let rule: Rule = t.try_into().with_context(|| format!("experiment `{name}`"))?;
         rule.check().map_err(|e| anyhow::anyhow!("experiment `{name}`: {e}"))?;
-        experiments.push(Experiment { name, rule });
+        experiments.push(Experiment { name, rule, model: None });
     }
     if experiments.is_empty() {
         bail!("the rules file has no [[experiment]]");
@@ -126,7 +133,43 @@ pub fn parse(text: &str) -> Result<Plan> {
 
 fn load(path: &Path) -> Result<Plan> {
     let text = std::fs::read_to_string(path).with_context(|| format!("reading {}", path.display()))?;
-    parse(&text).with_context(|| path.display().to_string())
+    let mut plan = parse(&text).with_context(|| path.display().to_string())?;
+    for e in &mut plan.experiments {
+        let Rule::Model { file } = &e.rule else { continue };
+        if (plan.instrument.as_str(), plan.bar.as_str()) != (MODEL_ON.0, MODEL_ON.1) {
+            bail!(
+                "experiment `{}`: a model reads {} {} candles; this file is {} {}",
+                e.name,
+                MODEL_ON.0,
+                MODEL_ON.1,
+                plan.instrument,
+                plan.bar
+            );
+        }
+        // as written, or beside the rules file
+        let beside = path.parent().map(|d| d.join(file)).filter(|_| !Path::new(file).exists());
+        let model = Model::load(beside.as_deref().unwrap_or(Path::new(file)));
+        e.model = Some(Arc::new(model.map_err(|m| anyhow::anyhow!("experiment `{}`: {m}", e.name))?));
+    }
+    Ok(plan)
+}
+
+/// The other coin a model rule reads, if the plan has one.
+fn other_of(plan: &Plan) -> Option<&'static str> {
+    plan.experiments.iter().any(|e| e.model.is_some()).then_some(MODEL_ON.2)
+}
+
+/// For each of `bars`, the close of the bar of `other` that started with it (NaN: none).
+fn beside(bars: &[Bar], other: &[Bar]) -> Vec<f64> {
+    let mut j = 0;
+    bars.iter()
+        .map(|b| {
+            while j < other.len() && other[j].ts < b.ts {
+                j += 1;
+            }
+            other.get(j).filter(|o| o.ts == b.ts).map_or(f64::NAN, |o| o.close)
+        })
+        .collect()
 }
 
 fn http() -> Result<reqwest::Client> {
@@ -165,24 +208,31 @@ fn num(v: &serde_json::Value) -> f64 {
 fn candles(rows: &[serde_json::Value]) -> Vec<Bar> {
     rows.iter()
         .filter(|c| c[8] == "1")
-        .map(|c| Bar { ts: num(&c[0]) as i64, open: num(&c[1]), high: num(&c[2]), low: num(&c[3]), close: num(&c[4]) })
+        .map(|c| Bar {
+            ts: num(&c[0]) as i64,
+            open: num(&c[1]),
+            high: num(&c[2]),
+            low: num(&c[3]),
+            close: num(&c[4]),
+            volume: num(&c[5]),
+        })
         .filter(|b| b.open.is_finite() && b.close.is_finite() && b.ts > 0)
         .collect()
 }
 
 /// Completed candles older than `before` (ms) back to `until`, oldest first.
-async fn history(http: &reqwest::Client, plan: &Plan, before: i64, until: i64) -> Result<Vec<Bar>> {
+async fn history(http: &reqwest::Client, plan: &Plan, inst: &str, before: i64, until: i64) -> Result<Vec<Bar>> {
     let (_, okx_bar) = bar_of(&plan.bar).context("bar")?;
     let (mut out, mut after, mut pages) = (Vec::new(), before, 0u32);
     while after > until {
-        let path = format!("history-candles?instId={}&bar={okx_bar}&limit=100&after={after}", plan.instrument);
+        let path = format!("history-candles?instId={inst}&bar={okx_bar}&limit=100&after={after}");
         let rows = okx(http, &path).await?;
         let Some(oldest) = rows.last().map(|c| num(&c[0]) as i64) else { break };
         out.extend(candles(&rows).into_iter().filter(|b| b.ts >= until));
         after = oldest;
         pages += 1;
         if pages % 40 == 0 {
-            eprintln!("  … back to {}", date(oldest));
+            eprintln!("  … {inst} back to {}", date(oldest));
         }
         tokio::time::sleep(Duration::from_millis(250)).await; // 4 requests a second, far under OKX's limit
     }
@@ -196,26 +246,37 @@ fn now_ms() -> i64 {
 }
 
 /// The candles from `from` on: what the database has, plus what it lacks at either end.
-async fn bars_since(store: &ResearchStore, http: &reqwest::Client, plan: &Plan, from: i64) -> Result<Vec<Bar>> {
-    let cached = store.lab_bars(&plan.instrument, &plan.bar, from)?;
+async fn bars_since(
+    store: &ResearchStore,
+    http: &reqwest::Client,
+    plan: &Plan,
+    inst: &str,
+    from: i64,
+) -> Result<Vec<Bar>> {
+    let cached = store.lab_bars(inst, &plan.bar, from)?;
     let mut fetched = Vec::new();
     match (cached.first(), cached.last()) {
         (Some(first), Some(last)) => {
-            fetched.extend(history(http, plan, now_ms(), last.0 + 1).await?);
+            fetched.extend(history(http, plan, inst, now_ms(), last.0 + 1).await?);
             if first.0 > from + plan.bar_ms {
-                fetched.extend(history(http, plan, first.0, from).await?);
+                fetched.extend(history(http, plan, inst, first.0, from).await?);
             }
         }
-        _ => fetched = history(http, plan, now_ms(), from).await?,
+        _ => fetched = history(http, plan, inst, now_ms(), from).await?,
     }
-    let rows: Vec<_> = fetched.iter().map(|b| (b.ts, b.open, b.high, b.low, b.close)).collect();
-    store.insert_lab_bars(&plan.instrument, &plan.bar, &rows)?;
-    let all = store.lab_bars(&plan.instrument, &plan.bar, from)?;
-    Ok(all.into_iter().map(|b| Bar { ts: b.0, open: b.1, high: b.2, low: b.3, close: b.4 }).collect())
+    save(store, plan, inst, &fetched)?;
+    let all = store.lab_bars(inst, &plan.bar, from)?;
+    Ok(all.into_iter().map(|b| Bar { ts: b.0, open: b.1, high: b.2, low: b.3, close: b.4, volume: b.5 }).collect())
+}
+
+fn save(store: &ResearchStore, plan: &Plan, inst: &str, bars: &[Bar]) -> Result<()> {
+    let rows: Vec<_> = bars.iter().map(|b| (b.ts, b.open, b.high, b.low, b.close, b.volume)).collect();
+    Ok(store.insert_lab_bars(inst, &plan.bar, &rows)?)
 }
 
 /// One experiment over `bars`: each decision filled at the next bar's open.
-pub fn simulate(plan: &Plan, e: &Experiment, bars: &[Bar]) -> Stats {
+/// `other`: the other coin's close for each bar (only a model rule reads it).
+pub fn simulate(plan: &Plan, e: &Experiment, bars: &[Bar], other: &[f64]) -> Stats {
     let mut acct = Account::new(plan.capital);
     let mut points = Vec::with_capacity(bars.len());
     for i in 0..bars.len().saturating_sub(1) {
@@ -227,7 +288,7 @@ pub fn simulate(plan: &Plan, e: &Experiment, bars: &[Bar]) -> Stats {
             &plan.costs,
             plan.capital,
             &mut acct,
-            &bars[..=i],
+            (&bars[..=i], Ctx { model: e.model.as_deref(), other: other.get(..=i).unwrap_or(&[]) }),
             (next.open, next.open, next.ts),
         );
         points.push(Point { ts: bars[i].ts, close: bars[i].close, equity, sol_value: sol * bars[i].close });
@@ -270,15 +331,27 @@ pub async fn backtest(cfg: &Config, file: &Path, days: u32, json: bool) -> Resul
     let http = http()?;
     let from = now_ms() - i64::from(days) * 86_400_000;
     eprintln!("candles of {} {} since {} (cached in {})…", plan.instrument, plan.bar, date(from), db.display());
-    let bars = bars_since(&store, &http, &plan, from).await?;
+    let bars = bars_since(&store, &http, &plan, &plan.instrument, from).await?;
     if bars.len() < 10 {
         bail!("only {} candles came back for {} {}", bars.len(), plan.instrument, plan.bar);
     }
-    let all: Vec<Stats> = plan.experiments.iter().map(|e| simulate(&plan, e, &bars)).collect();
+    let other = match other_of(&plan) {
+        Some(inst) => beside(&bars, &bars_since(&store, &http, &plan, inst, from).await?),
+        None => Vec::new(),
+    };
+    let all: Vec<Stats> = plan.experiments.iter().map(|e| simulate(&plan, e, &bars, &other)).collect();
     if json {
         println!("{}", serde_json::to_string_pretty(&all)?);
     } else {
         print!("{}", stats::render(&header(&plan, "backtest", &bars), &all));
+        for e in plan.experiments.iter().filter(|e| e.model.is_some()) {
+            let m = e.model.as_ref().expect("filtered");
+            println!(
+                "`{}` is a model trained on candles up to {}: it stays out before that day (it has seen those answers),\n\
+                 so only the bars after it count for it.",
+                e.name, m.trained_to
+            );
+        }
     }
     Ok(())
 }
@@ -302,7 +375,12 @@ pub async fn run(cfg: &Config, file: &Path, duration: Option<u64>) -> Result<()>
     let http = http()?;
     store.begin_lab_run(&plan.id, now_ms(), env!("CARGO_PKG_VERSION"), &plan.manifest)?;
     let warmup = plan.experiments.iter().map(|e| e.rule.warmup()).max().unwrap_or(2) as i64 + 4;
-    let mut bars = bars_since(&store, &http, &plan, now_ms() - warmup * plan.bar_ms).await?;
+    let since = now_ms() - warmup * plan.bar_ms;
+    let mut bars = bars_since(&store, &http, &plan, &plan.instrument, since).await?;
+    let mut other_bars = match other_of(&plan) {
+        Some(inst) => bars_since(&store, &http, &plan, inst, since).await?,
+        None => Vec::new(),
+    };
     let mut accounts: Vec<(i64, Account)> = Vec::new();
     for e in &plan.experiments {
         accounts.push(match store.lab_state(&plan.id, &e.name)? {
@@ -334,7 +412,7 @@ pub async fn run(cfg: &Config, file: &Path, duration: Option<u64>) -> Result<()>
             break;
         }
         let newest = bars.last().map_or(0, |b| b.ts);
-        let fresh = match history(&http, &plan, now_ms(), newest + 1).await {
+        let fresh = match history(&http, &plan, &plan.instrument, now_ms(), newest + 1).await {
             Ok(f) => f,
             Err(e) => {
                 eprintln!("{}  candles: {e:#}", searcher_core::Ts::now().hms());
@@ -344,12 +422,20 @@ pub async fn run(cfg: &Config, file: &Path, duration: Option<u64>) -> Result<()>
         if fresh.is_empty() {
             continue;
         }
-        store.insert_lab_bars(
-            &plan.instrument,
-            &plan.bar,
-            &fresh.iter().map(|b| (b.ts, b.open, b.high, b.low, b.close)).collect::<Vec<_>>(),
-        )?;
+        // the other coin's bar of the same quarter hour; a model without it gives no signal
+        if let Some(inst) = other_of(&plan) {
+            let have = other_bars.last().map_or(0, |b| b.ts);
+            match history(&http, &plan, inst, now_ms(), have + 1).await {
+                Ok(f) => {
+                    save(&store, &plan, inst, &f)?;
+                    other_bars.extend(f);
+                }
+                Err(e) => eprintln!("{}  candles of {inst}: {e:#}", searcher_core::Ts::now().hms()),
+            }
+        }
+        save(&store, &plan, &plan.instrument, &fresh)?;
         bars.extend(fresh);
+        let other = beside(&bars, &other_bars);
         let last = *bars.last().expect("just extended");
         // the bar closed `late` ms ago; a signal that old is recorded but not acted on
         let late = now_ms() - (last.ts + plan.bar_ms);
@@ -360,9 +446,15 @@ pub async fn run(cfg: &Config, file: &Path, duration: Option<u64>) -> Result<()>
                 let is_last = bar.ts == last.ts;
                 let sol_value = acct.sol() * bar.close;
                 let (fills, equity) = match quote.filter(|_| is_last) {
-                    Some((bid, ask)) => {
-                        step(&e.rule, &plan.stops, &plan.costs, plan.capital, acct, &bars[..=i], (ask, bid, now_ms()))
-                    }
+                    Some((bid, ask)) => step(
+                        &e.rule,
+                        &plan.stops,
+                        &plan.costs,
+                        plan.capital,
+                        acct,
+                        (&bars[..=i], Ctx { model: e.model.as_deref(), other: other.get(..=i).unwrap_or(&[]) }),
+                        (ask, bid, now_ms()),
+                    ),
                     // a bar the machine slept through, or no book: the account is marked, nothing is done
                     None => (Vec::new(), acct.equity(bar.close)),
                 };
@@ -381,7 +473,7 @@ pub async fn run(cfg: &Config, file: &Path, duration: Option<u64>) -> Result<()>
                         cost_usd: f.cost_usd,
                     })
                     .collect();
-                let row = (bar.ts, bar.open, bar.high, bar.low, bar.close);
+                let row = (bar.ts, bar.open, bar.high, bar.low, bar.close, bar.volume);
                 store.record_lab_bar(
                     (&plan.id, &e.name),
                     &row,
@@ -431,6 +523,9 @@ pub async fn run(cfg: &Config, file: &Path, duration: Option<u64>) -> Result<()>
         if bars.len() > keep * 2 {
             bars.drain(..bars.len() - keep);
         }
+        if other_bars.len() > keep * 2 {
+            other_bars.drain(..other_bars.len() - keep);
+        }
     }
     println!("stopped; `--lab-report` shows what each experiment did");
     Ok(())
@@ -461,7 +556,7 @@ pub fn report(cfg: &Config, json: bool) -> Result<()> {
             if points.len() > seen.len() {
                 seen = points
                     .iter()
-                    .map(|p| Bar { ts: p.ts, open: p.close, high: p.close, low: p.close, close: p.close })
+                    .map(|p| Bar { ts: p.ts, open: p.close, high: p.close, low: p.close, close: p.close, volume: 0.0 })
                     .collect();
             }
             all.push(stats(&e.name, plan.capital, &plan.costs, &points, &acct));
@@ -534,10 +629,10 @@ lots = 4
             .enumerate()
             .map(|(i, &c)| {
                 let open = if i == 0 { c } else { closes[i - 1] };
-                Bar { ts: i as i64 * 900_000, open, high: open.max(c), low: open.min(c), close: c }
+                Bar { ts: i as i64 * 900_000, open, high: open.max(c), low: open.min(c), close: c, volume: 1.0 }
             })
             .collect();
-        let all: Vec<Stats> = plan.experiments.iter().map(|e| simulate(&plan, e, &bars)).collect();
+        let all: Vec<Stats> = plan.experiments.iter().map(|e| simulate(&plan, e, &bars, &[])).collect();
         // reversal: in at the open after the first fall (98.9), out at the open after the first rise (97.9)
         assert_eq!(all[0].trades, 1);
         assert!((all[0].ret - (97.9 / 98.9 - 1.0)).abs() < 1e-9, "{}", all[0].ret);
