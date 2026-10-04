@@ -228,7 +228,8 @@ impl Account {
     }
 
     pub fn sol(&self) -> f64 {
-        self.lots.iter().map(|l| l.sol).sum()
+        // not `sum()`: of nothing it is -0.0, and prints as "-0.000000"
+        self.lots.iter().fold(0.0, |held, l| held + l.sol)
     }
 
     /// Cash plus the SOL held, at `price`.

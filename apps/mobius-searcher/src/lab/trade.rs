@@ -62,6 +62,8 @@ const MAX_TIP: u64 = 4_000;
 /// Lamports of a sold lot kept back to pay for the sale (signature, priority
 /// fee, tip): a sale never spends SOL the run did not buy.
 const SELL_HOLDBACK: u64 = 5_000 + MAX_PRIORITY_FEE + MAX_TIP;
+/// The share of the budget that, found in the wallet as USDC, is taken as the budget.
+const NEARLY: f64 = 0.95;
 /// A swap sent this long ago, ms, can no longer land: its blockhash lives about a minute.
 pub const SETTLED_AFTER_MS: i64 = 120_000;
 /// Rent of a token account, lamports: what opening one costs the wallet.
@@ -90,6 +92,11 @@ pub struct Live {
 
 fn default_slippage() -> u16 {
     30
+}
+
+/// A share as a percentage, without digits it does not need: 0.5 is `50`, 0.0001 is `0.01`.
+pub fn percent(share: f64) -> String {
+    format!("{}", (share * 10_000.0).round() / 100.0)
 }
 
 impl Live {
@@ -315,12 +322,13 @@ impl<C: Chain> Trader<'_, C> {
             Err(e) => return self.say(format!("the wallet could not be read ({e}): the budget is not set aside yet")),
         };
         let have = usdc as f64 / 1e6;
-        if have >= self.live.budget_usd {
+        // all of it, or nearly (what an earlier run left): a swap for the last cents costs more than it brings
+        if have >= self.live.budget_usd * NEARLY {
             self.state.funded = true;
-            self.state.account.cash = self.live.budget_usd;
+            self.state.account.cash = have.min(self.live.budget_usd);
             return self.say(format!(
-                "the wallet holds {have:.4} USDC: {:.2} of it is the rule's budget",
-                self.live.budget_usd
+                "the wallet holds {have:.4} USDC: {:.4} of it is the rule's budget",
+                self.state.account.cash
             ));
         }
         // a little more than the price says, so that slippage does not leave it short
@@ -382,8 +390,8 @@ impl<C: Chain> Trader<'_, C> {
         if equity <= floor || self.state.account.frozen {
             if !self.state.account.frozen {
                 self.say(format!(
-                    "STOP: the budget's value is {equity:.4} USD, at or under {floor:.4} ({:.0} % down): selling what is held, the run ends",
-                    self.live.stop_total_loss * 100.0
+                    "STOP: the budget's value is {equity:.4} USD, at or under {floor:.4} ({} % down): selling what is held, the run ends",
+                    percent(self.live.stop_total_loss)
                 ));
             }
             self.state.account.frozen = true;
@@ -755,11 +763,13 @@ impl Mainnet {
         Ok(Sent::Sent(format!("{note}; {fate}; signature {signature}{refused}")))
     }
 
-    /// The node's newest confirmed blockhash and the last block height it is valid at.
+    /// The node's newest finalized blockhash and the last block height it is
+    /// valid at. Finalized: a public RPC is several nodes, and every one of
+    /// them knows it; it costs some thirteen of the sixty seconds a blockhash lives.
     async fn latest_blockhash(&self) -> Result<([u8; 32], u64), String> {
         let (v, _) = self
             .rpc
-            .call("getLatestBlockhash", json!([{"commitment": "confirmed"}]))
+            .call("getLatestBlockhash", json!([{"commitment": "finalized"}]))
             .await
             .map_err(|e| format!("blockhash: {e}"))?;
         let hash: Option<Address> = v.pointer("/value/blockhash").and_then(Value::as_str).and_then(|s| s.parse().ok());
@@ -1024,6 +1034,12 @@ stop = 0.05
         let mut st = State::default();
         run(&mock, &mut st, &[120.0]).await;
         assert!(st.funded && mock.sends.lock().is_empty() && st.account.cash == 2.0);
+        // what an earlier run left, a few cents short: taken as it is, no swap for the rest
+        let mock = Mock::new(0.188, 1.95, 120.0);
+        let mut st = State::default();
+        let said = run(&mock, &mut st, &[120.0]).await;
+        assert!(st.funded && mock.sends.lock().is_empty() && st.account.cash == 1.95, "{said:?}");
+        assert_eq!((percent(0.5), percent(0.0001), percent(0.125)), ("50".into(), "0.01".into(), "12.5".into()));
         // 0.02 SOL: 2 USD of it and the reserve do not both fit
         let mock = Mock::new(0.02, 0.0, 120.0);
         let mut st = State::default();

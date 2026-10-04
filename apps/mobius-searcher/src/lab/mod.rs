@@ -582,7 +582,7 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
     let now = || searcher_core::Ts::now().hms();
     println!(
         "{} · {} · rule `{}` on {} {} · wallet {}\n\
-         budget {:.2} USD, set aside as USDC once · at {:.0} % down everything is sold and the run ends · slippage {} bp",
+         budget {:.2} USD, set aside as USDC once · at {} % down everything is sold and the run ends · slippage {} bp",
         if dry_run { "DRY RUN: nothing is signed or sent" } else { "REAL MONEY" },
         &run[..14],
         e.name,
@@ -590,7 +590,7 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
         plan.bar,
         chain.taker(),
         live.budget_usd,
-        live.stop_total_loss * 100.0,
+        trade::percent(live.stop_total_loss),
         live.slippage_bps
     );
     let (lamports, usdc) = chain.balances().await.map_err(|e| anyhow::anyhow!("reading the wallet: {e}"))?;
@@ -878,7 +878,14 @@ pub fn report(cfg: &Config, json: bool) -> Result<()> {
                 if real {
                     head = head.replace("costs ", "the costs below are the wallet's own · modelled costs ");
                 }
-                println!("{}", stats::render(&head, &all));
+                let mut text = stats::render(&head, &all);
+                if real {
+                    text = text.replace(
+                        "Fills in a backtest are an assumption (the next bar's open); nothing here was sent anywhere.",
+                        "These were real swaps, accounted for from the wallet's balances; each is in the journal below.",
+                    );
+                }
+                println!("{text}");
             }
             for (ts, line) in store.lab_journal(&id)? {
                 println!("  {} {}  {line}", date(ts), searcher_core::Ts(ts * 1000).hms());

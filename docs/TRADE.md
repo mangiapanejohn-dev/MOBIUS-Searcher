@@ -61,7 +61,9 @@ with a new budget; close the old one first.
 
 1. **Once:** if the wallet holds less USDC than the budget, it sells SOL for
    the difference. The fee reserve of your config and 0.003 SOL more must
-   remain, or it sends nothing.
+   remain, or it sends nothing. USDC already there counts; when 95 % of the
+   budget or more is there (what an earlier run left), that is the budget
+   and nothing is swapped.
 2. **At each bar's close** (OKX candles of `instrument`), in this order: a
    swap still open from before is settled from the wallet; if the budget's
    value is at or under the stop, everything is sold and the run ends;
@@ -79,9 +81,9 @@ with a new budget; close the old one first.
    It is then given a blockhash of your own RPC node and sent as an ordinary
    transaction, to that node and through Jito straight to the leader, again
    every two seconds until it is confirmed or its blockhash has expired
-   (about a minute). The signature is the same
-   every time, so it lands at most once. The journal has the signature and
-   what became of it: confirmed, landed and failed, or expired.
+   (under a minute). The signature is the same every time, so it lands at
+   most once. The journal has the signature and what became of it:
+   confirmed, landed and failed, or expired.
 4. **The account is what the wallet shows.** After a send the wallet's SOL
    and USDC are read; the difference is the fill, every fee inside. A swap
    that did not land changes nothing, and is given up only two minutes after
