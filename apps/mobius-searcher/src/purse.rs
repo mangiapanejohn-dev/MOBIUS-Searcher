@@ -587,11 +587,13 @@ pub fn port(cfg: &Config, zh: bool) -> WalletPort {
             let watch = worker.clone();
             // what it holds every ten seconds, what came and went every minute
             let watching = tokio::spawn(async move {
-                for round in 0u64.. {
+                let mut round = 0u64;
+                loop {
                     watch.refresh().await;
                     if round % 6 == 0 {
                         watch.history().await;
                     }
+                    round = round.wrapping_add(1);
                     tokio::time::sleep(Duration::from_secs(10)).await;
                 }
             });
