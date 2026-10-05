@@ -692,6 +692,8 @@ fn bots_view() -> BotsView {
         ],
         file: Some("/Users/me/.config/mobius/trade-fast.toml".into()),
         wish: None,
+        opened: None,
+        equity: Vec::new(),
     };
     let paper = BotView {
         id: "803bcf65/reversal".into(),
@@ -738,10 +740,21 @@ fn the_bots_page_says_what_a_bot_holds_and_what_it_waits_for() {
         "buys under 120.93",
         "sells above 121.33",
         "now 120.80  under its buy price",
-        "2.0000 USDC · no SOL",
-        "1.00 USD or less, then it ends",
-        "1 closed · 0 won",
+        // beside the chart on a screen this wide: the account, what it waits for, what it did so far, what is next
+        "ACCOUNT",
+        "2.0000 USD   +0.00 %",
+        "all sold at 1.00 USD or less",
+        "WAITING TO BUY",
+        "120.80   under it already",
+        "SO FAR",
+        "1, 0 of them won",
         "-0.0035 USD",
+        "NEXT",
+        "Decides at",
+        // and its trades as a table, beside its record
+        "ITS TRADES",
+        "0.016464    2.0000     121.48",
+        "0.016464    1.9965     121.26     -0.0035 USD",
         // the arithmetic behind the prices
         "HOW ITS PRICES ARE WORKED OUT",
         "From the closes of the last 96 15m bars (1 d): their average 121.33, their deviation 0.40",
@@ -797,8 +810,14 @@ fn the_bots_page_reads_in_chinese_for_an_operator_who_does() {
         "卖出线 121.33",
         "已在买入线下方",
         "市值",
-        "2.0000 USDC · 没有 SOL",
-        "市值跌到 1.00 美元就全部卖出并结束",
+        "账户",
+        "市值跌到 1.00 美元就全部卖出",
+        "等待买入",
+        "战绩",
+        "1 笔，其中赚 0 笔",
+        "接下来",
+        "下一次判断",
+        "成交记录",
         "这些线是怎么算出来的",
         "取最近 96 根15 分钟线（约 1 天）的收盘价：平均价 121.33，波动幅度（标准差）0.40",
         "买入线 = 平均价 − 1 × 波动 = 120.93",
@@ -1461,4 +1480,49 @@ fn a_new_bot_is_written_on_the_page_and_made_only_with_the_operators_word() {
     ] {
         assert!(out.contains(needle), "missing `{needle}`:\n{out}");
     }
+}
+
+#[test]
+fn a_bots_buys_and_sales_are_trades_of_the_wallet_and_listed_as_such() {
+    let vm = populated();
+    let mut a = bots_app(bots_view());
+    // the Trades page: the bots' own first, each with its bot, its side, what for what, at what price, what it made
+    press(&mut a, &vm, KeyCode::Char('5'));
+    let out = buffer_text(&snapshot(&mut a, &vm, 160, 50));
+    show(&out);
+    for needle in [
+        "BOT TRADES (buy low, sell high)",
+        "2 · page 9 has the bots",
+        "dip-1d",
+        "sell    0.016464     1.9965      121.26      -0.0035 USD",
+        "buy     0.016464     2.0000      121.48",
+        // the arbitrage's own are under them, as before
+        "TRADES",
+        "Session PnL",
+    ] {
+        assert!(out.contains(needle), "missing `{needle}`:\n{out}");
+    }
+    assert!(out.find("sell    0.016464") < out.find("buy     0.016464"), "newest first:\n{out}");
+    a.zh = true;
+    let out = buffer_text(&snapshot(&mut a, &vm, 160, 50));
+    assert!(out.contains("机器人成交（低买高卖）") && out.contains("卖出") && out.contains("这笔盈亏"), "{out}");
+    // a real bot that has not traded yet: said, so that the place is known
+    let mut view = bots_view();
+    view.bots[0].journal.clear();
+    let mut a = bots_app(view);
+    press(&mut a, &vm, KeyCode::Char('5'));
+    let out = buffer_text(&snapshot(&mut a, &vm, 160, 50));
+    assert!(out.contains("none yet: a bot's buys and sales are listed here as they happen"), "{out}");
+    // without a real bot the page is the arbitrage's alone
+    let mut view = bots_view();
+    view.bots.remove(0);
+    let mut a = bots_app(view);
+    press(&mut a, &vm, KeyCode::Char('5'));
+    assert!(!buffer_text(&snapshot(&mut a, &vm, 160, 50)).contains("BOT TRADES"));
+    // the Markets page's order history has them too, among the arbitrage's
+    let mut a = bots_app(bots_view());
+    press(&mut a, &vm, KeyCode::Char('2'));
+    a.mk_tab = searcher_tui::markets::BottomTab::OrderHistory;
+    let out = buffer_text(&snapshot(&mut a, &vm, 160, 50));
+    assert!(out.contains("bot") && out.contains("sell SOL @ 121.26") && out.contains("buy SOL @ 121.48"), "{out}");
 }

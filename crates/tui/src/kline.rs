@@ -356,7 +356,8 @@ pub fn render_kline(
         hi = hi.max(*v);
     }
     // A level near what is drawn is part of the picture; one far off is named at the edge it lies beyond.
-    let reach = (hi - lo).max(hi.abs() * 0.002) * 1.5;
+    // (near: within two fifths of the range drawn; a stop five per cent away would otherwise press the candles into a corner)
+    let reach = (hi - lo).max(hi.abs() * 0.002) * 0.4;
     let (near, far): (Vec<&Level>, Vec<&Level>) =
         k.levels.iter().partition(|l| l.value > lo - reach && l.value < hi + reach);
     for l in &near {

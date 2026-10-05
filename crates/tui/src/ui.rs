@@ -574,7 +574,15 @@ fn samples_panel(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel) {
 fn page_trades(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
     let th = &app.theme;
     let g = &app.glyphs;
-    let body = inset(body);
+    let mut body = inset(body);
+    // the bots' own buys and sales first, where there is a real bot: they are trades of this wallet too
+    let fills = crate::bots::bot_fills(app);
+    let has_real = app.bots.as_ref().is_some_and(|b| b.read().bots.iter().any(|b| b.real));
+    if has_real && body.height >= 16 {
+        let h = (fills.len() as u16 + 3).clamp(3, body.height / 3);
+        crate::bots::fills_section(buf, Rect { height: h, ..body }, app, &fills);
+        body = Rect { y: body.y + h, height: body.height - h, ..body };
+    }
     let (tbl, chart) = split_v(body, 55);
     let paper = vm.trades.iter().filter(|t| t.paper).count();
     let right = format!("{} trades · {} paper (simulated) · {} live", vm.trades.len(), paper, vm.trades.len() - paper);

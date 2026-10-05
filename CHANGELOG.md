@@ -46,6 +46,17 @@ before 1.0 a minor version may change configuration or behaviour.
   the operator types. It writes a rules file like one written by hand into
   the config directory and starts nothing: `s` does.
 
+- **A bot's buys and sales are listed as trades**: first on the Trades page
+  (when, which bot, what for what, at what price, what a sale made), in the
+  Markets page's order history among the arbitrage's own, and as a table on
+  the Bots page. On a wide screen the Bots page puts the account beside the
+  chart and says more of it under words of their own: the position (when it
+  was bought, for how long, what it is up or down, how far to its sale and
+  to its stop) or what it waits for, what it has done so far, the day's
+  market, when it decides next, and its worth bar by bar. A price the rule
+  acts at that is far from the candles (a stop five per cent under) is named
+  at the chart's edge instead of pressing the candles into a corner.
+
 - **Paper experiments are not listed among the bots** until `p` asks for
   them: a simulated account is not the operator's money. A run that has
   ended is shown as ended with what it ended at, not as holding it, and a

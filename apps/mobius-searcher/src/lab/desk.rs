@@ -145,6 +145,8 @@ fn bot(plan: &Plan, e: &Experiment, acct: &Account, bars: &[Bar], zh: bool) -> B
         journal: Vec::new(),
         file: None,
         wish: None,
+        opened: acct.lots.first().map(|l| l.opened),
+        equity: Vec::new(),
     }
 }
 
@@ -193,6 +195,12 @@ impl Desk {
             (b.budget, b.stop_at) = (budget, Some(budget * (1.0 - live.stop_total_loss)));
             b.wish = wish(&wish_path(&self.data_dir, id)).filter(|_| state.ended.is_none());
             b.worth = b.worth.filter(|_| state.funded);
+            // its worth bar by bar, the newest stretch of it
+            let mut equity: Vec<(i64, f64)> =
+                store.lab_equity(id, &e.name)?.into_iter().map(|(ts, _, worth, _)| (ts + plan.bar_ms, worth)).collect();
+            let keep = equity.len().saturating_sub(BARS_SHOWN);
+            equity.drain(..keep);
+            b.equity = equity;
             b.journal = store.lab_journal(id)?;
             let keep = b.journal.len().saturating_sub(400);
             b.journal.drain(..keep);

@@ -593,20 +593,45 @@ fn bottom_panel(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel) {
                 (92, "Net USD"),
             ];
             header(buf, inner, &cols, f);
-            for (i, t) in vm.trades.iter().rev().take(inner.height as usize - 1).enumerate() {
-                let y = inner.y + 1 + i as u16;
+            // the arbitrage's trades and the bots' buys and sales, in one history, newest first
+            let mut rows: Vec<(i64, [String; 7], f64)> = vm
+                .trades
+                .iter()
+                .map(|t| {
+                    let vals = [
+                        t.exit_ts.hms(),
+                        if t.paper { "paper".into() } else { t.mode.label().to_string() },
+                        t.strategy.label().into(),
+                        t.label.clone(),
+                        sol_amount(t.input as i128),
+                        signed_thousands(t.net),
+                        t.net_usd.map(|u| u.to_string()).unwrap_or_default(),
+                    ];
+                    (t.exit_ts.0, vals, t.net as f64)
+                })
+                .collect();
+            let bots = crate::bots::bot_fills(app);
+            rows.extend(bots.iter().map(|(name, fill)| {
                 let vals = [
-                    t.exit_ts.hms(),
-                    if t.paper { "paper".into() } else { t.mode.label().to_string() },
-                    t.strategy.label().into(),
-                    t.label.clone(),
-                    sol_amount(t.input as i128),
-                    signed_thousands(t.net),
-                    t.net_usd.map(|u| u.to_string()).unwrap_or_default(),
+                    Ts(fill.at * 1000).hms(),
+                    "bot".to_string(),
+                    name.clone(),
+                    if fill.buy {
+                        format!("buy SOL @ {:.2}", fill.price)
+                    } else {
+                        format!("sell SOL @ {:.2}", fill.price)
+                    },
+                    format!("{:.6}", fill.sol),
+                    String::new(),
+                    fill.net.map(|n| format!("{n:+.4}")).unwrap_or_default(),
                 ];
-                cells(buf, inner, y, &cols, &vals, th.pnl(t.net as f64));
+                (fill.at * 1000, vals, fill.net.unwrap_or(0.0))
+            }));
+            rows.sort_by_key(|r| std::cmp::Reverse(r.0));
+            for (i, (_, vals, net)) in rows.iter().take(inner.height as usize - 1).enumerate() {
+                cells(buf, inner, inner.y + 1 + i as u16, &cols, vals, th.pnl(*net));
             }
-            if vm.trades.is_empty() {
+            if rows.is_empty() {
                 text(buf, inner.x, inner.y + 1, "No trades yet — nothing has passed simulation + risk", inner.width, f);
             }
         }

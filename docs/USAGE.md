@@ -80,7 +80,7 @@ Display options: `--glyphs unicode|ascii`, `--color truecolor|ansi256|none`,
 | `2` Markets | exchange-style view: price chart (line or candles, 1s–1D) with VWMA, live price tag and high/low markers; DEX quote book / last trades; open orders, order history, assets, bots; ticker strip |
 | `3` Opportunities | every evaluated route and why it was skipped; `⏎` inspects one |
 | `4` Graphs | up to 6 stacked metrics with a cursor, A/B markers and a samples table |
-| `5` Trades | fills and session PnL |
+| `5` Trades | the bots' buys and sales (when there is a real bot), then the arbitrage's fills and session PnL |
 | `6` Risk | kill switch, limits, why opportunities were not executed |
 | `7` System | every connection: state, latency, errors, requests, rate limits; feeds |
 | `8` Logs | merged log |
