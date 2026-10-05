@@ -1367,26 +1367,32 @@ fn for_who_reads_chinese_the_frame_is_in_it_and_the_help_explains_the_page() {
         "一个机器人就是一条规则加一笔预算",
         "清仓线",
         "调预算：给它加钱或减钱（1 到 25 美元）",
-        "只是换个周期看价格，规则仍按它自己的周期判断",
-        "机器人可能亏钱，没有任何保证",
-        "每一页都能用的键",
-        "任意键关闭",
+        // its names and its keys as tables
+        "│ 名称",
+        "│ 按键",
+        "Esc 关闭",
     ] {
         assert!(out.contains(needle), "missing `{needle}`:\n{out}");
     }
-    press(&mut a, &vm, KeyCode::Char(' '));
+    // longer than the window: it scrolls, down to what to know and the keys of every page
+    assert!(out.contains("↑↓ 滚动"), "{out}");
+    for _ in 0..4 {
+        press(&mut a, &vm, KeyCode::PageDown);
+    }
+    let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));
+    assert!(out.contains("每一页都能用的键") && out.contains("机器人可能亏钱，没有任何保证"), "{out}");
+    press(&mut a, &vm, KeyCode::Esc);
     press(&mut a, &vm, KeyCode::Char('0'));
     press(&mut a, &vm, KeyCode::Char('?'));
     let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));
-    for needle in ["说明 · 钱包", "转出的步骤", "输入收款地址的最后 4 位", "链上转账发出后无法撤回"]
-    {
+    for needle in ["说明 · 钱包", "转出的步骤", "输入收款地址的最后 4 位"] {
         assert!(out.contains(needle), "missing `{needle}`:\n{out}");
     }
-    // a small window says that there is more
+    // a small window scrolls too
     let out = buffer_text(&snapshot(&mut a, &vm, 100, 30));
-    assert!(out.contains("说明 · 钱包") && out.contains("窗口再高一些可以看到全部"), "{out}");
+    assert!(out.contains("说明 · 钱包") && out.contains("↑↓ 滚动"), "{out}");
     // the question of the kill switch can still be clicked in the footer
-    press(&mut a, &vm, KeyCode::Char(' '));
+    press(&mut a, &vm, KeyCode::Esc);
     let _ = snapshot(&mut a, &vm, 200, 58);
     assert!(
         a.hits.borrow().iter().any(|(_, h)| *h == Hit::Help) && a.hits.borrow().iter().any(|(_, h)| *h == Hit::Kill)

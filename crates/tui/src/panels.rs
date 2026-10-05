@@ -718,6 +718,87 @@ pub enum Doc {
     Field,
     Text,
     Blank,
+    /// A table (`| a | b |` lines, as in Markdown): a line of its frame, its heading row, a row of its cells.
+    TableRule,
+    TableHead,
+    TableRow,
+}
+
+/// The cells of a `| a | b |` line.
+fn cells_of(line: &str) -> Vec<String> {
+    let inner = line.trim().trim_start_matches('|');
+    let inner = inner.strip_suffix('|').unwrap_or(inner);
+    inner.split('|').map(|c| c.trim().to_string()).collect()
+}
+
+/// A Markdown table as rows to draw, framed, in `w` columns: its heading
+/// (when its second line is `|---|`), then its rows. Every column is as wide
+/// as its widest cell but the last, which takes what is left and wraps. A row
+/// whose first cell is empty goes on with the row over it; one whose first
+/// cell is not starts under a line of its own.
+fn table_rows(lines: &[&str], w: u16, unicode: bool) -> Vec<(Doc, String, String)> {
+    let mut rows: Vec<Vec<String>> = lines.iter().map(|l| cells_of(l)).collect();
+    let ruled =
+        |r: &Vec<String>| !r.is_empty() && r.iter().all(|c| !c.is_empty() && c.chars().all(|x| x == '-' || x == ':'));
+    let head = if rows.len() >= 2 && ruled(&rows[1]) {
+        rows.remove(1);
+        Some(rows.remove(0))
+    } else {
+        None
+    };
+    let n = rows.iter().chain(&head).map(Vec::len).max().unwrap_or(0);
+    if n == 0 {
+        return Vec::new();
+    }
+    let cell = |r: &Vec<String>, i: usize| r.get(i).cloned().unwrap_or_default();
+    let mut widths: Vec<u16> =
+        (0..n).map(|i| rows.iter().chain(&head).map(|r| width(&cell(r, i))).max().unwrap_or(0).max(1)).collect();
+    // the frame takes a bar and two spaces a column and one bar more; the last column has the rest
+    let frame = 3 * n as u16 + 1;
+    let others: u16 = widths[..n - 1].iter().sum();
+    let last = w.saturating_sub(frame + others);
+    if last >= 12 || n == 1 {
+        widths[n - 1] = widths[n - 1].min(last.max(1));
+    } else {
+        // too narrow for that: every column an equal share
+        let share = (w.saturating_sub(frame) / n as u16).max(1);
+        widths = vec![share; n];
+    }
+    let (v, h) = if unicode { ("│", "─") } else { ("|", "-") };
+    let rule = |l: &str, m: &str, r: &str| {
+        let (l, m, r) = if unicode { (l, m, r) } else { ("+", "+", "+") };
+        let bars: Vec<String> = widths.iter().map(|x| h.repeat(*x as usize + 2)).collect();
+        (Doc::TableRule, String::new(), format!("{l}{}{r}", bars.join(m)))
+    };
+    let draw = |kind: Doc, r: &Vec<String>| -> Vec<(Doc, String, String)> {
+        let wrapped: Vec<Vec<String>> = (0..n).map(|i| wrap_hard(&cell(r, i), widths[i])).collect();
+        let tall = wrapped.iter().map(Vec::len).max().unwrap_or(1).max(1);
+        (0..tall)
+            .map(|k| {
+                let parts: Vec<String> = (0..n)
+                    .map(|i| {
+                        let text = wrapped[i].get(k).cloned().unwrap_or_default();
+                        let pad = (widths[i] as usize).saturating_sub(width(&text) as usize);
+                        format!(" {text}{} ", " ".repeat(pad))
+                    })
+                    .collect();
+                (kind, String::new(), format!("{v}{}{v}", parts.join(v)))
+            })
+            .collect()
+    };
+    let mut out = vec![rule("┌", "┬", "┐")];
+    if let Some(h) = &head {
+        out.extend(draw(Doc::TableHead, h));
+        out.push(rule("├", "┼", "┤"));
+    }
+    for (i, r) in rows.iter().enumerate() {
+        if i > 0 && !cell(r, 0).is_empty() {
+            out.push(rule("├", "┼", "┤"));
+        }
+        out.extend(draw(Doc::TableRow, r));
+    }
+    out.push(rule("└", "┴", "┘"));
+    out
 }
 
 /// `s` in rows of at most `w` columns: between words where it can, and
@@ -743,14 +824,23 @@ pub fn wrap_hard(s: &str, w: u16) -> Vec<String> {
 }
 
 /// A detail's text as rows to draw: what each is, its name (a field's first
-/// row) and its text. The text is plain, with three marks borrowed from
-/// Markdown and tables: `# ` a heading, `## ` an entry, a tab between a name
-/// and its value. Returns the rows and the width of the names' column.
-pub fn doc_rows(body: &str, w: u16) -> (Vec<(Doc, String, String)>, u16) {
+/// row) and its text. The text is plain, with marks borrowed from Markdown:
+/// `# ` a heading, `## ` an entry, `| a | b |` lines a table, and a tab
+/// between a name and its value. Returns the rows and the width of the names' column.
+pub fn doc_rows(body: &str, w: u16, unicode: bool) -> (Vec<(Doc, String, String)>, u16) {
     let names = body.lines().filter_map(|l| l.split_once('\t')).map(|(k, _)| width(k));
     let key_w = names.max().map_or(0, |m| (m + 3).min(26)).min(w / 2);
+    let lines: Vec<&str> = body.lines().collect();
     let mut rows = Vec::new();
-    for line in body.lines() {
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i];
+        if line.trim_start().starts_with('|') {
+            let end = lines[i..].iter().position(|l| !l.trim_start().starts_with('|')).map_or(lines.len(), |n| i + n);
+            rows.extend(table_rows(&lines[i..end], w, unicode));
+            i = end;
+            continue;
+        }
         if line.trim().is_empty() {
             rows.push((Doc::Blank, String::new(), String::new()));
         } else if let Some(h) = line.strip_prefix("## ") {
@@ -758,12 +848,13 @@ pub fn doc_rows(body: &str, w: u16) -> (Vec<(Doc, String, String)>, u16) {
         } else if let Some(h) = line.strip_prefix("# ") {
             rows.extend(wrap_hard(h, w).into_iter().map(|l| (Doc::Head, String::new(), l)));
         } else if let Some((k, v)) = line.split_once('\t') {
-            for (i, l) in wrap_hard(v, w.saturating_sub(key_w + 2)).into_iter().enumerate() {
-                rows.push((Doc::Field, if i == 0 { k.to_string() } else { String::new() }, l));
+            for (n, l) in wrap_hard(v, w.saturating_sub(key_w + 2)).into_iter().enumerate() {
+                rows.push((Doc::Field, if n == 0 { k.to_string() } else { String::new() }, l));
             }
         } else {
             rows.extend(wrap_hard(line, w).into_iter().map(|l| (Doc::Text, String::new(), l)));
         }
+        i += 1;
     }
     (rows, key_w)
 }
@@ -791,7 +882,7 @@ mod tests {
     #[test]
     fn a_detail_is_rows_with_headings_entries_and_named_values() {
         let body = "# 2026-10-05\n\n## 05:15:14  Bought\nAmount\t0.016542 SOL\nSignature\tABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef\nplain words here";
-        let (rows, key_w) = doc_rows(body, 30);
+        let (rows, key_w) = doc_rows(body, 30, true);
         assert_eq!(key_w, 12, "the longest name and room after it");
         let kinds: Vec<Doc> = rows.iter().map(|r| r.0).collect();
         assert_eq!(kinds, [Doc::Head, Doc::Blank, Doc::Sub, Doc::Field, Doc::Field, Doc::Field, Doc::Field, Doc::Text]);
@@ -802,6 +893,34 @@ mod tests {
         assert_eq!(whole, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef");
         assert!(rows.iter().all(|r| width(&r.2) <= 30));
         assert_eq!(wrap_hard("一二三四五六", 6), ["一二三", "四五六"]);
+    }
+
+    #[test]
+    fn a_markdown_table_is_drawn_framed_with_its_last_column_wrapping() {
+        let body = "| 时间 | 事件 | 内容 |\n|---|---|---|\n| 05:15 | 买入 | 0.016542 SOL |\n| | | 花费 2.0000 USDC，均价 120.90 |\n| 07:30 | 卖出 | 得到 2.0100 USDC |";
+        let (rows, _) = doc_rows(body, 44, true);
+        let text: Vec<&str> = rows.iter().map(|r| r.2.as_str()).collect();
+        assert_eq!(
+            text,
+            [
+                "┌───────┬──────┬───────────────────────────┐",
+                "│ 时间  │ 事件 │ 内容                      │",
+                "├───────┼──────┼───────────────────────────┤",
+                "│ 05:15 │ 买入 │ 0.016542 SOL              │",
+                "│       │      │ 花费 2.0000 USDC，均价    │",
+                "│       │      │ 120.90                    │",
+                "├───────┼──────┼───────────────────────────┤",
+                "│ 07:30 │ 卖出 │ 得到 2.0100 USDC          │",
+                "└───────┴──────┴───────────────────────────┘",
+            ],
+            "{text:#?}"
+        );
+        assert_eq!(rows[1].0, Doc::TableHead);
+        assert!(rows.iter().all(|r| width(&r.2) == 44), "every line as wide as the frame");
+        // without the box characters it is still a table
+        let (ascii, _) = doc_rows("| a | b |\n|---|---|\n| 1 | 2 |", 20, false);
+        assert_eq!(ascii[0].2, "+---+---+");
+        assert_eq!(ascii[3].2, "| 1 | 2 |");
     }
 
     #[test]

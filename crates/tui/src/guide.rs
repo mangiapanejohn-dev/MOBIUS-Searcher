@@ -3,12 +3,7 @@
 //! because the pages about the operator's own money are read by someone who
 //! may have never seen a trading screen.
 
-use crate::app::{App, Hit, Page};
-use crate::chart::{text, width};
-use crate::panels::{overlay, overlay_hint, wrap_words};
-use ratatui::buffer::Buffer;
-use ratatui::layout::Rect;
-use ratatui::style::Modifier;
+use crate::app::Page;
 
 /// A line of a guide.
 #[derive(Clone, Copy, Debug, PartialEq)]
@@ -159,55 +154,36 @@ pub fn guide(page: Page) -> Vec<Line> {
     }
 }
 
-/// The guide of the page the operator is on, over it.
-pub fn overlay_zh(buf: &mut Buffer, area: Rect, app: &App) {
-    let th = &app.theme;
-    let bg = th.select_bg;
-    let w = 104.min(area.width.saturating_sub(2));
-    let (inner_w, key_w) = (w.saturating_sub(4), 12);
-    // every line as it will be drawn: its text, its key column, how it is styled
-    let mut rows: Vec<(String, String, u8)> = Vec::new();
-    for line in guide(app.page).iter().chain(&EVERYWHERE) {
+/// The guide of a page as a document (see `panels::doc_rows`): what the page
+/// is in words, then each group of names or keys as a table.
+pub fn doc(page: Page) -> String {
+    let mut out = String::new();
+    let mut in_table = false;
+    // the table's heading says what its two columns are: keys and what they do, or names and what they mean
+    let mut keys = false;
+    for line in guide(page).iter().chain(&EVERYWHERE) {
         match line {
             Head(h) => {
-                rows.push((String::new(), String::new(), 0));
-                rows.push((String::new(), h.to_string(), 1));
+                out += &format!("\n## {h}\n\n");
+                (in_table, keys) = (false, h.contains('键'));
             }
-            Text(t) => rows.extend(wrap_words(t, inner_w).into_iter().map(|l| (String::new(), l, 2))),
-            Item(k, what) => {
-                for (i, l) in wrap_words(what, inner_w.saturating_sub(key_w)).into_iter().enumerate() {
-                    rows.push((if i == 0 { k.to_string() } else { String::new() }, l, 3));
+            Text(t) => {
+                if in_table {
+                    out.push('\n');
                 }
+                out += &format!("{t}\n");
+                in_table = false;
+            }
+            Item(k, what) => {
+                if !in_table {
+                    out += if keys { "| 按键 | 作用 |\n|---|---|\n" } else { "| 名称 | 说明 |\n|---|---|\n" };
+                    in_table = true;
+                }
+                out += &format!("| {k} | {} |\n", what.replace('|', "/"));
             }
         }
     }
-    let room = area.height.saturating_sub(4) as usize;
-    let cut = rows.len() > room;
-    rows.truncate(room.saturating_sub(usize::from(cut)));
-    let title = format!("说明 · {}", app.page.label_zh());
-    let inner = overlay(buf, area, w, rows.len() as u16 + 2 + u16::from(cut), &title, th, &app.glyphs);
-    app.hit(Rect { x: inner.x - 2, y: inner.y - 1, width: inner.width + 4, height: inner.height + 2 }, Hit::Overlay);
-    let mut y = inner.y;
-    for (key, body, kind) in &rows {
-        match kind {
-            1 => {
-                text(buf, inner.x, y, body, inner.width, th.header(false).bg(bg));
-            }
-            3 => {
-                text(buf, inner.x, y, key, key_w, th.accent().bg(bg).add_modifier(Modifier::BOLD));
-                let x = inner.x + key_w.max(width(key) + 1);
-                text(buf, x, y, body, inner.right().saturating_sub(x), th.text().bg(bg));
-            }
-            _ => {
-                text(buf, inner.x, y, body, inner.width, th.text().bg(bg));
-            }
-        }
-        y += 1;
-    }
-    if cut {
-        text(buf, inner.x, y, "（窗口再高一些可以看到全部）", inner.width, th.faint().bg(bg));
-    }
-    overlay_hint(buf, inner, "任意键关闭", th);
+    out
 }
 
 #[cfg(test)]
@@ -227,5 +203,11 @@ mod tests {
         for k in ["s", "u", "c", "r"] {
             assert!(keys(Page::Wallet).contains(&k), "Wallet: {k}");
         }
+        // as a document: words, then a table of names and one of keys
+        let d = doc(Page::Bots);
+        assert!(d.starts_with("这一页管理"), "{d}");
+        assert!(d.contains("## 右边从上到下\n\n| 名称 | 说明 |\n|---|---|\n| 第一句话 | "), "{d}");
+        assert!(d.contains("## 这一页的键\n\n| 按键 | 作用 |\n|---|---|\n| j / k | "), "{d}");
+        assert!(d.contains("## 每一页都能用的键\n\n| 按键 | 作用 |"), "{d}");
     }
 }

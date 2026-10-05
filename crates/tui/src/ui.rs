@@ -68,7 +68,7 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, vm: &ViewModel) {
         // wide enough to be read, with a margin inside: headings, entries and named values each drawn as such
         let w = area.width.saturating_sub(8).clamp(40, 124).min(area.width.saturating_sub(2));
         let pad = 2;
-        let (rows, key_w) = crate::panels::doc_rows(&d.body, w.saturating_sub(4 + 2 * pad));
+        let (rows, key_w) = crate::panels::doc_rows(&d.body, w.saturating_sub(4 + 2 * pad), app.glyphs.unicode);
         let inner = overlay(buf, area, w, (rows.len() as u16 + 4).min(area.height - 4), &d.title, &th, &app.glyphs);
         app.hit(outer(inner), Hit::Overlay);
         let page = Rect { x: inner.x + pad, y: inner.y + 1, width: inner.width - 2 * pad, height: inner.height - 2 };
@@ -92,6 +92,16 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, vm: &ViewModel) {
                     text(buf, page.x, y, line, page.width, on(th.text()));
                 }
                 Doc::Blank => {}
+                // a table: its words in the text's colour (the heading row bold), its frame quieter than them
+                Doc::TableRule | Doc::TableHead | Doc::TableRow => {
+                    let st = if *kind == Doc::TableHead { th.text().add_modifier(Modifier::BOLD) } else { th.text() };
+                    text(buf, page.x, y, line, page.width, on(if *kind == Doc::TableRule { th.faint() } else { st }));
+                    for x in page.x..page.right() {
+                        if let Some(cell) = buf.cell_mut((x, y)).filter(|c| matches!(c.symbol(), "│" | "|")) {
+                            cell.set_style(on(th.faint()));
+                        }
+                    }
+                }
             }
         }
         let hint = match (hidden > 0, app.zh) {
@@ -1054,10 +1064,6 @@ fn thresholds_overlay(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, p
 }
 
 fn help_overlay(buf: &mut Buffer, area: Rect, app: &App) {
-    // for who reads Chinese: what the page is and what its keys do, not a list of keys
-    if app.zh {
-        return crate::guide::overlay_zh(buf, area, app);
-    }
     let th = &app.theme;
     let (lw, lh) = crate::brand::logo_size();
     let keys: u16 = HELP.iter().map(|(_, rows)| rows.len() as u16).sum();

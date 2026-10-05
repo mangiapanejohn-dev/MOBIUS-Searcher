@@ -639,7 +639,7 @@ impl App {
                     self.flash("KILL SWITCH ENGAGED — no new trades");
                 }
             }
-            KeyCode::Char('?') => self.help = true,
+            KeyCode::Char('?') => self.open_help(),
             KeyCode::Char('T') if vm.replay => self.flash("thresholds can be changed in a live session only"),
             KeyCode::Char('T') => self.thresholds = Some(crate::thresholds::Panel::default()),
             KeyCode::Char(c @ '0'..='9') => {
@@ -948,6 +948,18 @@ impl App {
         }
     }
 
+    /// `?`: the keys; for who reads Chinese, the page one is on explained (a
+    /// document with its tables, in the overlay every detail is read in).
+    fn open_help(&mut self) {
+        if self.zh {
+            let title = format!("说明 · {}", self.page.label_zh());
+            self.detail = Some(Detail { title, body: crate::guide::doc(self.page) });
+            self.detail_scroll = 0;
+        } else {
+            self.help = true;
+        }
+    }
+
     /// Ask about `action` on the bot of this id (the one a form was opened for).
     fn ask_bot_of(&mut self, id: &str, action: BotAction) {
         let found = self.bots.as_ref().and_then(|b| b.read().bots.iter().find(|b| b.id == id).cloned());
@@ -1092,7 +1104,7 @@ impl App {
         let dbl = self.double_click(x, y);
         match hit {
             Some(Hit::Page(p)) => self.goto(p),
-            Some(Hit::Help) => self.help = true,
+            Some(Hit::Help) => self.open_help(),
             Some(Hit::Kill) => return self.on_key(KeyEvent::new(KeyCode::Char('K'), KeyModifiers::NONE), vm),
             Some(Hit::Panel(f)) => self.focus_if_available(f),
             Some(Hit::Opp(id)) => {

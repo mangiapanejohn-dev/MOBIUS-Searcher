@@ -754,17 +754,17 @@ pub fn moved_detail(m: &Moved, zh: bool) -> (String, String) {
     let title = format!("{} · {}", m.kind(zh), Ts(m.at * 1000).format("%Y-%m-%d %H:%M:%S"));
     let w = |en: &'static str, cn: &'static str| if zh { cn } else { en };
     let body = format!(
-        "## {}\n{}\t{:+.9} SOL\n{}\t{:+.6} USDC\n{}\t{:.9} SOL\n\n## {}\n{}\n\n## {}\nhttps://solscan.io/tx/{}\n",
-        w("What it changed in the wallet", "这笔交易让钱包变了多少"),
-        w("SOL, its fee inside", "SOL（含手续费）"),
+        "| {} | {} |\n|---|---|\n| {} | {:+.9} SOL |\n| USDC | {:+.6} USDC |\n| {} | {:.9} SOL |\n| {} | {} |\n| {} | https://solscan.io/tx/{} |\n",
+        w("Item", "项目"),
+        w("In this transaction", "这笔交易"),
+        w("SOL, its fee inside", "SOL 变化（含手续费）"),
         m.sol,
-        "USDC",
         m.usdc,
         w("Fee this wallet paid", "这个钱包付的手续费"),
         m.fee,
-        w("Signature (its receipt on the chain)", "签名（链上的凭证）"),
+        w("Signature", "签名（链上的凭证）"),
         m.signature,
-        w("In a block explorer", "在区块浏览器里看"),
+        w("Block explorer", "区块浏览器"),
         m.signature
     );
     (title, body)

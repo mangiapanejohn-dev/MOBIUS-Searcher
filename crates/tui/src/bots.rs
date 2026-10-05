@@ -405,9 +405,12 @@ fn shaped(line: &str, shapes: &[(&str, &str)]) -> Option<String> {
 }
 
 /// The whole record of a bot as a document (see `panels::doc_rows`): a
-/// heading a day, an entry a line it said, and what an entry is made of as
-/// named values, so that a swap is read as its parts and not as one long line.
+/// heading and a table a day, a row for each thing it did, and what a thing
+/// is made of as named parts under one another in its row, so that a swap is
+/// read as its parts and not as one long line.
 pub fn journal_doc(b: &BotView, zh: bool) -> String {
+    // (a bar inside a cell would end it)
+    let cell = |s: &str| s.replace('|', "/");
     let (mut out, mut day) = (String::new(), String::new());
     for (ts, line) in &b.journal {
         let at = Ts(ts * 1000);
@@ -416,13 +419,22 @@ pub fn journal_doc(b: &BotView, zh: bool) -> String {
             if !out.is_empty() {
                 out.push('\n');
             }
-            out += &format!("# {d}\n");
+            out += &format!("# {d}\n\n");
+            out += t(
+                zh,
+                "| Time | What | Item | Detail |\n|---|---|---|---|\n",
+                "| 时间 | 事件 | 项目 | 内容 |\n|---|---|---|---|\n",
+            );
             day = d;
         }
         let (title, fields) = entry(line, zh);
-        out += &format!("\n## {}   {title}\n", at.hms());
-        for (name, value) in fields {
-            out += &format!("{name}\t{value}\n");
+        if fields.is_empty() {
+            // something it said that has no parts: the words themselves are the detail
+            out += &format!("| {} | {} | | {} |\n", at.hms(), t(zh, "note", "说明"), cell(&title));
+        }
+        for (i, (name, value)) in fields.iter().enumerate() {
+            let (when, what) = if i == 0 { (at.hms(), title.clone()) } else { (String::new(), String::new()) };
+            out += &format!("| {when} | {what} | {} | {} |\n", cell(name), cell(value));
         }
     }
     out
@@ -2406,20 +2418,22 @@ mod tests {
         let lines: Vec<&str> = doc.lines().collect();
         assert!(lines[0].starts_with("# 2026-"), "a heading a day: {doc}");
         assert_eq!(doc.matches("\n# ").count(), 1, "the last line is of the next day: {doc}");
+        assert_eq!(doc.matches("| 时间 | 事件 | 项目 | 内容 |\n|---|---|---|---|").count(), 2, "a table a day: {doc}");
         for needle in [
-            "   划拨预算\n钱包里有\t2.0051 USDC\n作为预算\t2.0000 USDC（不用兑换）",
-            "   已发出兑换\n兑换\t用 2.0000 USDC 换 SOL\n最少到手\t0.016505 SOL（报价 0.016555）\n经过\tDeriverse + PancakeSwap\n网络费\t优先费 1999 + 小费 3637 lamports（计算量 115529 CU）\n结果\t链上已确认\n签名\t3Examp1e\n备注\tJito 回答“交易已经上链”",
-            "   买入\n数量\t0.016542 SOL\n花费\t2.0000 USDC\n均价\t120.90 USDC 一个 SOL（含全部费用）",
-            "   something it never said before\n",
+            // what it did, said once, on the row of its first part; its other parts under it
+            " | 划拨预算 | 钱包里有 | 2.0051 USDC |\n|  |  | 作为预算 | 2.0000 USDC（不用兑换） |",
+            " | 已发出兑换 | 兑换 | 用 2.0000 USDC 换 SOL |\n|  |  | 最少到手 | 0.016505 SOL（报价 0.016555） |\n|  |  | 经过 | Deriverse + PancakeSwap |\n|  |  | 网络费 | 优先费 1999 + 小费 3637 lamports（计算量 115529 CU） |\n|  |  | 结果 | 链上已确认 |\n|  |  | 签名 | 3Examp1e |\n|  |  | 备注 | Jito 回答“交易已经上链”",
+            " | 买入 | 数量 | 0.016542 SOL |\n|  |  | 花费 | 2.0000 USDC |\n|  |  | 均价 | 120.90 USDC 一个 SOL（含全部费用） |",
+            " | 说明 | | something it never said before |",
         ] {
             assert!(doc.contains(needle), "missing {needle:?} in:\n{doc}");
         }
         let en = journal_doc(&b, false);
         assert!(
-            en.contains("   Bought\nAmount\t0.016542 SOL\nPaid\t2.0000 USDC")
-                && en.contains("Outcome\tconfirmed on the chain"),
+            en.contains("| Time | What | Item | Detail |") && en.contains(" | Bought | Amount | 0.016542 SOL |"),
             "{en}"
         );
+        assert!(en.contains("|  |  | Outcome | confirmed on the chain |"), "{en}");
     }
 
     #[test]
