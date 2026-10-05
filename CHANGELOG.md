@@ -57,6 +57,15 @@ before 1.0 a minor version may change configuration or behaviour.
   acts at that is far from the candles (a stop five per cent under) is named
   at the chart's edge instead of pressing the candles into a corner.
 
+- **A detail is drawn as a document with tables**, in a larger overlay
+  that scrolls. A bot's record (`⏎` on the Bots page) is a framed table a
+  day: time, what it did, and the parts of that as named rows (a swap that
+  was sent: what for what, the least it accepts, the route, the fees, the
+  outcome, the signature), wrapped between words inside its cell. A
+  transaction's detail on the Wallet page is a table too, and so is the
+  Chinese guide of a page (`?`): its names and its keys, each with what it
+  means. The text behind them is plain Markdown tables (`| a | b |`).
+
 - **Paper experiments are not listed among the bots** until `p` asks for
   them: a simulated account is not the operator's money. A run that has
   ended is shown as ended with what it ended at, not as holding it, and a
