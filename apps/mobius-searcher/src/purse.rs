@@ -590,7 +590,7 @@ pub fn port(cfg: &Config, zh: bool) -> WalletPort {
                 let mut round = 0u64;
                 loop {
                     watch.refresh().await;
-                    if round % 6 == 0 {
+                    if round.is_multiple_of(6) {
                         watch.history().await;
                     }
                     round = round.wrapping_add(1);
