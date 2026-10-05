@@ -65,16 +65,42 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, vm: &ViewModel) {
         picker_overlay(buf, area, app, sel);
     }
     if let Some(d) = &app.detail {
-        let w = 100.min(area.width.saturating_sub(2));
-        let lines = wrap_lines(&d.body, w.saturating_sub(4));
-        let inner = overlay(buf, area, w, (lines.len() as u16 + 2).min(area.height - 4), &d.title, &th, &app.glyphs);
+        // wide enough to be read, with a margin inside: headings, entries and named values each drawn as such
+        let w = area.width.saturating_sub(8).clamp(40, 124).min(area.width.saturating_sub(2));
+        let pad = 2;
+        let (rows, key_w) = crate::panels::doc_rows(&d.body, w.saturating_sub(4 + 2 * pad));
+        let inner = overlay(buf, area, w, (rows.len() as u16 + 4).min(area.height - 4), &d.title, &th, &app.glyphs);
         app.hit(outer(inner), Hit::Overlay);
-        let hidden = lines.len().saturating_sub(inner.height as usize);
+        let page = Rect { x: inner.x + pad, y: inner.y + 1, width: inner.width - 2 * pad, height: inner.height - 2 };
+        let hidden = rows.len().saturating_sub(page.height as usize);
         let top = (app.detail_scroll as usize).min(hidden);
-        for (line, y) in lines.iter().skip(top).zip(inner.y..inner.bottom()) {
-            text(buf, inner.x, y, line, inner.width, th.text().bg(th.select_bg));
+        let on = |st: Style| st.bg(th.select_bg);
+        for ((kind, name, line), y) in rows.iter().skip(top).zip(page.y..page.bottom()) {
+            use crate::panels::Doc;
+            match kind {
+                Doc::Head => {
+                    text(buf, page.x, y, line, page.width, on(th.accent_bold()));
+                }
+                Doc::Sub => {
+                    text(buf, page.x, y, line, page.width, on(th.text().add_modifier(Modifier::BOLD)));
+                }
+                Doc::Field => {
+                    text(buf, page.x + 2, y, name, key_w, on(th.muted()));
+                    text(buf, page.x + 2 + key_w, y, line, page.width.saturating_sub(key_w + 2), on(th.text()));
+                }
+                Doc::Text => {
+                    text(buf, page.x, y, line, page.width, on(th.text()));
+                }
+                Doc::Blank => {}
+            }
         }
-        overlay_hint(buf, inner, if hidden > 0 { "↑↓ scroll · Esc close" } else { "Esc close" }, &th);
+        let hint = match (hidden > 0, app.zh) {
+            (true, true) => "↑↓ 滚动 · Esc 关闭",
+            (false, true) => "Esc 关闭",
+            (true, false) => "↑↓ scroll · Esc close",
+            (false, false) => "Esc close",
+        };
+        overlay_hint(buf, inner, hint, &th);
         app.detail_scroll = top as u16;
     }
     if let Some(p) = &app.thresholds {

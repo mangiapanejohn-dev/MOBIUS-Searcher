@@ -491,8 +491,9 @@ mod tests {
     use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
     use std::time::Duration;
 
+    /// A key of a `KEYS` script: a character, or `⏎` for Enter.
     fn ratatui_key(c: char) -> KeyEvent {
-        KeyEvent::new(KeyCode::Char(c), KeyModifiers::NONE)
+        KeyEvent::new(if c == '⏎' { KeyCode::Enter } else { KeyCode::Char(c) }, KeyModifiers::NONE)
     }
 
     const FILE: &str = r#"

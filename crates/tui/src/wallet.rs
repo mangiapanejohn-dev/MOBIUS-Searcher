@@ -752,17 +752,21 @@ fn outer(inner: Rect) -> Rect {
 /// Everything of one transaction, for the overlay.
 pub fn moved_detail(m: &Moved, zh: bool) -> (String, String) {
     let title = format!("{} · {}", m.kind(zh), Ts(m.at * 1000).format("%Y-%m-%d %H:%M:%S"));
-    let body = if zh {
-        format!(
-            "SOL 变化（含手续费）  {:+.9}\nUSDC 变化            {:+.6}\n这个钱包付的手续费    {:.9} SOL\n\n签名\n{}\n\n在区块浏览器里看：\nhttps://solscan.io/tx/{}",
-            m.sol, m.usdc, m.fee, m.signature, m.signature
-        )
-    } else {
-        format!(
-            "SOL, the fee inside   {:+.9}\nUSDC                  {:+.6}\nFee this wallet paid  {:.9} SOL\n\nSignature\n{}\n\nIn a block explorer:\nhttps://solscan.io/tx/{}",
-            m.sol, m.usdc, m.fee, m.signature, m.signature
-        )
-    };
+    let w = |en: &'static str, cn: &'static str| if zh { cn } else { en };
+    let body = format!(
+        "## {}\n{}\t{:+.9} SOL\n{}\t{:+.6} USDC\n{}\t{:.9} SOL\n\n## {}\n{}\n\n## {}\nhttps://solscan.io/tx/{}\n",
+        w("What it changed in the wallet", "这笔交易让钱包变了多少"),
+        w("SOL, its fee inside", "SOL（含手续费）"),
+        m.sol,
+        "USDC",
+        m.usdc,
+        w("Fee this wallet paid", "这个钱包付的手续费"),
+        m.fee,
+        w("Signature (its receipt on the chain)", "签名（链上的凭证）"),
+        m.signature,
+        w("In a block explorer", "在区块浏览器里看"),
+        m.signature
+    );
     (title, body)
 }
 

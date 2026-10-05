@@ -404,6 +404,148 @@ fn shaped(line: &str, shapes: &[(&str, &str)]) -> Option<String> {
     Some(out)
 }
 
+/// The whole record of a bot as a document (see `panels::doc_rows`): a
+/// heading a day, an entry a line it said, and what an entry is made of as
+/// named values, so that a swap is read as its parts and not as one long line.
+pub fn journal_doc(b: &BotView, zh: bool) -> String {
+    let (mut out, mut day) = (String::new(), String::new());
+    for (ts, line) in &b.journal {
+        let at = Ts(ts * 1000);
+        let d = at.format("%Y-%m-%d");
+        if d != day {
+            if !out.is_empty() {
+                out.push('\n');
+            }
+            out += &format!("# {d}\n");
+            day = d;
+        }
+        let (title, fields) = entry(line, zh);
+        out += &format!("\n## {}   {title}\n", at.hms());
+        for (name, value) in fields {
+            out += &format!("{name}\t{value}\n");
+        }
+    }
+    out
+}
+
+/// One line of a record as an entry: what it was, and its parts by name.
+fn entry(line: &str, zh: bool) -> (String, Vec<(String, String)>) {
+    let w = |en: &str, cn: &str| t(zh, en, cn).to_string();
+    if let Some(v) = fit(line, "bought {} SOL for {} USDC ({} a SOL, every cost inside)") {
+        return (
+            w("Bought", "买入"),
+            vec![
+                (w("Amount", "数量"), format!("{} SOL", v[0])),
+                (w("Paid", "花费"), format!("{} USDC", v[1])),
+                (
+                    w("Price", "均价"),
+                    format!("{} {}", v[2], w("USDC a SOL, every cost inside", "USDC 一个 SOL（含全部费用）")),
+                ),
+            ],
+        );
+    }
+    if let Some(v) = fit(line, "sold {} SOL for {} USDC; this trade {} USD") {
+        return (
+            w("Sold", "卖出"),
+            vec![
+                (w("Amount", "数量"), format!("{} SOL", v[0])),
+                (w("Got", "得到"), format!("{} USDC", v[1])),
+                (w("This trade", "这一笔盈亏"), format!("{} USD", v[2])),
+            ],
+        );
+    }
+    if let Some(v) = fit(line, "the wallet holds {} USDC: {} of it is the rule's budget") {
+        return (
+            w("Budget set aside", "划拨预算"),
+            vec![
+                (w("The wallet held", "钱包里有"), format!("{} USDC", v[0])),
+                (w("Its budget", "作为预算"), format!("{} USDC{}", v[1], w(" (nothing was swapped)", "（不用兑换）"))),
+            ],
+        );
+    }
+    if let Some(v) = fit(line, "budget set aside: {} SOL became {} USDC; the rule has {} USD") {
+        return (
+            w("Budget set aside", "预算已划拨"),
+            vec![
+                (w("Sold", "卖出"), format!("{} SOL", v[0])),
+                (w("Got", "得到"), format!("{} USDC", v[1])),
+                (w("Its budget", "规则可用"), format!("{} USD", v[2])),
+            ],
+        );
+    }
+    if let Some(v) = fit(line, "not sent: {}") {
+        return (w("Not sent", "没有发出"), vec![(w("Why", "原因"), v[0].to_string())]);
+    }
+    if let Some(rest) = line.strip_prefix("sent: ") {
+        let mut fields = Vec::new();
+        for part in rest.split("; ") {
+            let swap = [
+                (
+                    false,
+                    "spend {} USDC for at least {} SOL (quoted {}) via {}, {} CU, priority fee {} + tip {} lamports",
+                ),
+                (true, "sell {} SOL for at least {} USDC (quoted {}) via {}, {} CU, priority fee {} + tip {} lamports"),
+            ];
+            if let Some((sells, v)) = swap.iter().find_map(|(sells, shape)| Some((*sells, fit(part, shape)?))) {
+                let (gives, gets) = if sells { ("SOL", "USDC") } else { ("USDC", "SOL") };
+                fields.push((
+                    w("Swap", "兑换"),
+                    if zh {
+                        format!("用 {} {gives} 换 {gets}", v[0])
+                    } else {
+                        format!("{} {gives} for {gets}", v[0])
+                    },
+                ));
+                fields.push((
+                    w("At least", "最少到手"),
+                    if zh {
+                        format!("{} {gets}（报价 {}）", v[1], v[2])
+                    } else {
+                        format!("{} {gets} (quoted {})", v[1], v[2])
+                    },
+                ));
+                fields.push((w("Through", "经过"), v[3].to_string()));
+                fields.push((
+                    w("Fees", "网络费"),
+                    if zh {
+                        format!("优先费 {} + 小费 {} lamports（计算量 {} CU）", v[5], v[6], v[4])
+                    } else {
+                        format!("priority fee {} + tip {} lamports ({} CU)", v[5], v[6], v[4])
+                    },
+                ));
+            } else if part == "confirmed" {
+                fields.push((w("Outcome", "结果"), w("confirmed on the chain", "链上已确认")));
+            } else if let Some(v) = fit(part, "signature {}") {
+                fields.push((w("Signature", "签名"), v[0].to_string()));
+            } else if part.starts_with("refused by ") && part.contains("already processed") {
+                // one of the two ways it is sent saw it land through the other first: no failure
+                fields.push((
+                    w("Note", "备注"),
+                    w(
+                        "Jito answered that it had landed already (it went through the RPC first): not a failure",
+                        "Jito 回答“交易已经上链”（它先从另一条通道到了）：不是失败",
+                    ),
+                ));
+            } else if let Some(v) = fit(part, "refused by {}") {
+                fields.push((
+                    w("Note", "备注"),
+                    if zh { format!("{} 没有接收", v[0]) } else { format!("refused by {}", v[0]) },
+                ));
+            } else {
+                fields.push((w("Outcome", "结果"), shaped_sent(part, zh)));
+            }
+        }
+        return (w("Swap sent", "已发出兑换"), fields);
+    }
+    (said(zh, line), Vec::new())
+}
+
+/// What became of a sent swap, in the operator's language (the parts `said` knows).
+fn shaped_sent(part: &str, zh: bool) -> String {
+    let whole = said(zh, &format!("sent: {part}"));
+    whole.strip_prefix("已发出：").unwrap_or(part).to_string()
+}
+
 /// The values of `line` where `shape` has `{}`, when the line has that shape.
 fn fit<'a>(line: &'a str, shape: &str) -> Option<Vec<&'a str>> {
     let mut parts = shape.split("{}");
@@ -2244,6 +2386,39 @@ mod tests {
         assert_eq!(
             said(false, "bought 1 SOL for 2 USDC (2 a SOL, every cost inside)"),
             "bought 1 SOL for 2 USDC (2 a SOL, every cost inside)"
+        );
+    }
+
+    #[test]
+    fn its_record_is_a_document_of_days_entries_and_their_parts() {
+        let mut b = bot();
+        let day = 1_791_180_000_000i64;
+        b.journal = vec![
+            (day, "the wallet holds 2.0051 USDC: 2.0000 of it is the rule's budget".into()),
+            (
+                day + 9_000_000,
+                "sent: spend 2.0000 USDC for at least 0.016505 SOL (quoted 0.016555) via Deriverse + PancakeSwap, 115529 CU, priority fee 1999 + tip 3637 lamports; confirmed; signature 3Examp1e; refused by Jito (jito rpc error -32602: bundle contains an already processed transaction)".into(),
+            ),
+            (day + 9_000_000, "bought 0.016542 SOL for 2.0000 USDC (120.90 a SOL, every cost inside)".into()),
+            (day + 90_000_000, "something it never said before".into()),
+        ];
+        let doc = journal_doc(&b, true);
+        let lines: Vec<&str> = doc.lines().collect();
+        assert!(lines[0].starts_with("# 2026-"), "a heading a day: {doc}");
+        assert_eq!(doc.matches("\n# ").count(), 1, "the last line is of the next day: {doc}");
+        for needle in [
+            "   划拨预算\n钱包里有\t2.0051 USDC\n作为预算\t2.0000 USDC（不用兑换）",
+            "   已发出兑换\n兑换\t用 2.0000 USDC 换 SOL\n最少到手\t0.016505 SOL（报价 0.016555）\n经过\tDeriverse + PancakeSwap\n网络费\t优先费 1999 + 小费 3637 lamports（计算量 115529 CU）\n结果\t链上已确认\n签名\t3Examp1e\n备注\tJito 回答“交易已经上链”",
+            "   买入\n数量\t0.016542 SOL\n花费\t2.0000 USDC\n均价\t120.90 USDC 一个 SOL（含全部费用）",
+            "   something it never said before\n",
+        ] {
+            assert!(doc.contains(needle), "missing {needle:?} in:\n{doc}");
+        }
+        let en = journal_doc(&b, false);
+        assert!(
+            en.contains("   Bought\nAmount\t0.016542 SOL\nPaid\t2.0000 USDC")
+                && en.contains("Outcome\tconfirmed on the chain"),
+            "{en}"
         );
     }
 

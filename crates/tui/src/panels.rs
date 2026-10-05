@@ -707,6 +707,67 @@ pub fn wrap_words(s: &str, w: u16) -> Vec<String> {
     out
 }
 
+/// What a row of a detail is, for how it is drawn.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Doc {
+    /// `# …`: a heading (a day, a part).
+    Head,
+    /// `## …`: one entry under it.
+    Sub,
+    /// `name<TAB>value`: a named value; the name stands on its first row only.
+    Field,
+    Text,
+    Blank,
+}
+
+/// `s` in rows of at most `w` columns: between words where it can, and
+/// through a word that is longer than a row (a signature, an address).
+pub fn wrap_hard(s: &str, w: u16) -> Vec<String> {
+    let w = w.max(2);
+    let mut out = Vec::new();
+    for line in wrap_words(s, w) {
+        if width(&line) <= w {
+            out.push(line);
+            continue;
+        }
+        let mut row = String::new();
+        for c in line.chars() {
+            if width(&row) + width(c.encode_utf8(&mut [0; 4])) > w {
+                out.push(std::mem::take(&mut row));
+            }
+            row.push(c);
+        }
+        out.push(row);
+    }
+    out
+}
+
+/// A detail's text as rows to draw: what each is, its name (a field's first
+/// row) and its text. The text is plain, with three marks borrowed from
+/// Markdown and tables: `# ` a heading, `## ` an entry, a tab between a name
+/// and its value. Returns the rows and the width of the names' column.
+pub fn doc_rows(body: &str, w: u16) -> (Vec<(Doc, String, String)>, u16) {
+    let names = body.lines().filter_map(|l| l.split_once('\t')).map(|(k, _)| width(k));
+    let key_w = names.max().map_or(0, |m| (m + 3).min(26)).min(w / 2);
+    let mut rows = Vec::new();
+    for line in body.lines() {
+        if line.trim().is_empty() {
+            rows.push((Doc::Blank, String::new(), String::new()));
+        } else if let Some(h) = line.strip_prefix("## ") {
+            rows.extend(wrap_hard(h, w).into_iter().map(|l| (Doc::Sub, String::new(), l)));
+        } else if let Some(h) = line.strip_prefix("# ") {
+            rows.extend(wrap_hard(h, w).into_iter().map(|l| (Doc::Head, String::new(), l)));
+        } else if let Some((k, v)) = line.split_once('\t') {
+            for (i, l) in wrap_hard(v, w.saturating_sub(key_w + 2)).into_iter().enumerate() {
+                rows.push((Doc::Field, if i == 0 { k.to_string() } else { String::new() }, l));
+            }
+        } else {
+            rows.extend(wrap_hard(line, w).into_iter().map(|l| (Doc::Text, String::new(), l)));
+        }
+    }
+    (rows, key_w)
+}
+
 /// `body` as lines of at most `w` columns (long lines continue on the next).
 pub fn wrap_lines(body: &str, w: u16) -> Vec<String> {
     let w = w.max(1) as usize;
@@ -726,6 +787,22 @@ pub fn wrap_lines(body: &str, w: u16) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_detail_is_rows_with_headings_entries_and_named_values() {
+        let body = "# 2026-10-05\n\n## 05:15:14  Bought\nAmount\t0.016542 SOL\nSignature\tABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef\nplain words here";
+        let (rows, key_w) = doc_rows(body, 30);
+        assert_eq!(key_w, 12, "the longest name and room after it");
+        let kinds: Vec<Doc> = rows.iter().map(|r| r.0).collect();
+        assert_eq!(kinds, [Doc::Head, Doc::Blank, Doc::Sub, Doc::Field, Doc::Field, Doc::Field, Doc::Field, Doc::Text]);
+        assert_eq!((rows[3].1.as_str(), rows[3].2.as_str()), ("Amount", "0.016542 SOL"));
+        // a value longer than its column goes on under itself, its name said once, nothing of it lost
+        assert_eq!((rows[4].1.as_str(), rows[5].1.as_str()), ("Signature", ""));
+        let whole: String = rows[4..7].iter().map(|r| r.2.as_str()).collect();
+        assert_eq!(whole, "ABCDEFGHIJKLMNOPQRSTUVWXYZ0123456789abcdef");
+        assert!(rows.iter().all(|r| width(&r.2) <= 30));
+        assert_eq!(wrap_hard("一二三四五六", 6), ["一二三", "四五六"]);
+    }
 
     #[test]
     fn words_wrap_between_words_and_chinese_between_characters() {

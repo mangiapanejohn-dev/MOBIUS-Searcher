@@ -715,17 +715,10 @@ impl App {
             }
             KeyCode::Enter if self.page == Page::Bots => {
                 if let Some(b) = self.bots.as_ref().and_then(|b| b.read().bots.get(self.bot_selected).cloned()) {
-                    let body: Vec<String> = b
-                        .journal
-                        .iter()
-                        .map(|(ts, line)| {
-                            format!("{}  {}", Ts(ts * 1000).format("%m-%d %H:%M:%S"), crate::bots::said(self.zh, line))
-                        })
-                        .collect();
-                    if !body.is_empty() {
+                    if !b.journal.is_empty() {
                         let title =
                             if self.zh { format!("{} 做过什么", b.name) } else { format!("What {} did", b.name) };
-                        self.detail = Some(Detail { title, body: body.join("\n") });
+                        self.detail = Some(Detail { title, body: crate::bots::journal_doc(&b, self.zh) });
                         self.detail_scroll = u16::MAX; // the renderer clamps it: the newest lines
                     }
                 }
