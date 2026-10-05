@@ -125,7 +125,7 @@ fn rule(buf: &mut Buffer, x0: u16, x1: u16, y: u16, app: &App) {
 }
 
 /// A row of tabs; the selected one bold in the accent colour. Returns the end x.
-fn tabs<T: Copy>(
+pub(crate) fn tabs<T: Copy>(
     buf: &mut Buffer,
     x: u16,
     y: u16,
@@ -324,6 +324,11 @@ fn chart_panel(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, cex: Opt
         live,
         line: app.market_style == ChartStyle::Line,
         decimals: dec,
+        levels: &[],
+        marks: &[],
+        average: true,
+        volume: false,
+        zh: false,
     };
     let plot = Rect { y: area.y + 1, height: area.height - 1, ..area };
     let info = render_kline(plot, buf, &k, &|r, h| app.hit(r, h), th, &app.glyphs);
@@ -532,7 +537,14 @@ fn bottom_panel(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel) {
             app.mk_tab == BottomTab::OrderHistory,
         ),
         ("Assets".to_string(), BottomTab::Assets, app.mk_tab == BottomTab::Assets),
-        (format!("Bots ({})", StrategyKind::ALL.len()), BottomTab::Bots, app.mk_tab == BottomTab::Bots),
+        (
+            format!(
+                "Bots ({})",
+                StrategyKind::ALL.len() + app.bots.as_ref().map_or(0, |b| crate::bots::shown(app, &b.read()))
+            ),
+            BottomTab::Bots,
+            app.mk_tab == BottomTab::Bots,
+        ),
     ];
     let end = tabs(buf, area.x, area.y, area.right(), &items, app, Hit::MkTab);
     let hint = "o switch";
@@ -613,6 +625,14 @@ fn bottom_panel(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel) {
                     },
                     th.text(),
                 ),
+                (
+                    "USDC".into(),
+                    match app.wallet.as_ref().and_then(|w| w.read().usdc) {
+                        Some(u) => format!("{u:.4}"),
+                        None => "—".into(),
+                    },
+                    th.text(),
+                ),
                 ("Mode".into(), vm.mode().label().into(), th.text()),
                 (
                     "Session PnL".into(),
@@ -680,6 +700,40 @@ fn bottom_panel(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel) {
                 text(buf, inner.x + 24, y, &vals[1], 13, st);
                 if inner.x + 109 < inner.right() {
                     text(buf, inner.x + 109, y, &vals[8], inner.right() - inner.x - 109, th.pnl(pnl.0 as f64));
+                }
+            }
+            // the rules that hold a position: a line each, the whole of them on page 9
+            let Some(bots) = &app.bots else { return };
+            let first = inner.y + 1 + StrategyKind::ALL.len() as u16;
+            let view = bots.read();
+            for (b, y) in view.bots.iter().take(crate::bots::shown(app, &view)).zip(first..inner.bottom()) {
+                use crate::bots::BotState;
+                let name = format!("{} · {}", b.name, if b.real { "real money" } else { "paper" });
+                let (status, st) = match &b.state {
+                    BotState::Running => (format!("{} running", app.glyphs.live), Style::new().fg(th.profit)),
+                    BotState::Stopped => ("stopped".to_string(), th.warn()),
+                    BotState::Ended(_) => ("ended".to_string(), th.faint()),
+                    BotState::Paper => ("paper".to_string(), th.muted()),
+                };
+                let result = b.result();
+                let vals = [
+                    name,
+                    status,
+                    format!("{} · {}", b.market(), b.brief(app.zh)),
+                    String::new(),
+                    String::new(),
+                    b.trades.len().to_string(),
+                    String::new(),
+                    b.journal
+                        .last()
+                        .map(|j| crate::panels::age((now.0 / 1000 - j.0).max(0) as u64))
+                        .unwrap_or_default(),
+                    if b.trades.is_empty() { "—".into() } else { format!("{result:+.4}") },
+                ];
+                cells(buf, inner, y, &cols, &vals, th.text());
+                text(buf, inner.x + 24, y, &vals[1], 13, st);
+                if inner.x + 109 < inner.right() && !b.trades.is_empty() {
+                    text(buf, inner.x + 109, y, &vals[8], inner.right() - inner.x - 109, th.pnl(result));
                 }
             }
         }

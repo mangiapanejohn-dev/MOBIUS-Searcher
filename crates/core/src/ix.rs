@@ -87,9 +87,71 @@ pub fn system_transfer_ix(from: Address, to: Address, lamports: u64) -> RawInstr
     }
 }
 
+/// SPL Token `TransferChecked` (instruction 12: amount u64 LE, decimals):
+/// `amount` atoms of `mint` from the token account `from` to the token
+/// account `to`, signed by `owner`.
+pub fn token_transfer_checked_ix(
+    from: Address,
+    mint: Address,
+    to: Address,
+    owner: Address,
+    amount: u64,
+    decimals: u8,
+) -> RawInstruction {
+    let mut d = vec![12u8];
+    d.extend_from_slice(&amount.to_le_bytes());
+    d.push(decimals);
+    let meta = |pubkey, is_signer, is_writable| RawAccountMeta { pubkey, is_signer, is_writable };
+    RawInstruction {
+        program_id: crate::address::well_known::addr(crate::address::well_known::TOKEN_PROGRAM),
+        accounts: vec![
+            meta(from, false, true),
+            meta(mint, false, false),
+            meta(to, false, true),
+            meta(owner, true, false),
+        ],
+        data: d,
+    }
+}
+
+/// Associated-token-account `CreateIdempotent` (data `[1]`): opens `ata`, the
+/// account of `owner` for `mint`, at `payer`'s expense; does nothing when it exists.
+pub fn ata_create_idempotent_ix(payer: Address, ata: Address, owner: Address, mint: Address) -> RawInstruction {
+    use crate::address::well_known::{ASSOCIATED_TOKEN_PROGRAM, SYSTEM_PROGRAM, TOKEN_PROGRAM, addr};
+    let meta = |pubkey, is_signer, is_writable| RawAccountMeta { pubkey, is_signer, is_writable };
+    RawInstruction {
+        program_id: addr(ASSOCIATED_TOKEN_PROGRAM),
+        accounts: vec![
+            meta(payer, true, true),
+            meta(ata, false, true),
+            meta(owner, false, false),
+            meta(mint, false, false),
+            meta(addr(SYSTEM_PROGRAM), false, false),
+            meta(addr(TOKEN_PROGRAM), false, false),
+        ],
+        data: vec![1],
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn token_transfer_and_account_opening_layouts() {
+        let a = |n| Address([n; 32]);
+        let ix = token_transfer_checked_ix(a(1), a(2), a(3), a(4), 2_005_052, 6);
+        assert_eq!(ix.data[0], 12);
+        assert_eq!(u64::from_le_bytes(ix.data[1..9].try_into().unwrap()), 2_005_052);
+        assert_eq!(ix.data[9], 6);
+        let who: Vec<_> = ix.accounts.iter().map(|m| (m.pubkey, m.is_signer, m.is_writable)).collect();
+        assert_eq!(who, [(a(1), false, true), (a(2), false, false), (a(3), false, true), (a(4), true, false)]);
+        let ix = ata_create_idempotent_ix(a(1), a(5), a(3), a(2));
+        assert_eq!(ix.data, [1]);
+        assert_eq!(ix.accounts.len(), 6);
+        assert!(ix.accounts[0].is_signer && ix.accounts[0].is_writable && ix.accounts[1].is_writable);
+        assert_eq!((ix.accounts[1].pubkey, ix.accounts[2].pubkey, ix.accounts[3].pubkey), (a(5), a(3), a(2)));
+    }
 
     #[test]
     fn compute_budget_roundtrip() {

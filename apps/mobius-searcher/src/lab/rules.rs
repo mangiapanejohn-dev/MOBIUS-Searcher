@@ -90,6 +90,97 @@ impl Rule {
         }
     }
 
+    /// The prices this rule acts at next, as far as it has such prices: the
+    /// close under which it buys, the close above which it sells, and the
+    /// close under which it sells at a loss. Read from the same bars and
+    /// account as [`Rule::decide`], and in step with it.
+    pub fn levels(&self, bars: &[Bar], acct: &Account) -> (Option<f64>, Option<f64>, Option<f64>) {
+        match self {
+            Rule::Dip { window, k, exit_z, stop } if bars.len() >= *window => {
+                let w = &bars[bars.len() - window..];
+                let mean = w.iter().map(|b| b.close).sum::<f64>() / *window as f64;
+                let sd = (w.iter().map(|b| (b.close - mean).powi(2)).sum::<f64>() / *window as f64).sqrt();
+                let stop = acct.lots.first().zip(*stop).map(|(lot, s)| lot.price * (1.0 - s));
+                (Some(mean - k * sd), Some(mean + exit_z * sd), stop)
+            }
+            Rule::Grid { step, lots } => {
+                let buy = acct.reference.filter(|_| acct.lots.len() < *lots).map(|r| r * (1.0 - step));
+                let sell = acct.lots.iter().map(|l| l.price * (1.0 + step)).min_by(f64::total_cmp);
+                (buy, sell, None)
+            }
+            _ => (None, None, None),
+        }
+    }
+
+    /// The numbers a dip rule measures the close against (the average and
+    /// deviation of its window) with its settings: window, average, deviation,
+    /// k, exit_z, stop. The same arithmetic as [`Rule::levels`].
+    pub fn dip(&self, bars: &[Bar]) -> Option<(usize, f64, f64, f64, f64, Option<f64>)> {
+        let Rule::Dip { window, k, exit_z, stop } = self else { return None };
+        if bars.len() < *window {
+            return None;
+        }
+        let w = &bars[bars.len() - window..];
+        let mean = w.iter().map(|b| b.close).sum::<f64>() / *window as f64;
+        let sd = (w.iter().map(|b| (b.close - mean).powi(2)).sum::<f64>() / *window as f64).sqrt();
+        Some((*window, mean, sd, *k, *exit_z, *stop))
+    }
+
+    /// What the rule does, in a sentence (`zh`: in Chinese). `bar_ms` says how long its windows are.
+    pub fn describe(&self, bar_ms: i64, zh: bool) -> String {
+        let pct = |x: f64| format!("{}{}%", (x * 10_000.0).round() / 100.0, if zh { "" } else { " " });
+        let span = |bars: usize| {
+            let h = bars as f64 * bar_ms as f64 / 3_600_000.0;
+            let round = |x: f64| (x * 10.0).round() / 10.0;
+            match (h >= 24.0, zh) {
+                (true, false) => format!("{} d", round(h / 24.0)),
+                (false, false) => format!("{} h", round(h)),
+                (true, true) => format!("约 {} 天", round(h / 24.0)),
+                (false, true) => format!("约 {} 小时", round(h)),
+            }
+        };
+        match (self, zh) {
+            (Rule::SignReversal, false) => "Buys after a bar that closed down; sells after one that did not.".into(),
+            (Rule::SignReversal, true) => "一根线收跌之后买入；一根线没有收跌之后卖出。".into(),
+            (Rule::Dip { window, k, exit_z, stop }, false) => format!(
+                "Buys when a bar closes {k} deviation{} under its average of {window} bars ({}); sells {}{}.",
+                if *k == 1.0 { "" } else { "s" },
+                span(*window),
+                if *exit_z == 0.0 { "back at the average".to_string() } else { format!("{exit_z} deviations from it") },
+                stop.map_or(String::new(), |s| format!(", or {} under the buy", pct(s)))
+            ),
+            (Rule::Dip { window, k, exit_z, stop }, true) => format!(
+                "收盘价低于最近 {window} 根线（{}）平均价 {k} 个波动幅度时买入；{}卖出{}。",
+                span(*window),
+                if *exit_z == 0.0 { "涨回平均价".to_string() } else { format!("离平均价 {exit_z} 个波动时") },
+                stop.map_or(String::new(), |s| format!("，或比买入价再跌 {} 止损", pct(s)))
+            ),
+            (Rule::Grid { step, lots }, false) => format!(
+                "Buys one of {lots} equal parts each time the close is {} under the last trade; sells each part {} above its own buy. It never sells at a loss.",
+                pct(*step),
+                pct(*step)
+            ),
+            (Rule::Grid { step, lots }, true) => format!(
+                "把预算分成 {lots} 份：收盘价比上一次成交低 {} 就买一份；每一份比自己的买入价高 {} 就卖出。从不亏本卖。",
+                pct(*step),
+                pct(*step)
+            ),
+            (Rule::Breakout { entry, exit }, false) => format!(
+                "Buys on a close above the high of the {entry} bars before ({}); sells on a close under the low of the {exit} before.",
+                span(*entry)
+            ),
+            (Rule::Breakout { entry, exit }, true) => format!(
+                "收盘价高于此前 {entry} 根线（{}）的最高价时买入；低于此前 {exit} 根线的最低价时卖出。",
+                span(*entry)
+            ),
+            (Rule::Model { .. }, false) => {
+                "A trained model: in when it gives a rise at least its threshold, out its horizon after the last time it did."
+                    .into()
+            }
+            (Rule::Model { .. }, true) => "一个训练出来的模型：它判断上涨的把握够大时买入，最后一次这样判断之后过了它的持有期就卖出。".into(),
+        }
+    }
+
     pub fn check(&self) -> Result<(), String> {
         let bad = |what: &str| Err(format!("{what} must be greater than zero"));
         match self {
@@ -378,6 +469,43 @@ pub fn orders(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn the_levels_are_where_the_rule_decides() {
+        // six bars around 100: the rule's own decision flips exactly at the level it names
+        let rule = Rule::Dip { window: 6, k: 1.0, exit_z: 0.0, stop: Some(0.05) };
+        let mut closes = vec![100.0, 101.0, 99.0, 100.5, 99.5, 100.0];
+        let b = bars(&closes);
+        let (buy, sell, stop) = rule.levels(&b, &Account::new(10.0));
+        let (buy, sell) = (buy.unwrap(), sell.unwrap());
+        assert!(buy < 100.0 && (sell - 100.0).abs() < 1e-9 && stop.is_none(), "{buy} {sell}");
+        // a last close just under the level of its own window buys; just above does not
+        for (last, buys) in [(98.0, true), (99.9, false)] {
+            *closes.last_mut().unwrap() = last;
+            let b = bars(&closes);
+            let level = rule.levels(&b, &Account::new(10.0)).0.unwrap();
+            let orders = rule.decide(&b, &Account::new(10.0), 10.0, true);
+            assert_eq!(last < level, buys, "{last} against {level}");
+            assert_eq!(!orders.is_empty(), buys, "{last}: {orders:?}");
+        }
+        // holding: the loss level is 5 % under what the lot cost
+        let mut held = Account::new(10.0);
+        held.bought(10.0, 0.1, 0, 100.0);
+        assert_eq!(rule.levels(&b, &held).2, Some(95.0));
+        assert_eq!(Rule::SignReversal.levels(&b, &held), (None, None, None));
+        assert_eq!(
+            Rule::Dip { window: 96, k: 1.0, exit_z: 0.0, stop: Some(0.05) }.describe(900_000, false),
+            "Buys when a bar closes 1 deviation under its average of 96 bars (1 d); sells back at the average, or 5 % under the buy."
+        );
+        assert_eq!(
+            Rule::Dip { window: 96, k: 1.0, exit_z: 0.0, stop: Some(0.05) }.describe(900_000, true),
+            "收盘价低于最近 96 根线（约 1 天）平均价 1 个波动幅度时买入；涨回平均价卖出，或比买入价再跌 5% 止损。"
+        );
+        // the numbers it shows are the ones its levels come from
+        let rule = Rule::Dip { window: 6, k: 1.0, exit_z: 0.0, stop: Some(0.05) };
+        let (window, mean, sd, k, _, _) = rule.dip(&b).unwrap();
+        assert_eq!((window, rule.levels(&b, &held).0), (6, Some(mean - k * sd)));
+    }
 
     fn bars(closes: &[f64]) -> Vec<Bar> {
         closes

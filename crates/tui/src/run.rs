@@ -35,6 +35,13 @@ pub fn run(
             .filter(|s| !s.markets.is_empty())
             .map(|s| crate::cex::Cex::start(s, app.mk_pair, app.mk_bar));
     }
+    // the bots are read again every second, also over a recorded session
+    if let Some(port) = opts.bots.clone() {
+        app.bots = Some(crate::bots::Bots::start(port));
+    }
+    if let Some(port) = opts.wallet.clone() {
+        app.wallet = Some(crate::wallet::Wallet::start(port));
+    }
     // graphics query must run in the alternate screen, before events are read
     if crate::brand::can_draw_logo(&app.theme, &app.glyphs) {
         app.logo_image = crate::brand::terminal_logo();
@@ -210,11 +217,14 @@ pub fn buffer_html(buf: &Buffer, title: &str) -> String {
                 continue;
             }
             let esc = sym.replace('&', "&amp;").replace('<', "&lt;").replace('>', "&gt;");
+            // a wide character (Chinese) takes the two cells it takes on a terminal
+            let cells = unicode_width::UnicodeWidthStr::width(sym).max(1) as u16;
             s.push_str(&format!(
-                "<span style=\"color:{fg};background:{bg}{}\">{esc}</span>",
-                if bold { ";font-weight:600" } else { "" }
+                "<span style=\"color:{fg};background:{bg}{}{}\">{esc}</span>",
+                if bold { ";font-weight:600" } else { "" },
+                if cells > 1 { ";width:2ch" } else { "" }
             ));
-            x += unicode_width::UnicodeWidthStr::width(sym).max(1) as u16;
+            x += cells;
         }
         s.push('\n');
     }

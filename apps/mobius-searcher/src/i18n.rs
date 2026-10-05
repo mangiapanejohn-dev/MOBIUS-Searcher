@@ -53,6 +53,37 @@ pub fn detect(flag: Option<Lang>) -> Lang {
     Lang::En
 }
 
+/// Whether the operator reads Chinese, for the pages of the terminal UI that
+/// are about their own money: `--lang`, else `MOBIUS_LANG`, else Chinese in
+/// a locale variable or anywhere among the system's preferred languages
+/// (someone who lists it reads it, also when English comes first).
+pub fn reads_chinese(flag: Option<Lang>) -> bool {
+    let var = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+    let locale: Vec<String> = ["LC_ALL", "LC_MESSAGES", "LANG"].into_iter().filter_map(var).collect();
+    let listed = || -> String {
+        #[cfg(target_os = "macos")]
+        if let Ok(out) = std::process::Command::new("defaults").args(["read", "-g", "AppleLanguages"]).output() {
+            return String::from_utf8_lossy(&out.stdout).into_owned();
+        }
+        String::new()
+    };
+    chinese_asked(flag, var("MOBIUS_LANG").as_deref(), &locale, listed)
+}
+
+/// [`reads_chinese`] of what was found. A locale variable that is not Chinese
+/// says nothing: a terminal sets it by itself (`C.UTF-8`, or the first of the
+/// system's languages), whatever its user reads.
+fn chinese_asked(flag: Option<Lang>, own: Option<&str>, locale: &[String], listed: impl FnOnce() -> String) -> bool {
+    let chinese = |v: &str| v.trim().to_ascii_lowercase().starts_with("zh");
+    if let Some(lang) = flag {
+        return lang == Lang::Zh;
+    }
+    if let Some(v) = own {
+        return chinese(v);
+    }
+    locale.iter().any(|v| chinese(v)) || listed().split(['(', ')', '"', ',', '\n', ' ']).any(chinese)
+}
+
 /// `text` in the current language; unknown text is returned unchanged.
 pub fn tr(text: &str) -> Cow<'_, str> {
     if current() == Lang::En || text.trim().is_empty() {
@@ -604,6 +635,24 @@ mod tests {
         let out = f();
         set(Lang::En);
         out
+    }
+
+    #[test]
+    fn who_lists_chinese_reads_it_whatever_the_terminal_set() {
+        let v = |xs: &[&str]| xs.iter().map(|s| s.to_string()).collect::<Vec<_>>();
+        let listed = || "(\n    \"en-US\",\n    \"zh-Hans-US\"\n)".to_string();
+        let none = String::new;
+        // a terminal's own `LANG=C.UTF-8` (seen on this machine, 2026-10-05) does not hide the system's list
+        assert!(chinese_asked(None, None, &v(&["C.UTF-8"]), listed));
+        assert!(chinese_asked(None, None, &v(&["en_US.UTF-8"]), listed));
+        assert!(chinese_asked(None, None, &v(&["zh_CN.UTF-8"]), none));
+        assert!(!chinese_asked(None, None, &v(&["en_US.UTF-8"]), none));
+        assert!(!chinese_asked(None, None, &[], || "(\"en-US\", \"fr-FR\")".to_string()));
+        // what was asked for outright is what is given
+        assert!(!chinese_asked(Some(Lang::En), Some("zh"), &v(&["zh_CN.UTF-8"]), listed));
+        assert!(chinese_asked(Some(Lang::Zh), None, &[], none));
+        assert!(!chinese_asked(None, Some("en"), &v(&["zh_CN.UTF-8"]), listed));
+        assert!(chinese_asked(None, Some("zh-CN"), &v(&["C"]), none));
     }
 
     #[test]

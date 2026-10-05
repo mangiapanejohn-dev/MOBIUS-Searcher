@@ -54,6 +54,8 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, vm: &ViewModel) {
         Page::Risk => page_risk(buf, body, app, vm),
         Page::System => page_system(buf, body, app, vm),
         Page::Logs => page_logs(buf, body, app, vm),
+        Page::Bots => crate::bots::page_bots(buf, body, app),
+        Page::Wallet => crate::wallet::page_wallet(buf, body, app, vm),
     }
     draw_footer(buf, footer, app, vm);
     if app.help {
@@ -77,6 +79,32 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, vm: &ViewModel) {
     }
     if let Some(p) = &app.thresholds {
         thresholds_overlay(buf, area, app, vm, p);
+    }
+    if let Some((id, action)) = &app.bot_prompt
+        && let Some(b) = app.bots.as_ref().and_then(|bots| bots.read().bots.iter().find(|b| b.id == *id).cloned())
+    {
+        let (title, body) = crate::bots::question(&b, *action, app.zh);
+        let w = 76.min(area.width.saturating_sub(2));
+        let lines = wrap_words(&body, w.saturating_sub(4));
+        let inner = overlay(buf, area, w, lines.len() as u16 + 4, &title, &th, &app.glyphs);
+        for (line, y) in lines.iter().zip(inner.y + 1..inner.bottom()) {
+            text(buf, inner.x, y, line, inner.width, th.text().bg(th.select_bg));
+        }
+        let hint = if app.zh {
+            format!("y {} · 其他键取消", action.verb(true))
+        } else {
+            format!("y {} · any other key cancels", action.verb(false))
+        };
+        overlay_hint(buf, inner, &hint, &th);
+    }
+    if let Some(form) = &app.wallet_form {
+        crate::wallet::send_overlay(buf, area, app, vm, form);
+    }
+    if let Some(form) = &app.bot_budget {
+        crate::bots::budget_overlay(buf, area, app, vm, form);
+    }
+    if let Some(form) = &app.bot_new {
+        crate::bots::new_bot_overlay(buf, area, app, form);
     }
     if app.kill_release_prompt {
         let inner = overlay(buf, area, 56, 5, "Release kill switch?", &th, &app.glyphs);
@@ -147,8 +175,27 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, compact:
         *x += text(buf, *x, y1, k, 20, th.muted()) + 1;
         *x += text(buf, *x, y1, v, 24, vs) + 3;
     };
-    let eq = vm.equity_usd();
-    kpi(buf, &mut x, "Equity", &eq.map(|e| e.to_string()).unwrap_or_else(|| "—".into()), th.text());
+    // what the wallet is worth: its SOL and, when the application reports it, its USDC
+    let bots = app.bots.as_ref().map(|b| b.read());
+    // (a recorded session's equity is of its own time: today's wallet is no part of it)
+    let usdc = app.wallet.as_ref().filter(|_| !vm.replay).and_then(|w| w.read().usdc);
+    let usdc = usdc.map_or(0, |u| (u * 1e6).round() as i64);
+    let eq = vm.equity_usd().map(|e| UsdMicros(e.0 + usdc));
+    let zh = app.zh;
+    let name = |en: &'static str, cn: &'static str| if zh { cn } else { en };
+    kpi(buf, &mut x, name("Equity", "总资产"), &eq.map(|e| e.to_string()).unwrap_or_else(|| "—".into()), th.text());
+    if let Some((word, running)) = bots.as_ref().and_then(|v| crate::bots::chip(v, app.zh)) {
+        // the whole of it when there is room, else up to its comma
+        let word =
+            if area.width >= 170 { word } else { word.split([',', '，']).next().unwrap_or_default().to_string() };
+        let st = if running { Style::new().fg(th.profit) } else { th.warn() };
+        if x + 8 + width(&word) + 2 < area.right() {
+            let label = if app.zh { "机器人" } else { "Bot" };
+            x += text(buf, x, y1, label, width(label), th.muted()) + 1;
+            x += text(buf, x, y1, &word, 44, st) + 3;
+        }
+    }
+    drop(bots);
     let pnl = vm.session_pnl();
     let start_eq = vm
         .session
@@ -160,13 +207,16 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, compact:
         Some(p) => format!("{} {:+.2}%", signed_usd(pnl), p),
         None => signed_usd(pnl),
     };
-    kpi(buf, &mut x, "Session", &session, th.pnl(pnl.0 as f64));
-    kpi(buf, &mut x, "Realized", &signed_usd(vm.realized), th.pnl(vm.realized.0 as f64));
-    kpi(buf, &mut x, "Simulated", &signed_usd(vm.simulated), th.pnl(vm.simulated.0 as f64));
-    kpi(buf, &mut x, "Opportunities", &vm.total_opps.to_string(), th.text());
-    kpi(buf, &mut x, "Executed", &vm.executed.to_string(), th.text());
+    kpi(buf, &mut x, name("Session", "套利本次盈亏"), &session, th.pnl(pnl.0 as f64));
+    kpi(buf, &mut x, name("Realized", "已实现"), &signed_usd(vm.realized), th.pnl(vm.realized.0 as f64));
+    // (a simulated result is of a paper session: a live one that has none does not show the word)
+    if vm.mode() != Mode::Live || vm.simulated.0 != 0 {
+        kpi(buf, &mut x, name("Simulated", "模拟"), &signed_usd(vm.simulated), th.pnl(vm.simulated.0 as f64));
+    }
+    kpi(buf, &mut x, name("Opportunities", "机会"), &vm.total_opps.to_string(), th.text());
+    kpi(buf, &mut x, name("Executed", "已成交"), &vm.executed.to_string(), th.text());
     if vm.rate_limited > 0 {
-        kpi(buf, &mut x, "Rate-limited", &vm.rate_limited.to_string(), th.warn());
+        kpi(buf, &mut x, name("Rate-limited", "被限速"), &vm.rate_limited.to_string(), th.warn());
     }
     if vm.kill_engaged() {
         let k = " KILL SWITCH ";
@@ -209,6 +259,38 @@ fn page_keys(app: &App, vm: &ViewModel) -> Vec<&'static str> {
         (Page::Risk, _) => vec!["T thresholds"],
         (Page::System, _) => Vec::new(),
         (Page::Logs, _) => vec!["j/k scroll", "⏎ detail", "End live"],
+        (Page::Bots, _) if app.zh => {
+            vec![
+                "s 启动",
+                "x 停止",
+                "b 调预算",
+                "n 新建",
+                "c 卖出并结束",
+                "[ ] 周期",
+                "j/k 选择",
+                "v 折线/K线",
+                "⏎ 记录",
+                "p 纸面",
+            ]
+        }
+        (Page::Bots, _) => {
+            vec![
+                "s start",
+                "x stop",
+                "b budget",
+                "n new",
+                "c close & sell",
+                "[ ] bar",
+                "j/k bot",
+                "v line/candles",
+                "⏎ journal",
+                "p paper",
+            ]
+        }
+        (Page::Wallet, _) if app.zh => vec!["s 转出 SOL", "u 转出 USDC", "c 复制地址", "r 刷新", "j/k 选择", "⏎ 详情"],
+        (Page::Wallet, _) => {
+            vec!["s send SOL", "u send USDC", "c copy address", "r read again", "j/k select", "⏎ detail"]
+        }
         (_, Focus::Graphs) => GRAPH.iter().copied().chain(["tab focus"]).collect(),
         (_, Focus::Opportunities) => vec!["j/k select", "⏎ inspect", "f filter", "tab focus", "a/b mark"],
         (_, Focus::Inspector) => vec!["j/k scroll", "⏎ back", "tab focus"],
@@ -221,11 +303,12 @@ fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel) {
     let mut x = area.x + 1;
     // Narrow terminals name the page they are on and keep the others' digits;
     // the narrowest keep digits only, so that `? help` still fits.
-    let long = area.width >= 120;
-    let named = area.width >= 26 + width(app.page.label()) + 12;
-    for (i, p) in Page::ALL.iter().enumerate() {
+    let long = area.width >= 132;
+    let name = |p: Page| if app.zh { p.label_zh() } else { p.label() };
+    let named = area.width >= 29 + width(name(app.page)) + 12;
+    for p in Page::ALL.iter() {
         let on = *p == app.page;
-        let label = if long || (on && named) { format!("{} {}", i + 1, p.label()) } else { format!("{}", i + 1) };
+        let label = if long || (on && named) { format!("{} {}", p.key(), name(*p)) } else { p.key().to_string() };
         let st = if on { th.accent_bold() } else { th.faint() };
         let w = text(buf, x, area.y, &label, 20, st);
         app.hit(Rect { x, y: area.y, width: w, height: 1 }, Hit::Page(*p));
@@ -239,7 +322,8 @@ fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel) {
         Some(s) => s.to_string(),
         None => {
             let mut own = page_keys(app, vm);
-            let mut fixed = vec!["K kill", "? help", "q quit"];
+            let mut fixed =
+                if app.zh { vec!["K 急停", "? 说明", "q 退出"] } else { vec!["K kill", "? help", "q quit"] };
             let over = |own: &[&str], fixed: &[&str]| width(&[own, fixed].concat().join("  ")) > room;
             if over(&own, &fixed) {
                 fixed.pop();
@@ -258,7 +342,8 @@ fn draw_footer(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel) {
     let st = if app.status_text().is_some() { th.accent() } else { th.faint() };
     let hx = area.right().saturating_sub(hw + 1);
     text(buf, hx, area.y, &hint, hw, st);
-    for (needle, h) in [("K kill", Hit::Kill), ("? help", Hit::Help)] {
+    for (needle, h) in [("K kill", Hit::Kill), ("? help", Hit::Help), ("K 急停", Hit::Kill), ("? 说明", Hit::Help)]
+    {
         if let Some(i) = hint.find(needle) {
             let (at, w) = (width(&hint[..i]), width(needle));
             if at + w <= hw {
@@ -935,6 +1020,10 @@ fn thresholds_overlay(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, p
 }
 
 fn help_overlay(buf: &mut Buffer, area: Rect, app: &App) {
+    // for who reads Chinese: what the page is and what its keys do, not a list of keys
+    if app.zh {
+        return crate::guide::overlay_zh(buf, area, app);
+    }
     let th = &app.theme;
     let (lw, lh) = crate::brand::logo_size();
     let keys: u16 = HELP.iter().map(|(_, rows)| rows.len() as u16).sum();
@@ -994,6 +1083,8 @@ const HELP: [(&str, &[(&str, &str)]); 6] = [
         "Navigate",
         &[
             ("1-8", "Overview Markets Opportunities Graphs Trades Risk System Logs"),
+            ("9", "Bots: buy low, sell high  s start  x stop  b budget  c close"),
+            ("0", "Wallet: balances, receive   s/u send SOL/USDC   c copy address"),
             ("tab", "cycle focus: opportunities · graphs · inspector · stream"),
             ("j/k ↑/↓", "select / scroll     ⏎ inspect / detail     Esc back to live"),
             ("f", "filter opportunities (all · gross>0 · executable · skipped)"),

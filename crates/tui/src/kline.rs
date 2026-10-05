@@ -24,6 +24,24 @@ pub struct Kline<'a> {
     /// Close line instead of candles.
     pub line: bool,
     pub decimals: usize,
+    /// Prices to draw a named line across the chart at (a rule's buy and sell prices).
+    pub levels: &'a [Level],
+    /// Moments to mark on the price: a buy (`true`, under the candle) or a sale (over it).
+    pub marks: &'a [(Ts, bool)],
+    /// Draw the VWMA (a rule's chart leaves it out: its own lines are what it is read by).
+    pub average: bool,
+    /// Volume as bars under the price, where there is room and the source has volume.
+    pub volume: bool,
+    /// The readout's names in Chinese (开 高 低 收).
+    pub zh: bool,
+}
+
+/// A line across the chart at a price, named at its left end.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Level {
+    pub value: f64,
+    pub label: String,
+    pub style: Style,
 }
 
 #[derive(Debug, Default, Clone, PartialEq)]
@@ -94,7 +112,7 @@ fn empty(buf: &Buffer, x: u16, y: u16) -> bool {
 
 /// A line through one row per column, stepping with box-drawing corners (as
 /// the other charts draw lines); `None` leaves a gap.
-fn step_line(buf: &mut Buffer, x0: u16, rows: &[Option<u16>], st: Style, g: &Glyphs) {
+pub(crate) fn step_line(buf: &mut Buffer, x0: u16, rows: &[Option<u16>], st: Style, g: &Glyphs) {
     let mut prev: Option<u16> = None;
     for (i, r) in rows.iter().enumerate() {
         let x = x0 + i as u16;
@@ -289,16 +307,19 @@ pub fn render_kline(
     // Right axis wide enough for the labels and the tag.
     let span_hint = k.candles.iter().map(|c| c.high).fold(live.unwrap_or(0.0), f64::max);
     let aw = width(&price(span_hint, dec)) + 3;
-    let plot = Rect { x: area.x, y: area.y + 1, width: area.width.saturating_sub(aw), height: area.height - 2 };
+    // Volume takes three rows between the price and the time axis, where there is room for both.
+    let vol_h = if k.volume && area.height >= 14 && k.candles.iter().any(|c| c.vol > 0.0) { 3 } else { 0 };
+    let plot = Rect { x: area.x, y: area.y + 1, width: area.width.saturating_sub(aw), height: area.height - 2 - vol_h };
     info.plot = plot;
     let axis_x = plot.right();
     let base_y = plot.bottom();
-    for y in plot.y..base_y {
+    let time_y = base_y + vol_h;
+    for y in plot.y..time_y {
         put(buf, axis_x, y, g.axis_v, th.rule());
     }
 
     if k.candles.is_empty() {
-        let msg = "waiting for candles";
+        let msg = if k.zh { "等待 K 线…" } else { "waiting for candles" };
         text(
             buf,
             plot.x + plot.width.saturating_sub(width(msg)) / 2,
@@ -326,13 +347,21 @@ pub fn render_kline(
 
     // Y range over what is drawn (line: closes; candles: highs and lows),
     // the VWMA and the live price, 5% padding.
-    let ma = vwma(k.candles, VWMA_LEN);
+    let ma = if k.average { vwma(k.candles, VWMA_LEN) } else { vec![None; n] };
     info.vwma = ma[sel];
     let span = |c: &Candle| if k.line { (c.close, c.close) } else { (c.high, c.low) };
     let (mut lo, mut hi) = vis.iter().fold((f64::MAX, f64::MIN), |(a, b), c| (a.min(span(c).1), b.max(span(c).0)));
     for v in ma[start..end].iter().flatten().chain(live.as_ref()) {
         lo = lo.min(*v);
         hi = hi.max(*v);
+    }
+    // A level near what is drawn is part of the picture; one far off is named at the edge it lies beyond.
+    let reach = (hi - lo).max(hi.abs() * 0.002) * 1.5;
+    let (near, far): (Vec<&Level>, Vec<&Level>) =
+        k.levels.iter().partition(|l| l.value > lo - reach && l.value < hi + reach);
+    for l in &near {
+        lo = lo.min(l.value);
+        hi = hi.max(l.value);
     }
     let pad = ((hi - lo) * 0.05).max(hi.abs() * 0.0002).max(1e-9);
     lo -= pad;
@@ -378,6 +407,41 @@ pub fn render_kline(
         }
     }
 
+    // A rule's levels: dashed across the empty cells, named at the left over whatever is there.
+    let dashed = if g.unicode { "╌" } else { "-" };
+    let mut named: Vec<(u16, u16)> = Vec::new(); // row, first free column
+    for l in &near {
+        let y = row(l.value);
+        for x in plot.x..plot.right() {
+            if empty(buf, x, y) {
+                put(buf, x, y, dashed, l.style);
+            }
+        }
+        // two levels on one row: the second name goes after the first
+        let x = named.iter().rev().find(|(r, _)| *r == y).map_or(plot.x + 1, |(_, x)| *x);
+        let tag = format!(" {} {} ", l.label, price(l.value, dec));
+        let w = text(buf, x, y, &tag, plot.right().saturating_sub(x), l.style.add_modifier(Modifier::BOLD));
+        named.push((y, x + w + 1));
+    }
+    for l in &far {
+        let (y, arrow) = if l.value > hi { (plot.y, "^") } else { (base_y - 1, "v") };
+        let x = named.iter().rev().find(|(r, _)| *r == y).map_or(plot.x + 1, |(_, x)| *x);
+        let tag = format!(" {arrow} {} {} ", l.label, price(l.value, dec));
+        let w = text(buf, x, y, &tag, plot.right().saturating_sub(x), l.style);
+        named.push((y, x + w + 1));
+    }
+    // Buys under the candle they were made in, sales over it.
+    for (at, buy) in k.marks {
+        let Some(i) = vis.iter().position(|c| c.start <= *at && at.0 < c.start.0 + k.bar_us) else { continue };
+        let (c, x) = (&vis[i], x0 + i as u16);
+        let (mark, st, y) = if *buy {
+            (if g.unicode { "▲" } else { "^" }, th.profit, (row(c.low) + 1).min(base_y - 1))
+        } else {
+            (if g.unicode { "▼" } else { "v" }, th.loss, row(c.high).saturating_sub(1).max(plot.y))
+        };
+        put(buf, x, y, mark, Style::new().fg(st).add_modifier(Modifier::BOLD));
+    }
+
     // Overlay lines go into empty cells only: they never cover the price.
     let up =
         live.is_some_and(|p| if k.line { n < 2 || p >= k.candles[n - 2].close } else { p >= k.candles[n - 1].open });
@@ -413,6 +477,23 @@ pub fn render_kline(
         }
     }
 
+    // Volume: a bar a candle, as tall as its share of the largest one shown, in the candle's colour.
+    let most = vis.iter().map(|c| c.vol).fold(0.0, f64::max);
+    if vol_h > 0 && most > 0.0 {
+        for (i, c) in vis.iter().enumerate() {
+            let eighths = ((c.vol / most) * f64::from(vol_h) * 8.0).round() as u16;
+            let st = Style::new().fg(if c.close >= c.open { th.profit } else { th.loss }).add_modifier(Modifier::DIM);
+            for r in 0..vol_h {
+                let fill = eighths.saturating_sub(r * 8).min(8);
+                if fill > 0 {
+                    put(buf, x0 + i as u16, time_y - 1 - r, g.spark[fill as usize - 1], st);
+                }
+            }
+        }
+        let name = if k.zh { "量" } else { "vol" };
+        text(buf, axis_x + 1, base_y, &format!(" {name} {}", crate::markets::compact(most)), aw - 1, th.faint());
+    }
+
     // Time axis: a label under a candle every ~18 columns, placed right to
     // left so the newest one always shows.
     let mut limit = plot.right();
@@ -423,7 +504,7 @@ pub fn render_kline(
         if x < plot.x {
             break;
         }
-        text(buf, x, base_y, &lab, w, th.faint());
+        text(buf, x, time_y, &lab, w, th.faint());
         limit = x.saturating_sub(2);
     }
 
@@ -448,14 +529,19 @@ pub fn render_kline(
         x += text(buf, x, y, v, width(v), st) + 2;
     };
     put_kv(buf, "", &stamp(c.start, k.bar_us), th.muted());
-    put_kv(buf, "O", &price(c.open, dec), vs);
-    put_kv(buf, "H", &price(c.high.max(close), dec), vs);
-    put_kv(buf, "L", &price(c.low.min(close), dec), vs);
-    put_kv(buf, "C", &price(close, dec), vs);
-    put_kv(buf, "Change", &format!("{d:+.dec$} ({pct:+.2}%)"), vs);
-    put_kv(buf, "Range", &format!("{range:.2}%"), vs);
+    let names = if k.zh {
+        ["开", "高", "低", "收", "涨跌", "振幅", "量"]
+    } else {
+        ["O", "H", "L", "C", "Change", "Range", "Vol"]
+    };
+    put_kv(buf, names[0], &price(c.open, dec), vs);
+    put_kv(buf, names[1], &price(c.high.max(close), dec), vs);
+    put_kv(buf, names[2], &price(c.low.min(close), dec), vs);
+    put_kv(buf, names[3], &price(close, dec), vs);
+    put_kv(buf, names[4], &format!("{d:+.dec$} ({pct:+.2}%)"), vs);
+    put_kv(buf, names[5], &format!("{range:.2}%"), vs);
     if c.vol > 0.0 {
-        put_kv(buf, "Vol", &crate::markets::compact(c.vol), th.muted());
+        put_kv(buf, names[6], &crate::markets::compact(c.vol), th.muted());
     }
     info
 }
@@ -497,9 +583,58 @@ mod tests {
     }
 
     #[test]
+    fn a_rules_levels_are_lines_with_their_names_and_trades_are_marked() {
+        let c = candles();
+        let levels = [
+            Level { value: 102.0, label: "buys under".into(), style: Style::new() },
+            Level { value: 103.0, label: "sells above".into(), style: Style::new() },
+            Level { value: 60.0, label: "stop".into(), style: Style::new() },
+        ];
+        let marks = [(Ts(30 * 60_000_000 + 5), true), (Ts(38 * 60_000_000 + 5), false)];
+        let k = Kline {
+            candles: &c,
+            bar_us: 60_000_000,
+            cursor: None,
+            live: Some(103.61),
+            line: false,
+            decimals: 2,
+            levels: &levels,
+            marks: &marks,
+            average: true,
+            volume: false,
+            zh: false,
+        };
+        let (buf, info, _) = draw(&k, Rect::new(0, 0, 80, 24));
+        let rows = dump(&buf);
+        let line_of = |needle: &str| {
+            rows.iter().position(|r| r.contains(needle)).unwrap_or_else(|| panic!("{needle}:\n{}", rows.join("\n")))
+        };
+        let (buy, sell) = (line_of("buys under 102.00"), line_of("sells above 103.00"));
+        assert!(sell < buy, "the higher price is drawn higher");
+        assert!(rows[buy].contains("╌"), "a dashed line runs from the name: {}", rows[buy]);
+        // far under the picture: named at the bottom edge, and the picture is not squeezed to reach it
+        let stop = line_of("v stop 60.00");
+        assert_eq!(stop as u16, info.plot.bottom() - 1, "{}", rows.join("\n"));
+        let all = rows.join("\n");
+        assert_eq!((all.matches('▲').count(), all.matches('▼').count()), (1, 1), "one buy, one sale:\n{all}");
+    }
+
+    #[test]
     fn candles_right_aligned_with_live_tag_and_readout() {
         let c = candles();
-        let k = Kline { candles: &c, bar_us: 60_000_000, cursor: None, live: Some(103.61), line: false, decimals: 2 };
+        let k = Kline {
+            candles: &c,
+            bar_us: 60_000_000,
+            cursor: None,
+            live: Some(103.61),
+            line: false,
+            decimals: 2,
+            levels: &[],
+            marks: &[],
+            average: true,
+            volume: false,
+            zh: false,
+        };
         let area = Rect::new(0, 0, 80, 20);
         let (buf, info, hits) = draw(&k, area);
         let lines = dump(&buf);
@@ -535,6 +670,11 @@ mod tests {
             live: None,
             line: false,
             decimals: 2,
+            levels: &[],
+            marks: &[],
+            average: true,
+            volume: false,
+            zh: false,
         };
         let (buf, info, _) = draw(&k, Rect::new(0, 0, 40, 12));
         assert_eq!(info.selected, Some(5));
@@ -546,14 +686,38 @@ mod tests {
     #[test]
     fn empty_and_line_mode() {
         let (buf, info, hits) = draw(
-            &Kline { candles: &[], bar_us: 1_000_000, cursor: None, live: None, line: false, decimals: 2 },
+            &Kline {
+                candles: &[],
+                bar_us: 1_000_000,
+                cursor: None,
+                live: None,
+                line: false,
+                decimals: 2,
+                levels: &[],
+                marks: &[],
+                average: true,
+                volume: false,
+                zh: false,
+            },
             Rect::new(0, 0, 60, 10),
         );
         assert!(dump(&buf).iter().any(|l| l.contains("waiting for candles")));
         assert!(info.shown.is_none() && hits.is_empty());
         let c = candles();
         let (buf, _, _) = draw(
-            &Kline { candles: &c, bar_us: 60_000_000, cursor: None, live: None, line: true, decimals: 2 },
+            &Kline {
+                candles: &c,
+                bar_us: 60_000_000,
+                cursor: None,
+                live: None,
+                line: true,
+                decimals: 2,
+                levels: &[],
+                marks: &[],
+                average: true,
+                volume: false,
+                zh: false,
+            },
             Rect::new(0, 0, 80, 20),
         );
         let all = dump(&buf).concat();
@@ -563,7 +727,19 @@ mod tests {
     #[test]
     fn line_mode_with_vwma_high_low_and_live_price_lines() {
         let c = candles();
-        let k = Kline { candles: &c, bar_us: 60_000_000, cursor: None, live: Some(103.61), line: true, decimals: 2 };
+        let k = Kline {
+            candles: &c,
+            bar_us: 60_000_000,
+            cursor: None,
+            live: Some(103.61),
+            line: true,
+            decimals: 2,
+            levels: &[],
+            marks: &[],
+            average: true,
+            volume: false,
+            zh: false,
+        };
         let (buf, info, _) = draw(&k, Rect::new(0, 0, 110, 20));
         let lines = dump(&buf);
         let all = lines.concat();
@@ -600,7 +776,19 @@ mod tests {
         let mut c: Vec<Candle> = (0..30).map(|m| d(m, 100.0, 100.0, 100.0)).collect();
         c.push(d(30, 100.0, 101.0, 99.0));
         c.push(Candle { start: Ts(31_000_000), open: 99.0, high: 101.0, low: 99.0, close: 101.0, vol: 0.0 });
-        let k = Kline { candles: &c, bar_us: 1_000_000, cursor: None, live: None, line: false, decimals: 2 };
+        let k = Kline {
+            candles: &c,
+            bar_us: 1_000_000,
+            cursor: None,
+            live: None,
+            line: false,
+            decimals: 2,
+            levels: &[],
+            marks: &[],
+            average: true,
+            volume: false,
+            zh: false,
+        };
         let (buf, info, _) = draw(&k, Rect::new(0, 0, 80, 20));
         let col =
             |x: u16| (info.plot.y..info.plot.bottom()).map(|y| buf[(x, y)].symbol().to_string()).collect::<String>();

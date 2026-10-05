@@ -188,10 +188,64 @@ solana-test-validator --rpc-port 18899 --faucet-port 19900 --ledger /tmp/mobius-
 MOBIUS_TEST_VALIDATOR=http://127.0.0.1:18899 cargo test -p mobius-searcher --lib on_a_local_validator -- --ignored --nocapture
 ```
 
+## From the terminal UI
+
+Page `9` (Bots) of the terminal UI lists every real run and the rules files
+of your config directory that have not run yet; `p` adds the newest paper
+run, which is a simulated account and is not shown until asked for. `n`
+makes a new bot there without writing a file by hand: the kind of rule (the
+average of one day or of three), `k`, the stop of a trade, the budget and
+the total stop, and the words `ALLOW LOSS` typed by you; it writes
+`trade-<name>.toml` into the config directory and starts nothing. For
+the one selected it says in words what it holds and what it waits for
+("Waiting to buy: when a 15m bar closes under 120.93, 0.15 % below the price
+now"), and shows it three ways: a ruler with the price now between the two
+prices that matter (its buy and its sell price while it waits; what its SOL
+cost and its sell price while it holds); the exchange's live candles of its
+market with those prices drawn across and its buys (`▲`) and sells (`▼`)
+marked; and the sums the prices come from ("buy price = average − 1 ×
+deviation = 120.93"). Then what it did. The header of every page has a word
+on the real bot and counts the wallet's USDC into what the wallet is worth.
+The page is in Chinese when the system language is (or with `--lang zh`).
+
+`s` starts the selected bot, `x` stops it, `c` sells what it holds and ends
+it; each asks first and only `y` does it. Starting is the same `--trade
+FILE`, as a program of its own in the background: it goes on when the window
+is closed, and what it prints goes to `<run>.log` in the data directory. The
+file still has to carry `acknowledge = "ALLOW LOSS"`, and the config
+`execution.live_enabled = true`; the page starts nothing without them. A bot
+started by a version before the page existed shows as running and has to be
+stopped once in its own window.
+
+### Changing its budget
+
+`b` on the Bots page changes the USD the selected bot may use, between 1 and
+25, while it runs or while it is stopped. The form shows what it has, what
+the wallet holds free, and what the number you write would do; `⏎` asks once
+more and `y` leaves the change for the bot's program, which acts on it
+within seconds (a stopped one when it is started).
+
+* **Raised**: the difference is taken from USDC the wallet holds beyond the
+  bot's own. What is missing is bought by selling SOL, a real swap with its
+  fee; never the SOL the bot itself holds, nor the SOL kept for fees and
+  rent. If the wallet has not enough, the budget is not changed and the
+  bot's record says why.
+* **Lowered**: the difference stops being the bot's and stays in the wallet
+  as USDC; nothing is swapped. It can only give what it holds as USDC: while
+  it is in SOL the change waits until it has sold.
+
+What the run has made or lost so far stays as it is (a budget of 2 worth
+1.99 raised to 5 is worth 4.99), and the value at which everything is sold
+follows the budget (`stop_total_loss` of the new one). While a change has
+not been made yet the page says so; writing the budget it has now takes the
+change back. A swap that does not go through is tried again after each bar.
+The rules file is not rewritten: a budget changed by hand belongs to the
+run, and a changed file is still a new run.
+
 ## Stopping and going on
 
-Ctrl-C stops the program and leaves what the run holds as it is; the same
-command goes on from there. `--close` sells what is held and ends the run
+Ctrl-C (or `x` on the Bots page) stops the program and leaves what the run
+holds as it is; the same command (or `s`) goes on from there. `--close` sells what is held and ends the run
 (stop the running program first: one at a time).
 A run that ended (by the stop or by `--close`) does not start again; a
 changed file is a new run.

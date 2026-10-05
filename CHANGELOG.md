@@ -7,6 +7,72 @@ before 1.0 a minor version may change configuration or behaviour.
 
 ### Added
 
+- **Wallet page** (`0`) in the terminal UI: what the wallet holds in SOL and
+  USDC and what that is worth, how much of it a bot holds and how much is
+  free to send; the address to receive at, whole and as a QR code (`c` copies
+  it); what came and went, read from the chain (`⏎` shows a transaction's
+  signature). `s` / `u` send SOL / USDC to another Solana address: the
+  request is checked against the chain (the address is a wallet's and not a
+  program's or a token account's, the amount is there, what is left is
+  enough to keep the account), shown back in full with its fee, what opening
+  the recipient's USDC account costs when they have none, and what is left;
+  it is sent only after the last four characters of the address are typed,
+  then signed, simulated as signed and sent until it is confirmed or has
+  expired. Sending needs `execution.live_enabled` and a key file; the key is
+  read only at that moment. `scripts/wallet_local.py` prepares a local chain
+  to try it on without money. See [docs/USAGE.md](docs/USAGE.md#the-wallet-page).
+
+- **Bots page** (`9`) in the terminal UI: the rules that hold a position,
+  real and paper. For each: what it holds and is worth and what it waits for
+  in words; a ruler with the price now between the two prices that matter
+  (its buy and its sell price while it waits; what its SOL cost and its sell
+  price while it holds) and how far it has to go; the exchange's live
+  candles of its market, the newest following the ticker each second, with
+  those prices drawn across and its buys and sells marked (`v`: a line; `[`
+  `]` or a click: any bar from 1s to 1D, the rule's own marked, with volume
+  under the price); the sums the prices come from (the average of how many bars, their deviation,
+  how many of them under it buys); and what it did. A real one is started
+  (`s`), stopped (`x`) and closed (`c`) from the page, each after a `y`; it
+  then runs as a program of its own in the background. A rules file of the
+  config directory that has not run yet is listed, to be started. The header
+  names the real bot on every page, and the wallet's USDC is counted into
+  Equity and listed under Assets. See
+  [docs/TRADE.md](docs/TRADE.md#from-the-terminal-ui).
+
+- **A bot is made on the Bots page** (`n`): its kind (the average of one day
+  or of three), the deviations under it at which it buys, the stop of a
+  trade, its budget and its total stop, each with what it means, what such
+  rules cost on a year of past prices, and the words `ALLOW LOSS`, which
+  the operator types. It writes a rules file like one written by hand into
+  the config directory and starts nothing: `s` does.
+
+- **Paper experiments are not listed among the bots** until `p` asks for
+  them: a simulated account is not the operator's money. A run that has
+  ended is shown as ended with what it ended at, not as holding it, and a
+  live session's header no longer carries a simulated figure it does not
+  have.
+
+- **Addresses the wallet sent to** are remembered (the last six, in the data
+  directory) and offered when the next transfer is written: `↑` `↓` on the
+  address puts one in. It is checked and confirmed like any other.
+
+- **A bot's budget can be changed** while it runs or is stopped (`b` on the
+  Bots page, 1 to 25 USD): the form says what the number written would do
+  before anything is asked. Raised, the difference comes from USDC the wallet
+  holds free and, for what is missing, from SOL sold (never the bot's own,
+  nor the SOL kept for fees); lowered, it stays in the wallet as USDC, no
+  longer the bot's, which waits until it has sold when it holds SOL. What
+  the run has made or lost stays as it is, and the price it is sold out at
+  follows the budget. The change is left for the bot's own program, which
+  takes it within seconds, tries again after each bar while it cannot, and
+  says in its record what it did.
+
+- **Chinese** when the system language lists it or `--lang zh` is given: the
+  Bots and Wallet pages (labels, what a bot waits for, what it printed, the
+  questions asked before an action and the answers), the header's and the
+  footer's names, and `?`, which there explains the page one is on (what it
+  is, what each part of it means, what each key does) for every page.
+
 - **The lab** (`--lab FILE`, `--lab-backtest FILE [--days N]`, `--lab-report`):
   rules that hold a position, tried on paper. Four kinds of rule (reversal
   after a down bar, buying a dip under an average, a grid, a breakout) are

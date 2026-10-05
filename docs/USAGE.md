@@ -84,6 +84,8 @@ Display options: `--glyphs unicode|ascii`, `--color truecolor|ansi256|none`,
 | `6` Risk | kill switch, limits, why opportunities were not executed |
 | `7` System | every connection: state, latency, errors, requests, rate limits; feeds |
 | `8` Logs | merged log |
+| `9` Bots | the rules that hold a position, real and paper: what each holds, what it waits for, live candles with the prices it acts at and how they are worked out, what it did. A real one is started, stopped and closed from here ([docs/TRADE.md](TRADE.md#from-the-terminal-ui)) |
+| `0` Wallet | what the wallet holds, the address to receive at (with its QR code), what came and went, and sending SOL or USDC to another address ([below](#the-wallet-page)) |
 
 <table>
 <tr><td><img src="images/overview.png" alt="Overview"></td><td><img src="images/opportunities.png" alt="Opportunities"></td></tr>
@@ -94,7 +96,7 @@ Display options: `--glyphs unicode|ascii`, `--color truecolor|ansi256|none`,
 
 | Key | Action |
 |---|---|
-| `1`–`8` | pages |
+| `1`–`9`, `0` | pages |
 | `Tab` | cycle focus between panels |
 | `K` | **kill switch** — stop new trades (any page); `K` again, then `y`, to release |
 | `j`/`k`, `↑`/`↓` | select / scroll |
@@ -108,15 +110,59 @@ Display options: `--glyphs unicode|ascii`, `--color truecolor|ansi256|none`,
 | `p` · `t` · `o` | Markets page: next pair · quote book / last trades · bottom tabs |
 | `y` / `n` | approve / decline a pending CONFIRM transaction |
 | `T` | thresholds panel: stage · review · apply ([Thresholds](#thresholds)) |
-| `?` | keys, by group (with the logo); the footer shows the ones of the page you are on |
+| `s` / `x` / `c` | Bots page: start the selected bot · stop it · sell what it holds and end it (each asks, `y` does it) |
+| `b` · `[` `]` · `v` | Bots page: change the bot's budget · the bar its chart is looked at in (1s–1D) · candles / line |
+| `n` · `p` | Bots page: make a new bot · show / hide the paper experiments (hidden until asked for) |
+| `s` / `u` · `c` · `r` | Wallet page: send SOL / USDC · copy the address · read the wallet again |
+| `?` | keys, by group (with the logo); the footer shows the ones of the page you are on. In Chinese: what the page you are on is, what each part of it means and what each key does |
 | `q` | quit (graceful; the recording is flushed) |
 
 **Mouse:** click tabs, panels and rows (click the selected opportunity again
 to inspect it); click or drag on a chart to move the cursor; right-click a
 chart to mark A, then B; the wheel scrolls lists and zooms charts. Releasing
-the kill switch and approving CONFIRM trades stay on the keyboard. To select
+the kill switch, approving CONFIRM trades and a bot's `y` stay on the keyboard. To select
 text, hold your terminal's modifier (usually Shift, Option in iTerm2) while
 dragging, or run with `--no-mouse`.
+
+### The Wallet page
+
+Page `0` shows the wallet of `[wallet] pubkey`: its SOL and USDC and what
+they are worth, what of it a bot holds (that is part of the balance, and not
+offered for sending), and what is free to send once the SOL kept for fees
+(`risk.min_wallet_sol_for_fees_lamports`) is left alone. Beside it the
+address to receive at, whole and as a QR code; `c` copies it where the
+terminal can (OSC 52), otherwise select it with the terminal's modifier
+(Shift or Option while dragging). **Solana network only**: from an exchange,
+choose the Solana network for the withdrawal. Under it, the last
+transactions as they changed the wallet; `⏎` shows one whole, its signature
+included.
+
+`s` sends SOL, `u` sends USDC, to another Solana address:
+
+1. Write the address (paste works; only base58 is taken; `↑` `↓` put in one
+   it was sent to before) and the amount (`m` fills in all that is free to
+   send), `⏎`.
+2. The request is checked against the chain and shown back: the amount, the
+   address in groups of four, what the chain says of it (a wallet that holds
+   something, or an address it has never seen), the network fee (0.000007
+   SOL), what opening the recipient's USDC account costs when they have none
+   (0.00204 SOL, the chain's deposit), what the wallet holds afterwards, and
+   what to know (it would leave less SOL than the program keeps for fees; it
+   takes what a bot holds; a bot is trading). What cannot be sent is refused
+   here with its reason: an address that is a program's or a token account's,
+   more than there is, a first transfer too small for a new address to exist.
+3. Type the last four characters of the address, `⏎`. Only then is it
+   signed, simulated as signed (any error and nothing is sent) and sent
+   until the chain confirms it or it has expired. The page says which, with
+   the signature.
+
+A transfer on the chain cannot be taken back; compare the address with where
+it should go. Sending needs `execution.live_enabled = true` and `[wallet]
+keypair_path` (the page says so when either is missing); the key file is
+read only at the moment a confirmed transfer is sent. To try all of it
+without money, `python3 scripts/wallet_local.py DIR` prepares a chain of this
+machine's own (a throwaway key, test SOL, a USDC that exists only there) and
+prints the commands.
 
 ### Terminals
 

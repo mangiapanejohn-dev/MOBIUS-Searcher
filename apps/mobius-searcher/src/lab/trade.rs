@@ -156,6 +156,10 @@ pub enum What {
     Sell {
         lot: usize,
     },
+    /// Raising the budget by hand to this many USD: SOL into the USDC the wallet lacks for it.
+    Raise {
+        to: f64,
+    },
 }
 
 /// A swap that was sent: the wallet before it, to tell what it did.
@@ -176,6 +180,23 @@ pub struct State {
     /// The run is over, and why.
     pub ended: Option<String>,
     pub pending: Option<Pending>,
+    /// The budget, once it was changed by hand (the file's until then).
+    #[serde(default)]
+    pub budget: Option<f64>,
+}
+
+/// USD the run may use: the file's, unless it was changed by hand since.
+pub fn budget_of(state: &State, live: &Live) -> f64 {
+    state.budget.unwrap_or(live.budget_usd)
+}
+
+/// What became of a wish to change the budget.
+#[derive(Debug, PartialEq)]
+pub enum Wish {
+    /// Granted, or refused for good: the wish is over.
+    Done,
+    /// Not possible yet (a swap is open, or the rule holds SOL where USDC is to be given back): asked again later.
+    Waits,
 }
 
 /// What a run holds now, in a line (for the report).
@@ -189,8 +210,8 @@ pub fn holds(state: &State, live: &Live) -> String {
         Some(why) => format!("ended: {why}"),
         None => format!(
             "budget {:.2} USD · everything is sold if it is worth {:.2} USD or less",
-            live.budget_usd,
-            live.budget_usd * (1.0 - live.stop_total_loss)
+            budget_of(state, live),
+            budget_of(state, live) * (1.0 - live.stop_total_loss)
         ),
     };
     let open = if state.pending.is_some() { " · a swap is under way" } else { "" };
@@ -217,6 +238,10 @@ impl<C: Chain> Trader<'_, C> {
         self.said.push(line);
     }
 
+    fn budget(&self) -> f64 {
+        budget_of(self.state, self.live)
+    }
+
     /// What a sent swap did, from the wallet now against the wallet before.
     /// `true`: accounted for (it landed, or it is certain it did not).
     fn settle(&mut self, p: &Pending, (lamports, usdc): (u64, u64), last_look: bool) -> bool {
@@ -225,7 +250,7 @@ impl<C: Chain> Trader<'_, C> {
         let line = match p.what {
             What::Fund if d_usdc > 0 => {
                 self.state.funded = true;
-                self.state.account.cash = self.live.budget_usd.min(usdc as f64 / 1e6);
+                self.state.account.cash = self.budget().min(usdc as f64 / 1e6);
                 format!(
                     "budget set aside: {:.6} SOL became {:.4} USDC; the rule has {:.4} USD",
                     -d_sol as f64 / 1e9,
@@ -243,6 +268,20 @@ impl<C: Chain> Trader<'_, C> {
                 let (paid, sol) = (self.state.account.lots[lot].usd, self.state.account.lots[lot].sol);
                 self.state.account.sold(lot, usd, p.ts, p.close);
                 format!("sold {sol:.6} SOL for {usd:.4} USDC; this trade {:+.4} USD", usd - paid)
+            }
+            What::Raise { to } if d_usdc > 0 => {
+                let old = self.budget();
+                // what the wallet holds beyond the rule's own USDC is what it can be given: never more
+                let free = (usdc as f64 / 1e6 - self.state.account.cash).max(0.0);
+                let added = (to - old).min(free).max(0.0);
+                self.state.account.cash += added;
+                self.state.budget = Some(old + added);
+                format!(
+                    "budget raised from {old:.2} to {:.2} USD: {:.6} SOL became {:.4} USDC; {added:.4} more USD is the rule's",
+                    old + added,
+                    -d_sol as f64 / 1e9,
+                    d_usdc as f64 / 1e6
+                )
             }
             _ if last_look => "the swap that was under way did not change the wallet: it did not land".to_string(),
             _ => return false,
@@ -340,24 +379,24 @@ impl<C: Chain> Trader<'_, C> {
             Ok(b) => b,
             Err(e) => return self.say(format!("the wallet could not be read ({e}): the budget is not set aside yet")),
         };
-        let have = usdc as f64 / 1e6;
+        let (have, budget) = (usdc as f64 / 1e6, self.budget());
         // all of it, or nearly (what an earlier run left): a swap for the last cents costs more than it brings
-        if have >= self.live.budget_usd * NEARLY {
+        if have >= budget * NEARLY {
             self.state.funded = true;
-            self.state.account.cash = have.min(self.live.budget_usd);
+            self.state.account.cash = have.min(budget);
             return self.say(format!(
                 "the wallet holds {have:.4} USDC: {:.4} of it is the rule's budget",
                 self.state.account.cash
             ));
         }
         // a little more than the price says, so that slippage does not leave it short
-        let need = ((self.live.budget_usd - have) / bid * 1e9 * 1.003).ceil() as u64;
+        let need = ((budget - have) / bid * 1e9 * 1.003).ceil() as u64;
         let keep = self.chain.fee_reserve() + FUND_HEADROOM;
         if lamports < need + keep {
             return self.say(format!(
                 "the wallet holds {:.6} SOL; setting {:.2} USD aside needs {:.6} and {:.6} must stay for fees and rent: nothing sent",
                 lamports as f64 / 1e9,
-                self.live.budget_usd - have,
+                budget - have,
                 need as f64 / 1e9,
                 keep as f64 / 1e9
             ));
@@ -365,9 +404,97 @@ impl<C: Chain> Trader<'_, C> {
         self.say(format!(
             "setting the budget aside: selling {:.6} SOL for about {:.2} USDC",
             need as f64 / 1e9,
-            self.live.budget_usd - have
+            budget - have
         ));
         self.act(What::Fund, need, ts, bid).await;
+    }
+
+    /// Change the budget by hand to `to` USD, keeping what the run has made
+    /// or lost so far as it is. Raised: the difference is taken from the
+    /// USDC the wallet holds beyond the rule's own, and what it lacks is
+    /// bought with SOL that is not the rule's. Lowered: the difference stops
+    /// being the rule's and stays in the wallet as USDC, which it must hold
+    /// as USDC to give.
+    pub async fn rebudget(&mut self, to: f64, bid: f64, ts: i64) -> Wish {
+        if self.state.ended.is_some() {
+            return Wish::Done;
+        }
+        if !(MIN_BUDGET_USD..=MAX_BUDGET_USD).contains(&to) {
+            self.say(format!(
+                "budget not changed: {to:.2} USD is not between {MIN_BUDGET_USD:.0} and {MAX_BUDGET_USD:.0}"
+            ));
+            return Wish::Done;
+        }
+        // a raise that was sent and has landed since is seen here
+        self.reconcile(ts).await;
+        if self.state.pending.is_some() {
+            return Wish::Waits; // nothing on top of an open swap
+        }
+        let old = self.budget();
+        if (to - old).abs() < 0.005 {
+            return Wish::Done;
+        }
+        if !self.state.funded {
+            self.state.budget = Some(to);
+            self.say(format!("budget changed from {old:.2} to {to:.2} USD before it was set aside"));
+            self.write();
+            return Wish::Done;
+        }
+        let cash = self.state.account.cash;
+        if to < old {
+            let back = old - to;
+            if cash + 1e-9 < back {
+                self.say(format!(
+                    "to lower the budget to {to:.2} USD the rule gives {back:.2} USD back, and it holds {cash:.4} in USDC (the rest is SOL): it waits until it has sold"
+                ));
+                return Wish::Waits;
+            }
+            self.state.account.cash = (cash - back).max(0.0);
+            self.state.budget = Some(to);
+            self.say(format!("budget lowered from {old:.2} to {to:.2} USD: {back:.2} USDC is the wallet's again"));
+            self.write();
+            return Wish::Done;
+        }
+        let more = to - old;
+        let (lamports, usdc) = match self.chain.balances().await {
+            Ok(b) => b,
+            Err(e) => {
+                self.say(format!("the wallet could not be read ({e}): the budget is not changed yet"));
+                return Wish::Waits;
+            }
+        };
+        let free = (usdc as f64 / 1e6 - cash).max(0.0);
+        // all of it, or nearly: a swap for the last cents costs more than it brings, so the budget is what there is
+        if free >= more * NEARLY {
+            let added = more.min(free);
+            self.state.account.cash = cash + added;
+            self.state.budget = Some(old + added);
+            self.say(format!(
+                "budget raised from {old:.2} to {:.2} USD with {added:.4} USDC the wallet held",
+                old + added
+            ));
+            self.write();
+            return Wish::Done;
+        }
+        // a little more than the price says, so that slippage does not leave it short; never the rule's own SOL
+        let need = ((more - free) / bid * 1e9 * 1.003).ceil() as u64;
+        let own = (self.state.account.sol() * 1e9).round() as u64;
+        let keep = self.chain.fee_reserve() + FUND_HEADROOM + own;
+        if lamports < need + keep {
+            self.say(format!(
+                "budget not changed: raising it to {to:.2} USD needs {:.6} SOL sold, and of the wallet's {:.6} SOL {:.6} must stay (what the rule holds, fees, rent)",
+                need as f64 / 1e9,
+                lamports as f64 / 1e9,
+                keep as f64 / 1e9
+            ));
+            return Wish::Done;
+        }
+        self.say(format!(
+            "raising the budget from {old:.2} to {to:.2} USD: selling {:.6} SOL for about {:.2} USDC",
+            need as f64 / 1e9,
+            more - free
+        ));
+        if self.act(What::Raise { to }, need, ts, bid).await { Wish::Done } else { Wish::Waits }
     }
 
     pub fn say_closing(&mut self) {
@@ -405,7 +532,7 @@ impl<C: Chain> Trader<'_, C> {
             return;
         }
         let equity = self.equity(bid);
-        let floor = self.live.budget_usd * (1.0 - self.live.stop_total_loss);
+        let floor = self.budget() * (1.0 - self.live.stop_total_loss);
         if equity <= floor || self.state.account.frozen {
             if !self.state.account.frozen {
                 self.say(format!(
@@ -416,7 +543,7 @@ impl<C: Chain> Trader<'_, C> {
             self.state.account.frozen = true;
             if self.sell_all(ts, bar.close).await {
                 self.state.ended =
-                    Some(format!("stopped at {:.4} USD of {:.2}", self.state.account.cash, self.live.budget_usd));
+                    Some(format!("stopped at {:.4} USD of {:.2}", self.state.account.cash, self.budget()));
                 let line = format!("the run has ended: {}", self.state.ended.as_deref().unwrap_or_default());
                 self.say(line);
             }
@@ -425,7 +552,8 @@ impl<C: Chain> Trader<'_, C> {
         let ctx = Ctx { model: e.model.as_deref(), other };
         // the total stop is the one above; a daily pause of the file applies as on paper
         let stops = Stops { daily_loss: plan.stops.daily_loss, total_loss: None };
-        let (wanted, _) = orders(&e.rule, &stops, plan.capital, &mut self.state.account, (bars, ctx));
+        // (the budget is the rule's capital: the file's, or what it was changed to by hand)
+        let (wanted, _) = orders(&e.rule, &stops, self.budget(), &mut self.state.account, (bars, ctx));
         // sells first, highest lot first, so the lot numbers stay the ones the rule meant
         let mut sells: Vec<usize> =
             wanted.iter().filter_map(|o| if let Order::Sell { lot } = o { Some(*lot) } else { None }).collect();
@@ -472,7 +600,7 @@ trait Wire {
 
 /// What became of a transaction that was handed over.
 #[derive(Debug, PartialEq)]
-enum Fate {
+pub(crate) enum Fate {
     Confirmed,
     /// In a block, and it failed there: its fee is paid, nothing else happened.
     Failed(String),
@@ -575,7 +703,7 @@ impl From<String> for No {
 
 /// Why a transaction was not sent.
 #[derive(Debug)]
-enum Unsent {
+pub(crate) enum Unsent {
     /// Its simulation as signed failed: the quote went stale, another may do.
     Simulation(String),
     Other(String),
@@ -588,6 +716,15 @@ fn mint(s: &str) -> Address {
 impl Mainnet {
     /// `dry_run`: no key is read, nothing can be signed.
     pub fn new(cfg: &Config, live: &Live, dry_run: bool) -> Result<Mainnet> {
+        Mainnet::build(cfg, live.slippage_bps, live.dexes.clone(), dry_run)
+    }
+
+    /// For a transaction of the wallet's own (a transfer): the key is read, nothing is swapped.
+    pub(crate) fn sender(cfg: &Config) -> Result<Mainnet> {
+        Mainnet::build(cfg, 0, Vec::new(), false)
+    }
+
+    fn build(cfg: &Config, slippage_bps: u16, dexes: Vec<String>, dry_run: bool) -> Result<Mainnet> {
         let telemetry = Arc::new(Telemetry::new());
         let rpc = Arc::new(RpcClient::new(
             &cfg.rpc.resolved_url(),
@@ -635,12 +772,12 @@ impl Mainnet {
             jito,
             taker,
             signer,
-            slippage_bps: live.slippage_bps,
+            slippage_bps,
             cu_price_percentile: cfg.jupiter.compute_unit_price_percentile.clone(),
             max_tip: cfg.risk.max_jito_tip_lamports,
             max_priority_fee: cfg.risk.max_priority_fee_lamports.min(MAX_PRIORITY_FEE),
             fee_reserve: cfg.risk.min_wallet_sol_for_fees_lamports,
-            dexes: live.dexes.clone(),
+            dexes,
         })
     }
 
@@ -778,6 +915,8 @@ impl Mainnet {
             Fate::Expired => "it expired without landing".to_string(),
             Fate::Unknown => "nothing was heard of it in two minutes".to_string(),
         };
+        // (a wire that answers "already processed" only saw it land through the other one first)
+        let refused: Vec<String> = refused.into_iter().filter(|r| !r.contains("already processed")).collect();
         let refused =
             if refused.is_empty() { String::new() } else { format!("; refused by {}", refused.join(" and ")) };
         Ok(Sent::Sent(format!("{note}; {fate}; signature {signature}{refused}")))
@@ -806,6 +945,30 @@ impl Mainnet {
             .await
             .map_err(|e| format!("the wallet's USDC account could not be read: {e}"))?;
         Ok(v.get("value").and_then(Value::as_array).is_some_and(|a| !a.is_empty()))
+    }
+
+    /// Instructions of the wallet's own (a transfer), sent the way a swap is:
+    /// signed, simulated as signed, sent until confirmed or expired.
+    pub(crate) async fn send_plain(
+        &self,
+        ixs: Vec<searcher_core::ix::RawInstruction>,
+        cu_limit: u32,
+        cu_price_micro: u64,
+    ) -> Result<(String, Fate, Vec<String>), Unsent> {
+        let Some((_, wallet)) = &self.signer else { return Err(Unsent::Other("no key was read".into())) };
+        let (blockhash, last_valid) = self.latest_blockhash().await.map_err(Unsent::Other)?;
+        let params = AssemblyParams {
+            payer: self.taker,
+            cu_limit,
+            cu_price_micro,
+            tip: None,
+            dont_front: None,
+            existing_atas: &HashSet::new(),
+            blockhash,
+        };
+        let tx = searcher_execution::assemble::compose_plain(ixs, &params)
+            .map_err(|e| Unsent::Other(format!("assembling: {e}")))?;
+        self.sign_and_send(wallet, tx, last_valid).await
     }
 
     /// Sign, simulate the exact bytes as signed (any error and nothing is
@@ -1033,6 +1196,122 @@ stop = 0.05
         );
         let plan = parse(FILE).unwrap();
         assert_eq!((plan.capital, plan.live.unwrap().slippage_bps), (2.0, 30), "the budget is the rule's capital");
+    }
+
+    /// One wish on the state, with what was said about it.
+    async fn wish(mock: &Mock, state: &mut State, to: f64, ts: i64) -> (Wish, Vec<String>) {
+        let live = parse(FILE).unwrap().live.unwrap();
+        let price = *mock.price.lock();
+        let mut t =
+            Trader { chain: mock, live: &live, state, said: Vec::new(), settle_wait: Duration::ZERO, save: None };
+        let done = t.rebudget(to, price, ts).await;
+        (done, t.said)
+    }
+
+    #[tokio::test]
+    async fn the_budget_is_raised_and_lowered_by_hand_with_what_the_wallet_holds() {
+        // 10 USDC in the wallet: 2 of it becomes the rule's
+        let mock = Mock::new(0.5, 10.0, 120.0);
+        let mut st = State::default();
+        run(&mock, &mut st, &[120.0, 120.0]).await;
+        assert!(st.funded && st.account.cash == 2.0 && st.budget.is_none());
+        let live = parse(FILE).unwrap().live.unwrap();
+        assert_eq!(budget_of(&st, &live), 2.0);
+
+        // raised: the USDC the wallet holds beyond the rule's own is enough, nothing is swapped
+        let (done, said) = wish(&mock, &mut st, 5.0, 1).await;
+        assert_eq!((done, st.account.cash, st.budget), (Wish::Done, 5.0, Some(5.0)), "{said:?}");
+        assert_eq!(said, ["budget raised from 2.00 to 5.00 USD with 3.0000 USDC the wallet held"]);
+        assert!(holds(&st, &live).contains("budget 5.00 USD · everything is sold if it is worth 2.50 USD or less"));
+        // lowered: what it gives back stays in the wallet, no longer its own
+        let (done, said) = wish(&mock, &mut st, 3.0, 2).await;
+        assert_eq!((done, st.account.cash, st.budget), (Wish::Done, 3.0, Some(3.0)), "{said:?}");
+        assert_eq!(said, ["budget lowered from 5.00 to 3.00 USD: 2.00 USDC is the wallet's again"]);
+        // the same again is nothing; out of bounds is refused for good
+        assert_eq!(wish(&mock, &mut st, 3.0, 3).await, (Wish::Done, vec![]));
+        for bad in [30.0, 0.5] {
+            let (done, said) = wish(&mock, &mut st, bad, 4).await;
+            assert!(done == Wish::Done && said[0].starts_with("budget not changed:"), "{said:?}");
+        }
+        assert_eq!((st.account.cash, st.budget), (3.0, Some(3.0)));
+        assert!(mock.sends.lock().is_empty(), "none of it sent a swap");
+        assert_eq!(*mock.wallet.lock(), (500_000_000, 10_000_000), "nor moved anything in the wallet");
+        // a state written before budgets could be changed reads as it was
+        let old = serde_json::to_string(&State::default()).unwrap().replace(",\"budget\":null", "");
+        assert!(!old.contains("budget"));
+        assert_eq!(serde_json::from_str::<State>(&old).unwrap(), State::default());
+    }
+
+    #[tokio::test]
+    async fn a_raise_the_wallet_has_no_usdc_for_is_bought_with_sol_that_is_not_the_rules() {
+        // all the wallet's USDC is the rule's already
+        let mock = Mock::new(0.5, 2.0, 120.0);
+        let mut st = State::default();
+        run(&mock, &mut st, &[120.0, 120.0]).await;
+        assert!(st.funded && mock.sends.lock().is_empty());
+        let (done, said) = wish(&mock, &mut st, 5.0, 1).await;
+        assert_eq!(done, Wish::Done, "{said:?}");
+        // 3 USD at 120 a SOL and a little over, sold once
+        assert_eq!(*mock.sends.lock(), [(true, 25_075_000)]);
+        assert_eq!((st.account.cash, st.budget, st.pending.clone()), (5.0, Some(5.0), None), "{said:?}");
+        assert!(said[0].starts_with("raising the budget from 2.00 to 5.00 USD: selling 0.025075 SOL"), "{said:?}");
+        assert!(
+            said[2].starts_with("budget raised from 2.00 to 5.00 USD: 0.025082 SOL became 3.0090 USDC"),
+            "{said:?}"
+        );
+        // the nine thousandths of a USDC the swap brought over are the wallet's, not the rule's
+        assert_eq!(mock.wallet.lock().1, 5_009_000);
+
+        // one that does not land changes nothing, and is asked again
+        *mock.lost.lock() = true;
+        let (done, said) = wish(&mock, &mut st, 8.0, 10).await;
+        assert_eq!((done, st.budget, st.account.cash), (Wish::Waits, Some(5.0), 5.0), "{said:?}");
+        assert!(st.pending.is_some());
+        assert_eq!(wish(&mock, &mut st, 8.0, 20).await.0, Wish::Waits, "the swap is still open");
+        *mock.lost.lock() = false;
+        let (done, said) = wish(&mock, &mut st, 8.0, 10 + SETTLED_AFTER_MS).await;
+        assert!(said[0].contains("did not land"), "{said:?}");
+        assert_eq!((done, st.budget, st.account.cash), (Wish::Done, Some(8.0), 8.0), "{said:?}");
+
+        // SOL the rule holds is never sold to raise its own budget, nor the SOL kept for fees
+        let poor = Mock::new(0.21, 2.0, 120.0);
+        let mut st = State { funded: true, ..State::default() };
+        st.account.bought(2.0, 0.2, 0, 120.0);
+        let (done, said) = wish(&poor, &mut st, 5.0, 1).await;
+        assert!(
+            done == Wish::Done && said[0].starts_with("budget not changed: raising it to 5.00 USD needs"),
+            "{said:?}"
+        );
+        assert!(poor.sends.lock().is_empty() && st.budget.is_none());
+    }
+
+    #[tokio::test]
+    async fn a_budget_is_lowered_only_by_usdc_the_rule_holds_and_changed_freely_before_it_is_set_aside() {
+        // in SOL: nothing in USDC to give back, so it waits; once sold it is done
+        let mock = Mock::new(0.5, 0.0, 120.0);
+        let mut st = State { funded: true, budget: Some(5.0), ..State::default() };
+        st.account.bought(5.0, 0.0416, 0, 120.0);
+        let before = st.clone();
+        let (done, said) = wish(&mock, &mut st, 2.0, 1).await;
+        assert_eq!(done, Wish::Waits);
+        assert!(said[0].contains("it holds 0.0000 in USDC (the rest is SOL): it waits until it has sold"), "{said:?}");
+        assert_eq!(st, before);
+        st.account.sold(0, 5.1, 2, 122.0);
+        let (done, said) = wish(&mock, &mut st, 2.0, 3).await;
+        assert_eq!((done, st.budget), (Wish::Done, Some(2.0)), "{said:?}");
+        assert!((st.account.cash - 2.1).abs() < 1e-9, "what it made stays its own: {}", st.account.cash);
+
+        // not set aside yet: the wish is the budget that will be
+        let mock = Mock::new(0.5, 10.0, 120.0);
+        let mut st = State::default();
+        let (done, said) = wish(&mock, &mut st, 4.0, 1).await;
+        assert_eq!((done, st.budget, st.funded), (Wish::Done, Some(4.0), false), "{said:?}");
+        run(&mock, &mut st, &[120.0]).await;
+        assert!(st.funded && st.account.cash == 4.0);
+        // a run that has ended takes no wish
+        st.ended = Some("closed by hand".into());
+        assert_eq!(wish(&mock, &mut st, 6.0, 2).await, (Wish::Done, vec![]));
+        assert_eq!(st.budget, Some(4.0));
     }
 
     #[tokio::test]

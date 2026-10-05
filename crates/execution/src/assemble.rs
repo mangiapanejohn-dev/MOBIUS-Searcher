@@ -33,6 +33,20 @@ fn to_ix(r: &RawInstruction) -> Instruction {
     }
 }
 
+/// The associated token account of `owner` for `mint` (the classic Token program).
+pub fn ata(owner: &Address, mint: &Address) -> Address {
+    let (token, program) =
+        (pk(&well_known::addr(well_known::TOKEN_PROGRAM)), pk(&well_known::addr(well_known::ASSOCIATED_TOKEN_PROGRAM)));
+    let (at, _) = Pubkey::find_program_address(&[&owner.to_bytes(), token.as_ref(), &mint.to_bytes()], &program);
+    Address(at.to_bytes())
+}
+
+/// Whether `a` is a point of the curve, as the address of a key pair is (a
+/// program's derived address is not: nobody holds a key to it).
+pub fn on_curve(a: &Address) -> bool {
+    pk(a).is_on_curve()
+}
+
 /// Associated-token-account `CreateIdempotent` (ATA program, data `[1]`).
 /// Returns the ATA address (account index 1).
 pub fn ata_create_target(ix: &RawInstruction) -> Option<Address> {
@@ -225,6 +239,13 @@ pub fn compose_single(legs: &[&LegInstructions], p: &AssemblyParams<'_>) -> Resu
     let tip = p.tip.map(|t| t.1).unwrap_or(0);
     ixs.extend(tip_ix(p));
     compile(ixs, legs, p, p.cu_limit, tip, creates)
+}
+
+/// Instructions of the wallet's own (a transfer), no swap among them.
+pub fn compose_plain(ixs: Vec<RawInstruction>, p: &AssemblyParams<'_>) -> Result<AssembledTx, AssemblyError> {
+    let tip = p.tip.map(|t| t.1).unwrap_or(0);
+    let ixs = ixs.into_iter().chain(tip_ix(p)).collect();
+    compile(ixs, &[], p, p.cu_limit, tip, Vec::new())
 }
 
 /// One transaction per leg; the tip rides in the last one. `cu_limits`

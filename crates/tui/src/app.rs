@@ -2,11 +2,13 @@
 //! for the kill switch, confirmations and quit; everything else is local view
 //! state. The mouse drives the same state as the keys.
 
+use crate::bots::{BotAction, BotPort, Bots, BudgetForm, NewBotForm};
 use crate::cex::{BARS, Cex, OkxSource};
 use crate::hub::ViewModel;
 use crate::markets::{BottomTab, SideTab};
 use crate::theme::{Glyphs, Theme};
 use crate::timeline::Timeline;
+use crate::wallet::{Asset, Outcome, SendForm, Wallet, WalletAction, WalletPort};
 use crate::workspace::{AddError, ChartStyle, LineStyle, Workspace};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers, MouseButton, MouseEvent, MouseEventKind};
 use ratatui::layout::Rect;
@@ -28,10 +30,14 @@ pub enum Page {
     Risk,
     System,
     Logs,
+    /// Rules that hold a position (buy low, sell high), paper and real.
+    Bots,
+    /// What the wallet holds, receiving and sending.
+    Wallet,
 }
 
 impl Page {
-    pub const ALL: [Page; 8] = [
+    pub const ALL: [Page; 10] = [
         Page::Overview,
         Page::Markets,
         Page::Opportunities,
@@ -40,7 +46,15 @@ impl Page {
         Page::Risk,
         Page::System,
         Page::Logs,
+        Page::Bots,
+        Page::Wallet,
     ];
+
+    /// The key that goes to the page: `1`–`9`, then `0`.
+    pub fn key(self) -> char {
+        let i = Page::ALL.iter().position(|p| *p == self).unwrap_or(0);
+        char::from_digit((i as u32 + 1) % 10, 10).unwrap_or('1')
+    }
 
     pub fn label(self) -> &'static str {
         match self {
@@ -52,6 +66,24 @@ impl Page {
             Page::Risk => "Risk",
             Page::System => "System",
             Page::Logs => "Logs",
+            Page::Bots => "Bots",
+            Page::Wallet => "Wallet",
+        }
+    }
+
+    /// The page's name for an operator who reads Chinese.
+    pub fn label_zh(self) -> &'static str {
+        match self {
+            Page::Overview => "总览",
+            Page::Markets => "行情",
+            Page::Opportunities => "机会",
+            Page::Graphs => "图表",
+            Page::Trades => "成交",
+            Page::Risk => "风控",
+            Page::System => "系统",
+            Page::Logs => "日志",
+            Page::Bots => "机器人",
+            Page::Wallet => "钱包",
         }
     }
 
@@ -73,7 +105,7 @@ impl Page {
             Page::Graphs | Page::Markets => &[Focus::Graphs],
             Page::Trades => &[Focus::Opportunities, Focus::Graphs],
             Page::Logs => &[Focus::Stream],
-            Page::Risk | Page::System => &[Focus::Stream],
+            Page::Risk | Page::System | Page::Bots | Page::Wallet => &[Focus::Stream],
         }
     }
 }
@@ -141,6 +173,12 @@ pub struct TuiOptions {
     pub mouse: bool,
     /// OKX market data for the Markets page (None: on-chain data only).
     pub okx: Option<OkxSource>,
+    /// The application's bots, for the Bots page (None: the page says so).
+    pub bots: Option<BotPort>,
+    /// The application's wallet, for the Wallet page (None: the page says so).
+    pub wallet: Option<WalletPort>,
+    /// The operator reads Chinese: the pages about their own money are in it.
+    pub zh: bool,
 }
 
 impl Default for TuiOptions {
@@ -153,6 +191,9 @@ impl Default for TuiOptions {
             graphs: LEGACY_GRAPHS.to_vec(),
             mouse: true,
             okx: Some(OkxSource::default()),
+            bots: None,
+            wallet: None,
+            zh: false,
         }
     }
 }
@@ -214,6 +255,11 @@ pub enum Hit {
     MkPair,
     MkSide(SideTab),
     MkTab(BottomTab),
+    /// Bots page: a bot of the list, a bar of its chart.
+    Bot(usize),
+    BotBar(usize),
+    /// Wallet page: a transaction of the list.
+    WalletRow(usize),
 }
 
 /// Overlay showing the full detail of a stream/log line.
@@ -267,6 +313,28 @@ pub struct App {
     pub cex: Option<Cex>,
     /// Oldest / newest candle start of the last Markets frame.
     pub kline_span: Cell<Option<(Ts, Ts)>>,
+    /// The application's bots (as they were at start; the terminal loop keeps them fresh).
+    pub bots: Option<Bots>,
+    pub bot_selected: usize,
+    /// The action waiting for its `y`, and the bot it is for.
+    pub bot_prompt: Option<(String, BotAction)>,
+    /// The budget being written for a bot (`b`), before it is asked about.
+    pub bot_budget: Option<BudgetForm>,
+    /// A new bot being written (`n`).
+    pub bot_new: Option<NewBotForm>,
+    /// The bot's chart as a line of closes instead of candles (`v`).
+    pub bot_line: bool,
+    /// Paper experiments are listed beside the real bots (`p`); they are not, until asked for.
+    pub bot_paper: bool,
+    /// The bar its chart is looked at in (`[` `]`), an index into `cex::BARS`; `None`: the rule's own.
+    pub bot_bar: Option<usize>,
+    /// The application's wallet (as it was at start; the terminal loop keeps it fresh).
+    pub wallet: Option<Wallet>,
+    pub wallet_selected: usize,
+    /// The transfer being written, when one is.
+    pub wallet_form: Option<SendForm>,
+    /// The pages about the operator's own money are in Chinese.
+    pub zh: bool,
 }
 
 impl App {
@@ -303,6 +371,18 @@ impl App {
             mk_tab: BottomTab::default(),
             cex: None,
             kline_span: Cell::new(None),
+            bots: opts.bots.as_ref().map(|p| Bots::fixed((p.view)())),
+            bot_selected: 0,
+            bot_prompt: None,
+            bot_budget: None,
+            bot_new: None,
+            bot_line: false,
+            bot_paper: false,
+            bot_bar: None,
+            wallet: opts.wallet.as_ref().map(|p| Wallet::fixed((p.view)())),
+            wallet_selected: 0,
+            wallet_form: None,
+            zh: opts.zh,
         }
     }
 
@@ -384,6 +464,93 @@ impl App {
         let (first, latest) = Self::session_bounds(vm);
 
         // Modal overlays first.
+        if let Some(mut form) = self.wallet_form.take() {
+            let Some(wallet) = &self.wallet else { return out };
+            let done = {
+                let view = wallet.read();
+                form.on_key(k, view.sending.as_ref(), |a| crate::wallet::spendable(self, &view, a))
+            };
+            match done {
+                Outcome::Stay => self.wallet_form = Some(form),
+                Outcome::Act(action) => {
+                    wallet.act(action);
+                    self.wallet_form = Some(form);
+                }
+                Outcome::Close => wallet.act(WalletAction::Clear),
+            }
+            return out;
+        }
+        if let Some(mut form) = self.bot_new.take() {
+            if k.code == KeyCode::Esc {
+                return out;
+            }
+            if form.on_key(k) {
+                // ⏎ on the last field: made if it can be, else said why and left to be corrected
+                let made = form.spec(self.zh).and_then(|spec| {
+                    let said =
+                        self.bots.as_ref().map_or(Err("not available in this view".to_string()), |b| b.create(&spec));
+                    said.map(|said| (said, spec.name))
+                });
+                match made {
+                    Ok((said, name)) => {
+                        // the one just made is the one selected: s starts it
+                        let at = self
+                            .bots
+                            .as_ref()
+                            .and_then(|b| b.read().bots.iter().position(|b| b.real && b.name == name));
+                        self.bot_selected = at.unwrap_or(self.bot_selected);
+                        self.sync_stream();
+                        self.flash(said);
+                    }
+                    Err(why) => {
+                        form.error = Some(why);
+                        self.bot_new = Some(form);
+                    }
+                }
+            } else {
+                self.bot_new = Some(form);
+            }
+            return out;
+        }
+        if let Some(mut form) = self.bot_budget.take() {
+            match k.code {
+                KeyCode::Esc => {}
+                // a number that is a budget, and another than it has (or one that takes a wish back), goes on
+                // to the question; anything else stays to be corrected
+                KeyCode::Enter => {
+                    let bot = self.bots.as_ref().and_then(|b| b.read().bots.iter().find(|b| b.id == form.id).cloned());
+                    match (form.cents(), bot) {
+                        (Some(cents), Some(b))
+                            if b.wish.is_some() || (f64::from(cents) / 100.0 - b.budget).abs() >= 0.005 =>
+                        {
+                            self.ask_bot_of(&form.id, BotAction::Budget { cents })
+                        }
+                        _ => self.bot_budget = Some(form),
+                    }
+                }
+                KeyCode::Backspace => {
+                    form.text.pop();
+                    self.bot_budget = Some(form);
+                }
+                KeyCode::Char(c) => {
+                    form.type_in(c);
+                    self.bot_budget = Some(form);
+                }
+                _ => self.bot_budget = Some(form),
+            }
+            return out;
+        }
+        if let Some((id, action)) = self.bot_prompt.take() {
+            if matches!(k.code, KeyCode::Char('y')) {
+                match self.bots.as_ref().map(|b| b.act(&id, action)) {
+                    Some(Ok(done)) => self.flash(done),
+                    Some(Err(why)) if self.zh => self.flash(format!("没有执行：{why}")),
+                    Some(Err(why)) => self.flash(format!("not done: {why}")),
+                    None => {}
+                }
+            }
+            return out;
+        }
         if self.kill_release_prompt {
             if matches!(k.code, KeyCode::Char('y')) {
                 out.push(Command::KillSwitch { engage: false, reason: "released by operator".into() });
@@ -475,7 +642,11 @@ impl App {
             KeyCode::Char('?') => self.help = true,
             KeyCode::Char('T') if vm.replay => self.flash("thresholds can be changed in a live session only"),
             KeyCode::Char('T') => self.thresholds = Some(crate::thresholds::Panel::default()),
-            KeyCode::Char(c @ '1'..='8') => self.goto(Page::ALL[(c as u8 - b'1') as usize]),
+            KeyCode::Char(c @ '0'..='9') => {
+                if let Some(p) = Page::ALL.iter().find(|p| p.key() == c) {
+                    self.goto(*p)
+                }
+            }
             KeyCode::Tab | KeyCode::BackTab => {
                 let f = self.page.focuses();
                 let i = f.iter().position(|x| *x == self.focus).unwrap_or(0);
@@ -488,6 +659,125 @@ impl App {
                 let approve = k.code == KeyCode::Char('y');
                 out.push(Command::Confirm { opportunity: id, approve });
                 self.flash(format!("{} {id}", if approve { "approved" } else { "declined" }));
+            }
+            // ── Bots page ──
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Up | KeyCode::Char('k') if self.page == Page::Bots => {
+                let n = self.bots.as_ref().map_or(0, |b| crate::bots::shown(self, &b.read()));
+                let down = matches!(k.code, KeyCode::Down | KeyCode::Char('j'));
+                if n > 0 {
+                    self.bot_selected =
+                        if down { (self.bot_selected + 1).min(n - 1) } else { self.bot_selected.saturating_sub(1) };
+                }
+                self.sync_stream();
+            }
+            KeyCode::Char('v') if self.page == Page::Bots => self.bot_line = !self.bot_line,
+            KeyCode::Char('n') if self.page == Page::Bots && vm.pending_confirm.is_empty() => {
+                self.bot_new = Some(NewBotForm::default())
+            }
+            KeyCode::Char('p') if self.page == Page::Bots => {
+                self.bot_paper = !self.bot_paper;
+                let n = self.bots.as_ref().map_or(0, |b| crate::bots::shown(self, &b.read()));
+                self.bot_selected = self.bot_selected.min(n.saturating_sub(1));
+                self.sync_stream();
+                self.flash(match (self.bot_paper, self.zh) {
+                    (true, true) => "纸面实验已显示：它们是模拟账户，不是真钱",
+                    (false, true) => "纸面实验已隐藏",
+                    (true, false) => "paper experiments shown: simulated accounts, no money",
+                    (false, false) => "paper experiments hidden",
+                });
+            }
+            KeyCode::Char('[') | KeyCode::Char(']') if self.page == Page::Bots => {
+                let shown = self.bots.as_ref().and_then(|b| {
+                    b.read().bots.get(self.bot_selected).and_then(|b| crate::bots::shown_stream(self, b))
+                });
+                if let Some((_, bar)) = shown {
+                    let d = if k.code == KeyCode::Char('[') { -1 } else { 1 };
+                    self.bot_bar = Some((bar as i64 + d).clamp(0, BARS.len() as i64 - 1) as usize);
+                    self.sync_stream();
+                }
+            }
+            KeyCode::Char('b') if self.page == Page::Bots => {
+                let Some(b) = self.bots.as_ref().and_then(|b| b.read().bots.get(self.bot_selected).cloned()) else {
+                    return out;
+                };
+                match b.can(BotAction::Budget { cents: 0 }, self.zh) {
+                    Ok(()) => self.bot_budget = Some(BudgetForm { id: b.id, text: String::new() }),
+                    Err(why) => self.flash(why),
+                }
+            }
+            KeyCode::Char('s') | KeyCode::Char('x') | KeyCode::Char('c') if self.page == Page::Bots => {
+                let action = match k.code {
+                    KeyCode::Char('s') => BotAction::Start,
+                    KeyCode::Char('x') => BotAction::Stop,
+                    _ => BotAction::Close,
+                };
+                self.ask_bot(action);
+            }
+            KeyCode::Enter if self.page == Page::Bots => {
+                if let Some(b) = self.bots.as_ref().and_then(|b| b.read().bots.get(self.bot_selected).cloned()) {
+                    let body: Vec<String> = b
+                        .journal
+                        .iter()
+                        .map(|(ts, line)| {
+                            format!("{}  {}", Ts(ts * 1000).format("%m-%d %H:%M:%S"), crate::bots::said(self.zh, line))
+                        })
+                        .collect();
+                    if !body.is_empty() {
+                        let title =
+                            if self.zh { format!("{} 做过什么", b.name) } else { format!("What {} did", b.name) };
+                        self.detail = Some(Detail { title, body: body.join("\n") });
+                        self.detail_scroll = u16::MAX; // the renderer clamps it: the newest lines
+                    }
+                }
+            }
+            // ── Wallet page ──
+            KeyCode::Char('s') | KeyCode::Char('u') if self.page == Page::Wallet => {
+                let asset = if k.code == KeyCode::Char('s') { Asset::Sol } else { Asset::Usdc };
+                match self.wallet.as_ref().map(|w| w.read().cannot_send.clone()) {
+                    Some(None) => {
+                        let known = self
+                            .wallet
+                            .as_ref()
+                            .map(|w| w.read().recipients.iter().map(|r| r.address.clone()).collect());
+                        self.wallet_form = Some(SendForm { known: known.unwrap_or_default(), ..SendForm::new(asset) })
+                    }
+                    Some(Some(why)) => self.flash(why),
+                    None => {}
+                }
+            }
+            KeyCode::Char('r') if self.page == Page::Wallet => {
+                if let Some(w) = &self.wallet {
+                    w.act(WalletAction::Refresh);
+                    self.flash(if self.zh { "正在重新读取钱包" } else { "reading the wallet again" });
+                }
+            }
+            KeyCode::Char('c') if self.page == Page::Wallet => {
+                if let Some(address) = self.wallet.as_ref().and_then(|w| w.read().address.clone()) {
+                    copy(&address);
+                    self.flash(if self.zh {
+                        "地址已复制（终端不支持的话请手动选中复制）"
+                    } else {
+                        "address copied (select it by hand if the terminal did not take it)"
+                    });
+                }
+            }
+            KeyCode::Down | KeyCode::Char('j') | KeyCode::Up | KeyCode::Char('k') if self.page == Page::Wallet => {
+                let n = self.wallet.as_ref().map_or(0, |w| w.read().moved.len());
+                let down = matches!(k.code, KeyCode::Down | KeyCode::Char('j'));
+                if n > 0 {
+                    self.wallet_selected = if down {
+                        (self.wallet_selected + 1).min(n - 1)
+                    } else {
+                        self.wallet_selected.saturating_sub(1)
+                    };
+                }
+            }
+            KeyCode::Enter if self.page == Page::Wallet => {
+                if let Some(m) = self.wallet.as_ref().and_then(|w| w.read().moved.get(self.wallet_selected).cloned()) {
+                    let (title, body) = crate::wallet::moved_detail(&m, self.zh);
+                    self.detail = Some(Detail { title, body });
+                    self.detail_scroll = 0;
+                }
             }
             // ── Markets page ──
             KeyCode::Char('[') | KeyCode::Char(']') if self.page == Page::Markets => {
@@ -654,8 +944,44 @@ impl App {
         }
     }
 
+    /// Ask before an action on the selected bot, or say why it cannot be done.
+    fn ask_bot(&mut self, action: BotAction) {
+        let Some(b) = self.bots.as_ref().and_then(|b| b.read().bots.get(self.bot_selected).cloned()) else {
+            return self.flash(if self.zh { "没有可操作的机器人" } else { "no bot to act on" });
+        };
+        match b.can(action, self.zh) {
+            Ok(()) => self.bot_prompt = Some((b.id, action)),
+            Err(why) if self.zh => self.flash(format!("不能{} {}：{why}", action.verb(true), b.name)),
+            Err(why) => self.flash(format!("cannot {} {}: {why}", action.verb(false), b.name)),
+        }
+    }
+
+    /// Ask about `action` on the bot of this id (the one a form was opened for).
+    fn ask_bot_of(&mut self, id: &str, action: BotAction) {
+        let found = self.bots.as_ref().and_then(|b| b.read().bots.iter().find(|b| b.id == id).cloned());
+        match found.map(|b| b.can(action, self.zh)) {
+            Some(Ok(())) => self.bot_prompt = Some((id.to_string(), action)),
+            Some(Err(why)) => self.flash(why),
+            None => {}
+        }
+    }
+
+    /// The exchange stream follows the page: the selected bot's market on
+    /// the Bots page (its candles are live there), the Markets page's own otherwise.
+    pub fn sync_stream(&self) {
+        let Some(cex) = &self.cex else { return };
+        let bot = (self.page == Page::Bots)
+            .then(|| {
+                self.bots.as_ref()?.read().bots.get(self.bot_selected).and_then(|b| crate::bots::shown_stream(self, b))
+            })
+            .flatten();
+        let (pair, bar) = bot.unwrap_or((self.mk_pair, self.mk_bar));
+        cex.select(pair, bar);
+    }
+
     fn goto(&mut self, p: Page) {
         self.page = p;
+        self.sync_stream();
         let f = self.page.focuses();
         if !f.contains(&self.focus) {
             self.focus = f[0];
@@ -731,14 +1057,26 @@ impl App {
     }
 
     fn modal(&self) -> bool {
-        self.kill_release_prompt || self.picker.is_some() || self.detail.is_some() || self.help
+        self.kill_release_prompt
+            || self.bot_prompt.is_some()
+            || self.bot_budget.is_some()
+            || self.bot_new.is_some()
+            || self.wallet_form.is_some()
+            || self.picker.is_some()
+            || self.detail.is_some()
+            || self.help
     }
 
     fn click(&mut self, hit: Option<Hit>, x: u16, y: u16, vm: &ViewModel) -> Vec<Command> {
         // Overlays: their own items, otherwise a click closes them. Releasing
-        // the kill switch stays on the keyboard (y).
-        if self.kill_release_prompt {
+        // the kill switch stays on the keyboard (y), and so does a transfer:
+        // a click neither sends it nor throws away what was written.
+        if self.wallet_form.is_some() || self.bot_budget.is_some() || self.bot_new.is_some() {
+            return Vec::new();
+        }
+        if self.kill_release_prompt || self.bot_prompt.is_some() {
             self.kill_release_prompt = false;
+            self.bot_prompt = None;
             return Vec::new();
         }
         if self.picker.is_some() {
@@ -795,6 +1133,15 @@ impl App {
                 self.timeline.follow = false;
                 self.dragging = Some(h);
             }
+            Some(Hit::Bot(i)) => {
+                self.bot_selected = i;
+                self.sync_stream();
+            }
+            Some(Hit::BotBar(i)) => {
+                self.bot_bar = Some(i);
+                self.sync_stream();
+            }
+            Some(Hit::WalletRow(i)) => self.wallet_selected = i,
             Some(Hit::MkBar(i)) => self.set_market((self.mk_pair, i)),
             Some(Hit::MkPair) => return self.on_key(KeyEvent::new(KeyCode::Char('p'), KeyModifiers::NONE), vm),
             Some(Hit::MkSide(s)) => self.mk_side = s,
@@ -806,6 +1153,9 @@ impl App {
 
     /// Wheel: scroll lists, zoom graphs (`dir` > 0 = down / wider).
     fn wheel(&mut self, hit: Option<Hit>, dir: i64, vm: &ViewModel) {
+        if self.wallet_form.is_some() || self.bot_budget.is_some() || self.bot_new.is_some() {
+            return;
+        }
         if let Some(sel) = self.picker {
             let n = MetricId::ALL.len();
             self.picker = Some((sel as i64 + dir).rem_euclid(n as i64) as usize);
@@ -891,6 +1241,17 @@ impl App {
             self.detail = Some(Detail { title: format!("{} · {}", s.ts.hms_millis(), s.stage.label()), body });
             self.detail_scroll = 0;
         }
+    }
+}
+
+/// Put `text` on the system clipboard through the terminal (OSC 52), where it has one.
+fn copy(text: &str) {
+    use base64::Engine;
+    use std::io::{IsTerminal, Write};
+    let mut out = std::io::stdout();
+    if out.is_terminal() {
+        let _ = write!(out, "\x1b]52;c;{}\x07", base64::engine::general_purpose::STANDARD.encode(text));
+        let _ = out.flush();
     }
 }
 

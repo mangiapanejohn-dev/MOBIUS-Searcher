@@ -8,6 +8,7 @@
 //! A rules file is frozen by its content: its run is named after a hash of
 //! the file, so a changed file is a new run and cannot rewrite an old one.
 
+pub mod desk;
 pub mod model;
 pub mod rules;
 pub mod stats;
@@ -570,9 +571,24 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
         std::fs::create_dir_all(cfg.data_dir())?;
         let path = cfg.data_dir().join("trade.lock");
         let lock = std::fs::File::create(&path).with_context(|| format!("opening {}", path.display()))?;
-        if lock.try_lock().is_err() {
-            bail!("another --trade is running (it holds {}): stop it first", path.display());
+        // a running one holds it for good; the Bots page only touches it for an instant to see whether one does
+        let mut tries = 0;
+        while lock.try_lock().is_err() {
+            tries += 1;
+            if tries > 5 {
+                bail!("another --trade is running (it holds {}): stop it first", path.display());
+            }
+            tokio::time::sleep(Duration::from_millis(100)).await;
         }
+        // which run this is and from which file, for the Bots page
+        desk::hold(&cfg.data_dir(), &format!("trade-{}", plan.id), file)?;
+        // started from the Bots page it has no terminal, and it outlives the one it was started under
+        #[cfg(unix)]
+        tokio::spawn(async {
+            if let Ok(mut hangup) = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::hangup()) {
+                while hangup.recv().await.is_some() {}
+            }
+        });
         Some(lock)
     };
     let chain = Mainnet::new(cfg, &live, dry_run)?;
@@ -669,7 +685,8 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
         if t.state.pending.is_none() {
             t.say_closing();
             if t.sell_all(now_ms(), bid).await {
-                let why = format!("closed by hand at {:.4} USD of {:.2}", t.state.account.cash, live.budget_usd);
+                let budget = trade::budget_of(t.state, &live);
+                let why = format!("closed by hand at {:.4} USD of {budget:.2}", t.state.account.cash);
                 t.said.push(format!("the run has ended: {why}; its USDC stays in the wallet"));
                 t.state.ended = Some(why);
             }
@@ -695,7 +712,11 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
     if seen.get() == 0 {
         seen.set(bars.last().map_or(0, |b| b.ts));
     }
-    // the budget is set aside before the first bar
+    // a wish to change the budget, left by the Bots page: a number of USD.
+    // Tried when it is new and again after each bar, until it is over.
+    let wish_file = desk::wish_path(&cfg.data_dir(), &run);
+    let mut tried: Option<(u64, i64)> = None;
+    // the budget is set aside before the first bar (a wish left while it was stopped comes first: it may be the budget)
     {
         let mut t = Trader {
             chain: &chain,
@@ -706,6 +727,12 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
             save: Some(&write),
         };
         t.reconcile(now_ms()).await;
+        if let Some(to) = desk::wish(&wish_file) {
+            tried = Some((to.to_bits(), seen.get()));
+            if t.rebudget(to, bid, now_ms()).await == trade::Wish::Done {
+                let _ = std::fs::remove_file(&wish_file);
+            }
+        }
         if t.state.pending.is_none() {
             t.fund(bid, now_ms()).await;
         }
@@ -723,6 +750,25 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
         }
         if duration.is_some_and(|d| started.elapsed().as_secs() >= d) {
             break;
+        }
+        if let Some(to) = desk::wish(&wish_file).filter(|to| tried != Some((to.to_bits(), seen.get())))
+            && let Ok((bid, _)) = book(&http, &plan).await
+        {
+            tried = Some((to.to_bits(), seen.get()));
+            let mut t = Trader {
+                chain: &chain,
+                live: &live,
+                state: &mut state,
+                said: Vec::new(),
+                settle_wait: Duration::from_secs(2),
+                save: Some(&write),
+            };
+            if t.rebudget(to, bid, now_ms()).await == trade::Wish::Done {
+                let _ = std::fs::remove_file(&wish_file);
+            }
+            let said = std::mem::take(&mut t.said);
+            journal(said)?;
+            save(&state, seen.get())?;
         }
         let newest = bars.last().map_or(0, |b| b.ts);
         let fresh = match history(&http, &plan, &plan.instrument, now_ms(), newest + 1).await {
@@ -787,7 +833,7 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
                 now(),
                 last.close,
                 equity,
-                (equity / live.budget_usd - 1.0) * 100.0,
+                (equity / trade::budget_of(&state, &live) - 1.0) * 100.0,
                 if state.account.lots.is_empty() { "" } else { " · in SOL" }
             );
         } else {

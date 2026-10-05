@@ -150,7 +150,7 @@ struct Cli {
     /// Render frames of a replayed session: e.g. `120x40,80x24`.
     #[arg(long)]
     snapshot: Option<String>,
-    /// Pages to snapshot (digits 1-8). Empty: one frame after `--keys`, named by `--shot-name`.
+    /// Pages to snapshot (digits 1-9). Empty: one frame after `--keys`, named by `--shot-name`.
     #[arg(long, default_value = "12345678")]
     pages: String,
     #[arg(long, default_value = "view")]
@@ -270,8 +270,19 @@ fn print_config(l: &Layered, env_files: &[(PathBuf, Vec<String>)]) {
 }
 
 /// TUI options; `replay` picks start graphs from what the session recorded.
-fn tui_opts(cfg: &Config, replay: Option<&ViewModel>) -> TuiOptions {
+/// `config_file`: the `--config` given, which a bot started from the Bots page gets too.
+fn tui_opts(
+    cfg: &Config,
+    replay: Option<&ViewModel>,
+    config_file: Option<PathBuf>,
+    lang: Option<mobius_searcher::i18n::Lang>,
+) -> TuiOptions {
+    let zh = mobius_searcher::i18n::reads_chinese(lang);
     TuiOptions {
+        zh,
+        bots: Some(mobius_searcher::lab::desk::port(cfg, config_file, zh)),
+        // the wallet is followed where there is someone to look at it (a snapshot is a picture of a recording)
+        wallet: None,
         glyphs: cfg.ui.glyphs,
         color: cfg.ui.color,
         fps: cfg.ui.fps,
@@ -559,7 +570,7 @@ fn replay(cli: &Cli, cfg: &Config, db_path: &std::path::Path, id: &str) -> Resul
         for size in sizes.split(',') {
             let (w, h) = size.split_once('x').context("size must be WxH")?;
             let (w, h): (u16, u16) = (w.trim().parse()?, h.trim().parse()?);
-            let mut app = App::new(&tui_opts(cfg, Some(&vm)));
+            let mut app = App::new(&tui_opts(cfg, Some(&vm), cli.config.clone(), cli.setup_opts.lang));
             for k in searcher_tui::parse_keys(&cli.keys).map_err(anyhow::Error::msg)? {
                 app.on_key(k, &vm);
             }
@@ -580,7 +591,8 @@ fn replay(cli: &Cli, cfg: &Config, db_path: &std::path::Path, id: &str) -> Resul
         return Ok(());
     }
     let keys = searcher_tui::parse_keys(&cli.keys).map_err(anyhow::Error::msg)?;
-    let opts = tui_opts(cfg, Some(&vm));
+    let mut opts = tui_opts(cfg, Some(&vm), cli.config.clone(), cli.setup_opts.lang);
+    opts.wallet = Some(mobius_searcher::purse::port(cfg, opts.zh));
     let vm = Arc::new(RwLock::new(vm));
     let stop = Arc::new(AtomicBool::new(false));
     searcher_tui::run(vm, Box::new(|_| {}), opts, stop, keys)?;
@@ -599,7 +611,8 @@ async fn run(cli: Cli, cfg: Config, db_path: PathBuf) -> Result<()> {
     let is_canary = cli.canary;
     let canary_cfg = cfg.clone();
     let _budget = budget::acquire(&cfg.data_dir(), &format!("{} session", mode.label()))?;
-    let opts = tui_opts(&cfg, None);
+    let mut opts = tui_opts(&cfg, None, cli.config.clone(), cli.setup_opts.lang);
+    opts.wallet = Some(mobius_searcher::purse::port(&cfg, opts.zh));
     let user_config = Some(user_config_path(&cli));
     let running = engine::start_with(cfg, db_path, user_config).await?;
     let session = running.session_id.clone();

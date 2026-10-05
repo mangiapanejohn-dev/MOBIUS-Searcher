@@ -58,7 +58,7 @@ rusqlite = { version = "0.40", features = ["bundled"] }
 flate2 = "1.1"
 
 # solana (component crates, no RPC client — we speak JSON-RPC ourselves)
-solana-pubkey = { version = "4.3", features = ["serde"] }
+solana-pubkey = { version = "4.3", features = ["serde", "curve25519", "sha2"] }
 solana-hash = { version = "4.6", features = ["serde"] }
 solana-instruction = { version = "4.0", features = ["std"] }
 solana-message = { version = "5.0", features = ["serde", "wincode"] }

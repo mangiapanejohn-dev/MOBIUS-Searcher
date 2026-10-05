@@ -629,6 +629,14 @@ pub fn overlay(buf: &mut Buffer, full: Rect, w: u16, h: u16, title: &str, th: &T
     let h = h.min(full.height.saturating_sub(2)).max(4);
     let r = Rect { x: full.x + (full.width - w) / 2, y: full.y + (full.height - h) / 2, width: w, height: h };
     let bg = Style::new().bg(th.select_bg).fg(th.fg);
+    // a wide character of the page that ends inside the box would be drawn over its edge: it gives way
+    if r.x > full.x {
+        for y in r.y..r.bottom() {
+            if width(buf[(r.x - 1, y)].symbol()) > 1 {
+                buf[(r.x - 1, y)].set_symbol(" ");
+            }
+        }
+    }
     // reset first: styling alone would keep modifiers (bold, …) of the page below
     ratatui::widgets::Widget::render(ratatui::widgets::Clear, r, buf);
     fill(buf, r, bg);
@@ -661,18 +669,39 @@ pub fn overlay_hint(buf: &mut Buffer, inner: Rect, hint: &str, th: &Theme) {
     }
 }
 
-/// `s` broken between words into lines of at most `w` columns.
+/// `s` broken between words (and between Chinese characters) into lines of at most `w` columns.
 pub fn wrap_words(s: &str, w: u16) -> Vec<String> {
+    // a word, or one wide character (Chinese breaks between any two), with what
+    // may not open a line (its punctuation) kept on the one before
+    let closes = |c: char| "，。；：、！？）》」％%".contains(c);
+    let mut atoms: Vec<(bool, String)> = Vec::new();
+    let mut spaced = false;
+    for c in s.chars() {
+        if c == ' ' {
+            spaced = true;
+            continue;
+        }
+        let wide = |c: char| width(c.encode_utf8(&mut [0; 4])) > 1;
+        match atoms.last_mut() {
+            Some((_, last)) if !spaced && (closes(c) || !(wide(c) || last.chars().last().is_some_and(wide))) => {
+                last.push(c)
+            }
+            _ => atoms.push((spaced, c.to_string())),
+        }
+        spaced = false;
+    }
     let mut out = vec![String::new()];
-    for word in s.split(' ') {
+    for (spaced, atom) in atoms {
         let line = out.last_mut().expect("starts with one line");
         if line.is_empty() {
-            line.push_str(word);
-        } else if width(line) + 1 + width(word) <= w {
-            line.push(' ');
-            line.push_str(word);
+            line.push_str(&atom);
+        } else if width(line) + u16::from(spaced) + width(&atom) <= w {
+            if spaced {
+                line.push(' ');
+            }
+            line.push_str(&atom);
         } else {
-            out.push(word.to_string());
+            out.push(atom);
         }
     }
     out
@@ -697,6 +726,14 @@ pub fn wrap_lines(body: &str, w: u16) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn words_wrap_between_words_and_chinese_between_characters() {
+        assert_eq!(wrap_words("one two three", 7), ["one two", "three"]);
+        // no spaces to break at: it breaks between characters, and a comma never opens a line
+        assert_eq!(wrap_words("现价 120.77，还要再涨", 13), ["现价 120.77，", "还要再涨"]);
+        assert_eq!(wrap_words("等待买入等待", 8), ["等待买入", "等待"]);
+    }
     use crate::theme::Depth;
 
     #[test]
