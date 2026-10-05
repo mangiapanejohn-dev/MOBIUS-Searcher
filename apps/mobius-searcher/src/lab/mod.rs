@@ -831,6 +831,7 @@ pub fn report(cfg: &Config, json: bool) -> Result<()> {
         let mut all = Vec::new();
         let mut seen: Vec<Bar> = Vec::new();
         let mut unfunded = false;
+        let mut holds = None;
         for e in &plan.experiments {
             let mut rows = store.lab_equity(&id, &e.name)?;
             let acct = match store.lab_state(&id, &e.name)? {
@@ -838,6 +839,7 @@ pub fn report(cfg: &Config, json: bool) -> Result<()> {
                 Some((_, json)) if real => {
                     let state: trade::State = serde_json::from_str(&json)?;
                     unfunded = !state.funded;
+                    holds = plan.live.as_ref().map(|live| trade::holds(&state, live));
                     state.account
                 }
                 Some((_, json)) => serde_json::from_str(&json)?,
@@ -862,16 +864,24 @@ pub fn report(cfg: &Config, json: bool) -> Result<()> {
                 serde_json::json!({ "run": id, "real_money": real, "budget_set_aside": !unfunded, "experiments": all }),
             );
         } else {
-            if unfunded {
+            // a real run that has no bar to show yet: its name, and what there is to say of it
+            let bare = |what: &str| {
                 println!(
-                    "LAB · REAL MONEY · {} {} · run {} · rule `{}`\n\
-                     the budget of {:.2} USD has not been set aside yet: no swap has landed and nothing was spent\n",
+                    "LAB · REAL MONEY · {} {} · run {} · rule `{}`\n{what}\n",
                     plan.instrument,
                     plan.bar,
                     &id[..id.len().min(14)],
                     plan.experiments.iter().map(|e| e.name.as_str()).collect::<Vec<_>>().join(", "),
+                )
+            };
+            let holds = holds.unwrap_or_default();
+            if unfunded {
+                bare(&format!(
+                    "the budget of {:.2} USD has not been set aside yet: no swap has landed and nothing was spent",
                     plan.capital
-                );
+                ));
+            } else if real && seen.is_empty() {
+                bare(&format!("{holds}\nno bar has closed since the budget was set aside"));
             } else {
                 let what = if real { "REAL MONEY" } else { "paper, live prices" };
                 let mut head = header(&plan, what, &seen);
@@ -885,11 +895,13 @@ pub fn report(cfg: &Config, json: bool) -> Result<()> {
                         "Fills in a backtest are an assumption (the next bar's open); nothing here was sent anywhere.",
                         "These were real swaps, accounted for from the wallet's balances; each is in the journal below.",
                     );
+                    text = format!("{text}\n{holds}\n");
                 }
                 println!("{text}");
             }
             for (ts, line) in store.lab_journal(&id)? {
-                println!("  {} {}  {line}", date(ts), searcher_core::Ts(ts * 1000).hms());
+                // the day and the hour of this machine, as the run printed them
+                println!("  {}  {line}", searcher_core::Ts(ts * 1000).format("%Y-%m-%d %H:%M:%S"));
             }
         }
     }

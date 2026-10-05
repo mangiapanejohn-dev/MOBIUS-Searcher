@@ -178,6 +178,25 @@ pub struct State {
     pub pending: Option<Pending>,
 }
 
+/// What a run holds now, in a line (for the report).
+pub fn holds(state: &State, live: &Live) -> String {
+    let a = &state.account;
+    let sol = match a.lots.iter().map(|l| l.usd).sum::<f64>() {
+        paid if a.lots.is_empty() || paid == 0.0 => "no SOL".to_string(),
+        paid => format!("{:.6} SOL bought for {paid:.4} USD", a.sol()),
+    };
+    let end = match &state.ended {
+        Some(why) => format!("ended: {why}"),
+        None => format!(
+            "budget {:.2} USD · everything is sold if it is worth {:.2} USD or less",
+            live.budget_usd,
+            live.budget_usd * (1.0 - live.stop_total_loss)
+        ),
+    };
+    let open = if state.pending.is_some() { " · a swap is under way" } else { "" };
+    format!("now: {:.4} USD in USDC and {sol} · {end}{open}", a.cash)
+}
+
 /// One bar's (or the start's) work on the state, with what to say about it.
 pub struct Trader<'a, C: Chain> {
     pub chain: &'a C,
@@ -1462,6 +1481,24 @@ stop = 0.05
         let w = written.lock().clone();
         assert_eq!(w.first(), Some(&(true, false, 0)), "pending is on disk before anything is sent: {w:?}");
         assert_eq!(w.last(), Some(&(false, true, 1)), "and cleared once the wallet shows the swap: {w:?}");
+    }
+
+    #[test]
+    fn what_a_run_holds_is_said_in_a_line() {
+        let live = parse(FILE).unwrap().live.unwrap();
+        let mut st = State { funded: true, ..State::default() };
+        st.account.cash = 2.0;
+        assert_eq!(
+            holds(&st, &live),
+            "now: 2.0000 USD in USDC and no SOL · budget 2.00 USD · everything is sold if it is worth 1.00 USD or less"
+        );
+        st.account.bought(2.0, 0.0164, 1, 121.5);
+        st.pending = Some(Pending { what: What::Sell { lot: 0 }, lamports: 1, usdc: 0, ts: 1, close: 121.5 });
+        let line = holds(&st, &live);
+        assert!(line.starts_with("now: 0.0000 USD in USDC and 0.016400 SOL bought for 2.0000 USD"), "{line}");
+        assert!(line.ends_with("a swap is under way"), "{line}");
+        st.ended = Some("stopped at 0.9900 USD of 2.00".into());
+        assert!(holds(&st, &live).contains("ended: stopped at 0.9900 USD of 2.00"));
     }
 
     #[test]
