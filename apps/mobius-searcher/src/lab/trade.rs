@@ -468,7 +468,8 @@ const ROUNDS: usize = 60;
 
 /// Hand a signed transaction over again and again until it is confirmed or
 /// its blockhash has expired. Its signature lets it land at most once, however
-/// often and by whichever way it is sent. Also returns who refused it first.
+/// often and by whichever way it is sent. Also returns who refused it the
+/// first time (later a refusal may only say that it has landed already).
 async fn deliver<W: Wire>(
     wire: &W,
     tx_b64: &str,
@@ -482,10 +483,10 @@ async fn deliver<W: Wire>(
         Ok(Some(Some(err))) => Some(Fate::Failed(err)),
         _ => None,
     };
-    for _ in 0..ROUNDS {
+    for round in 0..ROUNDS {
         // a refusal is not the end: the next round sends again, and the status says what happened
         let no = wire.send(tx_b64).await;
-        if refused.is_empty() {
+        if round == 0 {
             refused = no;
         }
         tokio::time::sleep(every).await;
@@ -1325,7 +1326,8 @@ stop = 0.05
     /// A wire that answers each look from a script; the last answer repeats.
     struct Script {
         sends: Mutex<usize>,
-        refuses: bool,
+        /// Refuses every handing-over after this many.
+        refuses_after: Option<usize>,
         statuses: Mutex<Vec<Result<Option<Option<String>>, String>>>,
         heights: Mutex<Vec<u64>>,
     }
@@ -1334,7 +1336,7 @@ stop = 0.05
         fn new(statuses: Vec<Result<Option<Option<String>>, String>>, heights: Vec<u64>) -> Script {
             Script {
                 sends: Mutex::new(0),
-                refuses: false,
+                refuses_after: None,
                 statuses: Mutex::new(statuses),
                 heights: Mutex::new(heights),
             }
@@ -1348,8 +1350,9 @@ stop = 0.05
 
     impl Wire for Script {
         async fn send(&self, _tx: &str) -> Vec<String> {
-            *self.sends.lock() += 1;
-            if self.refuses { vec!["Jito (429)".into()] } else { Vec::new() }
+            let mut sends = self.sends.lock();
+            *sends += 1;
+            if self.refuses_after.is_some_and(|n| *sends > n) { vec!["Jito (429)".into()] } else { Vec::new() }
         }
         async fn status(&self, _signature: &str) -> Result<Option<Option<String>>, String> {
             next(&self.statuses)
@@ -1370,9 +1373,13 @@ stop = 0.05
         assert_eq!(*wire.sends.lock(), 3, "once a round until it shows");
         // a node that refuses it, or a status that cannot be read, does not end the trying
         let mut wire = Script::new(vec![Err("timeout".into()), Ok(None), Ok(Some(None))], vec![100]);
-        wire.refuses = true;
+        wire.refuses_after = Some(0);
         let (fate, refused) = deliver(&wire, "tx", "sig", 200, Duration::ZERO).await;
         assert_eq!((fate, refused), (Fate::Confirmed, vec!["Jito (429)".to_string()]), "and who refused is said");
+        // taken the first time, refused when handed over again (it has landed by then): nothing to say
+        let mut wire = Script::new(vec![Ok(None), Ok(Some(None))], vec![100]);
+        wire.refuses_after = Some(1);
+        assert_eq!(deliver(&wire, "tx", "sig", 200, Duration::ZERO).await, (Fate::Confirmed, Vec::new()));
     }
 
     #[tokio::test]

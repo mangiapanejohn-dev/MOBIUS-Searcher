@@ -158,9 +158,13 @@ As of 2026-10-04:
   hand while holding, a second copy refused. Every swap was confirmed and
   the account matched the wallet to the last unit of USDC; the wallet's
   other SOL never went down.
-- **Not yet:** a swap sent the new way and confirmed on mainnet. What the
-  local copy cannot show is how readily a public RPC node and Jito's
-  `sendTransaction` get a transaction into a block.
+- **On mainnet, for real, the new way** (2026-10-05): the funding swap,
+  0.016696 SOL for 2.005052 USDC, was in a block within ten seconds of the
+  countdown's end; it cost 7,000 lamports of fees and a tip of 1,968. The
+  run's account and the wallet agree.
+- **Not yet:** a buy and a sale by the rule on mainnet (it waits for its
+  signal), and a busy hour: whether a public RPC node still gets a
+  transaction into a block then.
 
 ## Trying it without money
 
