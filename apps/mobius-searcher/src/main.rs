@@ -370,7 +370,7 @@ fn main() -> Result<()> {
     let layered = load_config(&cli)?;
     for f in &layered.legacy_solana {
         eprintln!(
-            "note: {} keeps Solana settings at the top level (old layout, read until v0.4); \
+            "note: {} keeps Solana settings at the top level (old layout, read until v0.5); \
              `mobius-searcher --migrate-config` moves them under [venues.solana]",
             f.display()
         );

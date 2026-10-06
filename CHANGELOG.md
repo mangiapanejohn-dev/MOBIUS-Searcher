@@ -3,7 +3,27 @@
 All notable changes to MØBIUS. Versions follow [Semantic Versioning](https://semver.org/);
 before 1.0 a minor version may change configuration or behaviour.
 
-## Unreleased
+## 0.4.0 — 2026-10-06
+
+The first release that can hold a position: one rule that buys SOL low and
+sells it higher, with a small budget of real money (`--trade`), and two pages
+in the terminal UI to run it and to see the wallet. It is an experiment that
+can lose its money, not a strategy that was found to pay. The four rules the
+lab ships all lost on a year of past candles ([docs/LAB.md](docs/LAB.md)),
+the trained model did not pass on the months kept aside
+([docs/MODEL_2026-10.md](docs/MODEL_2026-10.md)), and acting on the price
+itself has not been backtested at all. Nothing is sent unless the rules file
+carries `acknowledge = "ALLOW LOSS"` and the config has
+`execution.live_enabled = true`; PAPER stays the default.
+
+What it has sent on mainnet as of this release: four small swaps, 2 to 15
+USD (two budgets set aside, one buy by a rule, one budget raised by hand),
+all confirmed. No trade has closed, so there is no result. A sale by a rule
+and the Wallet page's transfers were tested end to end on a local chain. The
+price trigger was run there with the real program, which had no venue to
+swap on; its sale that takes a gain has been tested against a mock venue
+only. The arbitrage has still sent nothing: no route has passed simulation
+and the risk checks in any LIVE session, and the canary has not been run.
 
 ### Added
 
@@ -205,6 +225,10 @@ before 1.0 a minor version may change configuration or behaviour.
   terminal and wrapped.
 
 ### Changed
+
+- **The old top-level config layout is still read.** The note that named
+  v0.4 as its last version now names v0.5; `--migrate-config` moves a file
+  to `[venues.solana]` as before.
 
 - **Text that does not fit ends in `…`** instead of stopping mid-word: routes
   in the opportunity list and the event stream, venue names in the quote

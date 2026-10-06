@@ -2,7 +2,7 @@
 //! top level (`[rpc]`, `[jupiter]`, `[jito]`, `[feeds]`, `[wallet]`) under
 //! `[venues.solana]`. Nothing changes unless you confirm; the file must load
 //! to exactly the same effective configuration before and after; the old
-//! file is kept as `.bak`. Both layouts are read until v0.4.
+//! file is kept as `.bak`. Both layouts are read until v0.5.
 
 use anyhow::{Context, Result, bail};
 use searcher_core::config::{SOLANA_SECTIONS, load_layered};

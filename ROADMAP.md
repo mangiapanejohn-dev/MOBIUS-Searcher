@@ -2,7 +2,7 @@
 
 This is a public research and engineering roadmap, not a promise of release dates.
 
-MØBIUS-Searcher is currently at **0.3.0**: Solana execution research is real, PAPER is the default, and the shipped configuration has produced **0 executable opportunities** across the published run. The immediate goal is not to manufacture more "opportunities"; it is to reduce uncertainty about **why** apparent edge disappears and when the system can know that reliably.
+MØBIUS-Searcher is currently at **0.4.0**: Solana execution research is real, PAPER is the default, and the shipped configuration has produced **0 executable opportunities** across the published run. Since 0.4 one buy-low-sell-high rule can be run with a small budget of real money; on past candles such rules lose. The immediate goal is not to manufacture more "opportunities"; it is to reduce uncertainty about **why** apparent edge disappears and when the system can know that reliably.
 
 ## 0.2 — measure where an edge could come from, and prove the execution path
 
@@ -11,7 +11,7 @@ MØBIUS-Searcher is currently at **0.3.0**: Solana execution research is real, P
 - [x] Two-token inventory accounting (SOL + USDC) and a USD wallet ledger.
 - [x] Thresholds adjustable while running, with a typed acknowledgement for settings that can lose money.
 - [x] `--canary`: one loss-bounded trade through the LIVE path, reconciled account by account.
-- [x] Solana settings under `[venues.solana]` (the old layout is read until 0.4).
+- [x] Solana settings under `[venues.solana]` (the old layout is read until 0.5).
 - [ ] A canary trade landed and reconciled on mainnet (the release gate).
 
 ## 0.3 — measure what the 0.2 numbers left open
@@ -38,6 +38,28 @@ that sends anything.
 - [ ] A venue execution interface and on-chain order entry beyond the Solana
       round trip: only once a measurement says there is something to execute.
 - [ ] USDC-based cycles and choosing the direction by inventory (same condition).
+
+## 0.4 — a position, on paper and with a small budget
+
+The arbitrage found nothing to trade, and the question that came next was
+whether a simple directional rule would. 0.4 answers it on paper (no) and
+lets one such rule run with real money anyway, small and behind typed words,
+for whoever wants to watch it ([docs/LAB.md](docs/LAB.md),
+[docs/MODEL_2026-10.md](docs/MODEL_2026-10.md), [docs/TRADE.md](docs/TRADE.md)).
+
+- [x] `--lab`: rules on live prices with a paper account, a backtest on past
+      candles with costs that depend on the size of a trade, a report with
+      intervals. The four shipped rules lost on a year of candles.
+- [x] A trained model as a lab rule: strong in rolling tests, a coin on the
+      six months kept aside. In the lab only.
+- [x] `--trade`: one lab rule with a budget of 1 to 25 USD, as ordinary
+      transactions that are simulated as signed and sent until confirmed.
+- [x] Bots and Wallet pages: start, stop, close, budget, each decision and
+      trade as it comes; balances, receive, send.
+- [x] A rule that acts on the price itself and takes a gain that is there.
+- [ ] A round trip closed on mainnet, and what it cost against its backtest.
+- [ ] A backtest of the price trigger (it needs prices inside the bar).
+- [ ] Weeks of the paper lab on live prices, reported.
 
 ## Now — make the result easier to reproduce
 

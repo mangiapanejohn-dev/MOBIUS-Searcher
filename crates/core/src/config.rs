@@ -1493,7 +1493,7 @@ pub struct Layered {
     /// Files read, in order (missing files are skipped).
     pub files: Vec<(Layer, PathBuf)>,
     /// Files that still put Solana sections at the top level (old layout;
-    /// read until v0.4, `--migrate-config` moves them under `[venues.solana]`).
+    /// read until v0.5, `--migrate-config` moves them under `[venues.solana]`).
     pub legacy_solana: Vec<PathBuf>,
     /// Dotted key → the layer that set it; keys absent here are built-in defaults.
     pub origins: BTreeMap<String, Layer>,
@@ -1524,7 +1524,7 @@ fn read_table(path: &Path) -> Result<Option<toml::Table>, ConfigError> {
 }
 
 /// The Solana stack's sections. Since v0.2 they live under `[venues.solana]`
-/// (e.g. `[venues.solana.rpc]`); the top-level form is still read until v0.4.
+/// (e.g. `[venues.solana.rpc]`); the top-level form is still read until v0.5.
 pub const SOLANA_SECTIONS: [&str; 5] = ["rpc", "jupiter", "jito", "feeds", "wallet"];
 
 /// Lift `[venues.solana.<section>]` to the internal top-level `<section>`.

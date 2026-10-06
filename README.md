@@ -64,7 +64,7 @@ claim.
 <tr><td><b>Simulation-first</b></td><td>Every route becomes one real v0 transaction (all legs, compute budget, Jito tip), simulated on mainnet before anything could be sent. A simulation error or a thin edge means it is never sent.</td></tr>
 <tr><td><b>Honest accounting</b></td><td>Integer money everywhere. Base fee, priority fee, Jito tip, ATA rent, slippage share and a safety buffer are costed per route; every evaluation is recorded — including the losing ones and why they were skipped.</td></tr>
 <tr><td><b>Event-driven scheduling</b></td><td>Pool and oracle accounts stream in over the chain WebSocket; a dependency graph spends the Jupiter rate limit only where the market moved. 30 % fewer requests, zero 429s, quotes 4× younger at decision time.</td></tr>
-<tr><td><b>A terminal UI worth using</b></td><td>Eight pages built with Ratatui: an exchange-style Markets view, opportunities with an inspector, stacked graphs with cursors and A/B deltas, risk, system health, logs. Mouse and keyboard.</td></tr>
+<tr><td><b>A terminal UI worth using</b></td><td>Ten pages built with Ratatui: an exchange-style Markets view, opportunities with an inspector, stacked graphs with cursors and A/B deltas, risk, system health, logs, the bots and the wallet. Mouse and keyboard.</td></tr>
 <tr><td><b>Gated execution</b></td><td>PAPER → CONFIRM (approve each transaction with <code>y</code>) → LIVE, each behind explicit configuration, a risk engine, an on-chain minimum output and a kill switch.</td></tr>
 <tr><td><b>Record and replay</b></td><td>Every session goes to a local SQLite database (compressed, pruned automatically) and replays through the exact same UI. Reports summarise edges, costs and simulation failures.</td></tr>
 <tr><td><b>Multi-venue config</b></td><td>Layered TOML (built-in → shared → yours → flags), <code>[venues.*]</code> side by side, secrets only as environment-variable names, <code>--doctor</code> checks every endpoint.</td></tr>
@@ -74,7 +74,10 @@ claim.
 
 ## Where it stands
 
-**0.3.0 is a research release.** It measures; it has never traded.
+**0.4.0 can hold a position, and has no result to show for it.** The
+arbitrage it was built for still finds nothing to trade. What 0.4 adds is an
+experiment: one buy-low-sell-high rule with a small budget of real money,
+started only on your typed word. On past candles such rules lose.
 
 | | |
 |---|---|
@@ -82,7 +85,8 @@ claim.
 | **What 0.3 checked next** | **Still no.** Liquidations (Morpho on Base, 30 days): 95 % of the incentive is taken inside the block that creates it. Between the three SOL/USDC pools, worked out from their own accounts with no quote API: never above one transaction's cost. The arbitrage others actually do on those pools: 78 % under a cent, the rare large one to whoever is first ([docs/RESEARCH_2026-10.md](docs/RESEARCH_2026-10.md)) |
 | **What the lag data does show** | pool prices revert 3–5 bp toward the exchange after a gap opens, and trading on that beats random timing by 1.4 bp — real, but smaller than the cost of taking it |
 | **PAPER results** | 0.1: 3 soaks · 3,091 evaluations · 0 executable. 0.2 with the fixed accounting: 921 evaluations, simulation failures 55 % → 7 %, model within 878 lamports of simulation, still 0 executable ([docs/PAPER_RUN.md](docs/PAPER_RUN.md)) |
-| **Transactions sent on chain** | **none.** CONFIRM/LIVE and `--canary` are implemented and unit-tested; the canary has not been run against mainnet yet |
+| **Buy low, sell high (0.4)** | **On paper, a loss.** Four rules on a year of 15-minute candles at real costs: −16 % to −100 % ([docs/LAB.md](docs/LAB.md)). A trained model looked strong in rolling tests and was a coin on the six months kept aside ([docs/MODEL_2026-10.md](docs/MODEL_2026-10.md)). `--trade` runs one rule with 1–25 USD of real money for whoever wants to watch one; acting on the price itself is not backtested ([docs/TRADE.md](docs/TRADE.md)) |
+| **Transactions sent on chain** | **By `--trade`: four small swaps, 2 to 15 USD** (two budgets set aside, one buy by a rule, one budget raised), all confirmed; no trade has closed. **By the arbitrage: none.** No route has passed simulation and the risk checks in a LIVE session, and the canary has not been run against mainnet |
 | **Scheduling** | event-driven by default: vs. round-robin, 30 % fewer requests, 0 × 429, quotes at decision time p50 2.6 s → 0.64 s ([docs/LATENCY.md](docs/LATENCY.md)) |
 | **Data freshness** | pool updates arrive 0–1 slots behind the chain head (≈ 0.4 s) on the default RPC |
 | **Venues** | Solana: execution. OKX, Binance: reference prices. Base, Arbitrum: Uniswap v3 quotes for research |
@@ -111,9 +115,10 @@ environment and method are documented.
 ## Install
 
 > [!NOTE]
-> **Release:** the prebuilt release is **v0.3.0** (2026-10-03), and the
+> **Release:** the prebuilt release is **v0.4.0** (2026-10-06), and the
 > one-line installers below download it. It includes the research and canary
-> commands. Run `mobius-searcher --version` when reporting results.
+> commands, the lab, `--trade` and the Bots and Wallet pages. Run
+> `mobius-searcher --version` when reporting results.
 
 
 ```bash
@@ -316,7 +321,10 @@ and built the execution path up to one loss-bounded, reconciled trade
 (`--canary`, not yet run on mainnet). 0.3 measured what that left open:
 liquidations, what waiting costs a quote, the gap between pools without a
 quote API, resting orders, and the arbitrage others actually do. Nothing pays
-for its costs at this scale. Next come longer runs of those measurements;
+for its costs at this scale. 0.4 asked whether a simple buy-low-sell-high
+rule would: on a year of candles, no (`--lab`); one such rule can still be
+run with a small budget of real money (`--trade`) from the terminal UI. Next
+come longer runs of those measurements;
 order entry beyond the Solana round trip waits for a measurement that gives
 it something to execute. OKX and Binance stay market data (reference prices).
 See [ROADMAP.md](ROADMAP.md) and the [CHANGELOG](CHANGELOG.md).

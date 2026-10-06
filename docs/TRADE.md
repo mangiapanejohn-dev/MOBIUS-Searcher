@@ -202,9 +202,15 @@ As of 2026-10-04:
   0.016696 SOL for 2.005052 USDC, was in a block within ten seconds of the
   countdown's end; it cost 7,000 lamports of fees and a tip of 1,968. The
   run's account and the wallet agree.
-- **Not yet:** a buy and a sale by the rule on mainnet (it waits for its
-  signal), and a busy hour: whether a public RPC node still gets a
-  transaction into a block then.
+- **On mainnet, for real, since** (to 2026-10-06, the day of 0.4.0): four
+  swaps in all (2 to 15 USD), each confirmed: two budgets set aside, one
+  buy by a rule, and one budget raised by hand from the Bots page.
+- **Not yet on mainnet:** a sale by a rule (no trade has closed, so there is
+  no result to report); a rule acting on the price itself (run with the
+  real program on a local chain, where it had no venue to swap on) and a
+  sale that takes a gain (tested against a mock venue only); and a busy
+  hour: whether a public RPC node still gets a transaction into a block
+  then.
 
 ## Trying it without money
 
