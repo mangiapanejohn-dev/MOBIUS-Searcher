@@ -48,6 +48,8 @@ and a `[live]` section ([config/trade.toml](../config/trade.toml)):
 | `slippage_bps` | A swap filling more than this under its quote fails on chain instead (default 30, 1 to 300). |
 | `acknowledge` | Must be `ALLOW LOSS`. |
 | `dexes` | Optional: the only DEXes a swap may route through, by Jupiter's names, e.g. `["Whirlpool", "Meteora DLMM", "Raydium CLMM"]`. Left out: any. |
+| `trigger` | Optional: `"close"` (the default: it decides when a bar closes) or `"price"` (it looks at the price every 2 seconds and acts at once). See [Acting on the price itself](#acting-on-the-price-itself). |
+| `take_profit` | Optional: a share of what a buy cost, above 0 and at most 0.2. What it holds is sold as soon as the sale is certain to bring that much more than was paid. Left out: it sells at the rule's own price and its stop only. |
 
 `[stops] daily_loss` works as on paper (nothing is bought for the rest of the
 day). `[stops] total_loss` is refused: the total stop is the one in `[live]`.
@@ -94,6 +96,44 @@ with a new budget; close the old one first.
 It sells only SOL it bought and spends only its own USDC. A bar seen more
 than a third of a bar late (the machine slept) is not acted on. One `--trade`
 runs at a time; a second is refused.
+
+## Acting on the price itself
+
+A rule decides at the close of each bar, as it does on paper and in a
+backtest. With `trigger = "price"` (or `t` on the Bots page, which changes a
+bot that runs within seconds and writes nothing into its file) it does not
+wait for the close:
+
+* **Every 2 seconds** it reads the exchange's best bid and ask and decides on
+  the bar that is forming as if it closed at the price between them: the
+  same average and deviation, with that price as the newest close. Under its
+  buy price it buys at once; over its sale price, or under its stop, it
+  sells at once. The total stop is measured at the bid, every look.
+* **A gain that is there is taken** when `take_profit` is set (`t` sets it
+  to 0.001, a thousandth): while it holds SOL, as soon as selling at the
+  bid would bring `take_profit` more than the buy cost even at the swap's
+  on-chain minimum (`slippage_bps` under its quote), it asks for the sale
+  and sends it only if the quote's minimum output is that much. A sale sent
+  this way lands for more than was paid or fails on chain; it is never a
+  sale at a loss. With the default 30 bp tolerance that is a price about
+  0.4 % over what the buy cost.
+* **What it has just sold it does not buy straight back.** For one bar's
+  length after a sale at a loss it buys nothing. After a sale at a gain it
+  buys again only under a price from which the price it sold at would be a
+  gain to take again; at the same price it would only pay for two swaps.
+* **A try that sends nothing** (no quote, a quote under the floor, a route
+  that fails in simulation) is tried again ten seconds later, and said in
+  its record once, not every time.
+
+Every look is written down (`<data dir>/<run>.looks`, the last 120) and shown
+on the Bots page as it comes: the time, the price it saw, the price it
+measured that against, how far it was, and what came of it.
+
+What this is not: it has **not been backtested** (a backtest acts at
+closes), it trades more often and each trade has its cost, and a price that
+only spikes for a second moves it. `take_profit` holds a *sale* to a gain;
+it does not make the price come back after a buy. Under what it paid, the
+rule holds until its own sale price or its stop.
 
 ## What a swap costs
 
@@ -216,6 +256,16 @@ file still has to carry `acknowledge = "ALLOW LOSS"`, and the config
 `execution.live_enabled = true`; the page starts nothing without them. A bot
 started by a version before the page existed shows as running and has to be
 stopped once in its own window.
+
+### How it acts: at a close, or on the price
+
+`t` on the Bots page switches the selected bot between deciding at each
+bar's close and [acting on the price itself](#acting-on-the-price-itself)
+(with a gain of a thousandth taken when it is there), after saying what
+that means and a `y`. A bot that runs changes within seconds, a stopped one
+when it is started; its record says when it did. A bot started by a version
+before this one has to be stopped (`x`) and started (`s`) once first. A bot
+made with `n` acts on the price unless that is changed in the form.
 
 ### Changing its budget
 

@@ -45,6 +45,50 @@ pub struct Levels {
     pub sell: Option<f64>,
     /// Sells at a loss when a bar closes under this.
     pub stop: Option<f64>,
+    /// Takes its gain from this price up, while it holds SOL and takes gains: the
+    /// sale is then held to bring more than was paid, or it is not sent.
+    pub take: Option<f64>,
+}
+
+/// What came of one look of a bot at the price.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub enum Did {
+    Nothing,
+    /// It has just sold and does not buy back at this price: until then (ms), unless the price is under `under` before.
+    Rests {
+        until: i64,
+        under: Option<f64>,
+    },
+    Bought {
+        sol: f64,
+        usd: f64,
+    },
+    /// Sold for `usd`, which is `net` more than was paid.
+    Sold {
+        usd: f64,
+        net: f64,
+    },
+    /// A swap was sent and does not show in the wallet yet.
+    Sent,
+    /// It wanted to act and nothing came of it; its record says why.
+    Failed,
+}
+
+/// One look of a bot at the price, as its program wrote it down: what it saw,
+/// the prices it acts at there, and what came of it.
+#[derive(Clone, Debug, PartialEq)]
+pub struct Look {
+    /// When (ms).
+    pub at: i64,
+    pub price: f64,
+    pub buy: Option<f64>,
+    pub sell: Option<f64>,
+    pub take: Option<f64>,
+    /// It held SOL when it looked.
+    pub held: bool,
+    /// At the close of a bar (not between two).
+    pub close: bool,
+    pub did: Did,
 }
 
 /// The numbers a rule of the "under its average" kind works its prices out from.
@@ -105,6 +149,15 @@ pub struct BotView {
     pub file: Option<String>,
     /// A budget it was asked to change to and has not yet (USD).
     pub wish: Option<f64>,
+    /// It acts as soon as the price is there (looked at every `look_secs` seconds), not only at a bar's close.
+    pub live_trigger: bool,
+    pub look_secs: u64,
+    /// The gain it takes as soon as a sale is certain to bring it (a share of what was paid), when it takes gains.
+    pub take_profit: Option<f64>,
+    /// It was asked to act the other way (`true`: on the price itself) and has not changed yet.
+    pub mode_wish: Option<bool>,
+    /// Its looks at the price, oldest first: the newest stretch of them.
+    pub looks: Vec<Look>,
     /// When the SOL it holds was bought (ms), while it holds some.
     pub opened: Option<i64>,
     /// What it was worth at each bar's close, oldest first: when (ms) and USD.
@@ -181,7 +234,12 @@ pub fn at_price(b: &BotView, p: f64) -> Option<BotView> {
     let mean = window.iter().sum::<f64>() / window.len() as f64;
     let sd = (window.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / window.len() as f64).sqrt();
     let calc = Calc { mean, sd, ..c.clone() };
-    let levels = Levels { buy: Some(mean - c.k * sd), sell: Some(mean + c.exit_z * sd), stop: b.levels.stop };
+    let levels = Levels {
+        buy: Some(mean - c.k * sd),
+        sell: Some(mean + c.exit_z * sd),
+        stop: b.levels.stop,
+        take: b.levels.take,
+    };
     let worth = b.worth.map(|_| b.cash + b.sol * p);
     Some(BotView { calc: Some(calc), levels, worth, ..b.clone() })
 }
@@ -281,6 +339,8 @@ pub enum BotAction {
     Close,
     /// Change the USD it may use to this many cents.
     Budget { cents: u32 },
+    /// Act the other way: on the price itself where it acted at each bar's close, and back.
+    Mode,
 }
 
 impl BotAction {
@@ -290,6 +350,8 @@ impl BotAction {
             (BotAction::Stop, false) => "stop",
             (BotAction::Close, false) => "close",
             (BotAction::Budget { .. }, false) => "change it",
+            (BotAction::Mode, false) => "change how it acts",
+            (BotAction::Mode, true) => "切换判断方式",
             (BotAction::Start, true) => "启动",
             (BotAction::Stop, true) => "停止",
             (BotAction::Close, true) => "平仓",
@@ -314,6 +376,8 @@ pub struct NewBot {
     pub total_stop: f64,
     /// The words that say it may lose money, as the operator typed them.
     pub acknowledge: String,
+    /// It acts as soon as the price is there, not only at a bar's close.
+    pub live: bool,
 }
 
 type ViewFn = dyn Fn() -> BotsView + Send + Sync;
@@ -410,7 +474,28 @@ pub fn said(zh: bool, line: &str) -> String {
     if !zh {
         return line.to_string();
     }
-    const SHAPES: [(&str, &str); 18] = [
+    const SHAPES: [(&str, &str); 24] = [
+        (
+            "a gain to take: {} SOL bought for {} USDC sells for about {} at {}; sent only if it brings at least {}",
+            "有赚可卖：{} SOL（成本 {} USDC）现在约能卖 {}（现价 {}）；保证到手不少于 {} 才发单",
+        ),
+        (
+            "not sent: the quote brings {} USDC and at least {}, under the {} that makes this sale a gain",
+            "没有发出：报价 {} USDC、最少到手 {}，低于保证赚钱需要的 {}",
+        ),
+        (
+            "it now acts on the price itself, looked at every {} s, taking a gain of {} % as soon as it is certain (it acted {})",
+            "判断方式改为实时：每 {} 秒看一次价格，到线就买，能保证赚 {}% 以上就立刻卖",
+        ),
+        (
+            "it now acts on the price itself, looked at every {} s (it acted {})",
+            "判断方式改为实时：每 {} 秒看一次价格，到线就动手",
+        ),
+        ("it now acts at each bar's close (it acted {})", "判断方式改回：每根线收盘时判断一次"),
+        (
+            "how it acts is not changed: this rule decides at a bar's close only",
+            "判断方式没有改：这条规则只能在每根线收盘时判断",
+        ),
         (
             "budget raised from {} to {} USD with {} USDC the wallet held",
             "预算从 {} 调高到 {} 美元：用的是钱包里空闲的 {} USDC",
@@ -719,6 +804,9 @@ impl BotView {
                 "this run has ended; a changed rules file starts a new one",
                 "这一轮已经结束；改动规则文件会开始新的一轮",
             )),
+            (BotAction::Mode, _) if !self.real => {
+                Err(t(zh, "only a real bot acts in real time", "只有真钱机器人可以切换"))
+            }
             (BotAction::Start, BotState::Running) => Err(t(zh, "it is running already", "它已经在运行")),
             (BotAction::Stop, BotState::Stopped) => Err(t(zh, "it is not running", "它没有在运行")),
             (BotAction::Close, BotState::Running) => {
@@ -782,6 +870,14 @@ impl BotView {
             s.push_str(t(zh, "A swap was sent and is being accounted for. ", "有一笔兑换已发出，正在核对到账。"));
         }
         let (now, bar) = (live.or(self.last_close()), self.bar_name(zh));
+        // one that acts on the price itself does not wait for a bar to close
+        let quick = self.live_trigger;
+        let (over, under) = match (quick, zh) {
+            (true, true) => ("价格一高于".to_string(), "价格一低于".to_string()),
+            (false, true) => (format!("一根{bar}收盘高于"), format!("一根{bar}收盘低于")),
+            (true, false) => ("as soon as the price is above".to_string(), "as soon as the price is under".to_string()),
+            (false, false) => (format!("when a {bar} closes above"), format!("when a {bar} closes under")),
+        };
         let what = match (live.is_some(), zh) {
             (true, false) => "the price now",
             (false, false) => "the last close",
@@ -799,36 +895,50 @@ impl BotView {
                 s += &match (far, zh) {
                     (Some(d), true) if d > 0.0 => {
                         format!(
-                            "一根{bar}收盘高于 {} 就卖出，{what} {}，还要再涨 {d:.2}%。",
+                            "{over} {} 就卖出，{what} {}，还要再涨 {d:.2}%。",
                             price(v, 2),
                             price(now.unwrap_or(0.0), 2)
                         )
                     }
                     (Some(_), true) => format!(
-                        "{what} {} 已经高于卖出线 {}：这根线收盘时还在线上就卖出。",
+                        "{what} {} 已经高于卖出线 {}：{}。",
                         price(now.unwrap_or(0.0), 2),
-                        price(v, 2)
+                        price(v, 2),
+                        if quick { "几秒内卖出" } else { "这根线收盘时还在线上就卖出" }
                     ),
-                    (None, true) => format!("一根{bar}收盘高于 {} 就卖出。", price(v, 2)),
+                    (None, true) => format!("{over} {} 就卖出。", price(v, 2)),
                     (Some(d), false) if d > 0.0 => format!(
-                        " Sells when a {bar} closes above {}, {d:.2} % above {what} ({}).",
+                        " Sells {over} {}, {d:.2} % above {what} ({}).",
                         price(v, 2),
                         price(now.unwrap_or(0.0), 2)
                     ),
                     (Some(_), false) => format!(
-                        " Sells when a {bar} closes above {}. {} ({}) is above it.",
+                        " Sells {over} {}. {} ({}) is above it.",
                         price(v, 2),
                         capital(what),
                         price(now.unwrap_or(0.0), 2)
                     ),
-                    (None, false) => format!(" Sells when a {bar} closes above {}.", price(v, 2)),
+                    (None, false) => format!(" Sells {over} {}.", price(v, 2)),
+                };
+            }
+            // a gain that is there is taken: from which price, and what the sale is held to
+            if let (Some(v), Some(share)) = (self.levels.take, self.take_profit) {
+                s += &if zh {
+                    format!("到 {} 能保证赚 {:.1}% 以上，到了也立刻卖。", price(v, 2), share * 100.0)
+                } else {
+                    format!(
+                        " From {} a sale is certain to bring {:.1} % more than it paid: it sells there too.",
+                        price(v, 2),
+                        share * 100.0
+                    )
                 };
             }
             if let Some(v) = self.levels.stop {
-                s += &if zh {
-                    format!("收盘低于 {} 止损卖出。", price(v, 2))
-                } else {
-                    format!(" Sells at a loss when one closes under {}.", price(v, 2))
+                s += &match (quick, zh) {
+                    (true, true) => format!("价格低于 {} 立刻止损卖出。", price(v, 2)),
+                    (false, true) => format!("收盘低于 {} 止损卖出。", price(v, 2)),
+                    (true, false) => format!(" Sells at a loss as soon as it is under {}.", price(v, 2)),
+                    (false, false) => format!(" Sells at a loss when one closes under {}.", price(v, 2)),
                 };
             }
         } else {
@@ -839,29 +949,34 @@ impl BotView {
             s += &match (far, zh) {
                 (Some(d), true) if d > 0.0 => {
                     format!(
-                        "等待买入：一根{bar}收盘低于 {} 就买，{what} {}，还要再跌 {d:.2}%。",
+                        "等待买入：{under} {} 就买，{what} {}，还要再跌 {d:.2}%。",
                         price(v, 2),
                         price(now.unwrap_or(0.0), 2)
                     )
                 }
                 (Some(_), true) => format!(
-                    "等待买入：{what} {} 已经低于买入线 {}，这根线收盘时还在线下就买。",
+                    "等待买入：{what} {} 已经低于买入线 {}，{}。",
                     price(now.unwrap_or(0.0), 2),
-                    price(v, 2)
+                    price(v, 2),
+                    if quick {
+                        "几秒内买入（刚卖出的话先不买回）"
+                    } else {
+                        "这根线收盘时还在线下就买"
+                    }
                 ),
-                (None, true) => format!("等待买入：一根{bar}收盘低于 {} 就买。", price(v, 2)),
+                (None, true) => format!("等待买入：{under} {} 就买。", price(v, 2)),
                 (Some(d), false) if d > 0.0 => format!(
-                    "Waiting to buy: when a {bar} closes under {}, {d:.2} % below {what} ({}).",
+                    "Waiting to buy: {under} {}, {d:.2} % below {what} ({}).",
                     price(v, 2),
                     price(now.unwrap_or(0.0), 2)
                 ),
                 (Some(_), false) => format!(
-                    "Waiting to buy: when a {bar} closes under {}. {} ({}) is under it.",
+                    "Waiting to buy: {under} {}. {} ({}) is under it.",
                     price(v, 2),
                     capital(what),
                     price(now.unwrap_or(0.0), 2)
                 ),
-                (None, false) => format!("Waiting to buy: when a {bar} closes under {}.", price(v, 2)),
+                (None, false) => format!("Waiting to buy: {under} {}.", price(v, 2)),
             };
         }
         s
@@ -1138,8 +1253,8 @@ fn tape(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
     }
     let pair = shown_stream(app, b).map(|s| s.0);
     let trades = app.cex.as_ref().map(|c| c.state.read()).filter(|s| pair.is_some() && s.trades_for == pair);
-    let right = format!("OKX {}", b.inst);
-    let inner = section(buf, area, t(zh, "MARKET TRADES, LIVE", "实时成交"), false, &right, th, g);
+    let right = if zh { format!("OKX {} 全市场", b.inst) } else { format!("OKX {}, everyone's", b.inst) };
+    let inner = section(buf, area, t(zh, "THE MARKET'S TRADES", "市场逐笔成交"), false, &right, th, g);
     let Some(state) = trades.filter(|s| !s.trades.is_empty()) else {
         text_fit(
             buf,
@@ -1181,10 +1296,10 @@ fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
     };
     let title = format!("{} · {kind} · {}", b.name.to_uppercase(), b.market());
     let keys = match (&b.state, zh) {
-        (BotState::Running, false) => "x stop · b budget",
-        (BotState::Stopped, false) => "s start · b budget · c close & sell",
-        (BotState::Running, true) => "x 停止 · b 调预算",
-        (BotState::Stopped, true) => "s 启动 · b 调预算 · c 卖出并结束",
+        (BotState::Running, false) => "x stop · b budget · t live/at close",
+        (BotState::Stopped, false) => "s start · b budget · t live/at close · c close & sell",
+        (BotState::Running, true) => "x 停止 · b 调预算 · t 实时/收盘",
+        (BotState::Stopped, true) => "s 启动 · b 调预算 · t 实时/收盘 · c 卖出并结束",
         _ => "",
     };
     let inner = section(buf, area, &title, false, keys, th, g);
@@ -1231,6 +1346,24 @@ fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
         text_fit(buf, inner.x, y, &line, inner.width, th.warn());
         y += 1;
     }
+    if let Some(quick) = b.mode_wish.filter(|_| y < inner.bottom()) {
+        let line = match (quick, b.state == BotState::Stopped, zh) {
+            (true, true, true) => "已登记：改成实时判断（到线就买，有赚就卖），它下次启动时生效。",
+            (true, false, true) => "已登记：改成实时判断（到线就买，有赚就卖），几秒内生效。",
+            (false, true, true) => "已登记：改回每根线收盘时判断，它下次启动时生效。",
+            (false, false, true) => "已登记：改回每根线收盘时判断，几秒内生效。",
+            (true, true, false) => {
+                "Noted: it acts on the price itself (and takes a gain that is there) when it is started."
+            }
+            (true, false, false) => {
+                "Noted: it acts on the price itself (and takes a gain that is there) within seconds."
+            }
+            (false, true, false) => "Noted: it acts at each bar's close again when it is started.",
+            (false, false, false) => "Noted: it acts at each bar's close again within seconds.",
+        };
+        text_fit(buf, inner.x, y, line, inner.width, th.warn());
+        y += 1;
+    }
     y += 1;
 
     // 2. the ruler: where the price is between the prices it acts at
@@ -1253,11 +1386,17 @@ fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
         return;
     }
     let calc_lines = worked_out(b, zh, now, inner.width.saturating_sub(2));
-    let calc_h = if calc_lines.is_empty() || left < 18 { 0 } else { calc_lines.len() as u16 + 2 };
     let trips = trips_of(b);
-    let records = if railed { b.journal.len().max(trips.len() + 1).max(3) } else { b.journal.len() };
-    let journal_h = (records as u16 + 1).clamp(2, ((left - calc_h) / 4).max(2));
-    let chart_h = left - calc_h - journal_h;
+    // its looks at the price (and on a wide screen its trades beside them) come right under the chart
+    let looks_h: u16 = match (railed, left) {
+        (true, _) => 10,
+        (false, l) if l >= 20 => 7,
+        (false, l) if l >= 14 => 5,
+        _ => 0,
+    };
+    let calc_h = if calc_lines.is_empty() || left < 20 + looks_h { 0 } else { calc_lines.len() as u16 + 2 };
+    let journal_h = (b.journal.len() as u16 + 1).clamp(2, ((left - calc_h - looks_h) / 5).max(2));
+    let chart_h = left - calc_h - journal_h - looks_h;
     let rail_w = 50;
     if chart_h >= 7 {
         let source = match (from_exchange, zh) {
@@ -1309,6 +1448,7 @@ fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
         let mut levels = Vec::new();
         for (v, en, cn, st) in [
             (b.levels.sell, "sells above", "卖出线", th.warn()),
+            (b.levels.take, "takes its gain", "止盈线", Style::new().fg(th.profit)),
             (cost, "what it paid", "买入成本", th.text()),
             (b.levels.buy.filter(|_| cost.is_none()), "buys under", "买入线", Style::new().fg(th.profit)),
             (b.levels.stop, "sells at a loss under", "止损线", Style::new().fg(th.loss)),
@@ -1334,6 +1474,17 @@ fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
         render_kline(c, buf, &k, &|_, _| {}, th, g);
         y += chart_h;
     }
+    if looks_h > 0 {
+        let row = Rect { y, height: looks_h - 1, ..inner };
+        if railed {
+            let tw = 88.min(row.width.saturating_sub(60));
+            looks_panel(buf, Rect { width: row.width - tw - 3, ..row }, app, b, now.filter(|_| is_live));
+            history(buf, Rect { x: row.right() - tw, width: tw, ..row }, app, b, &trips, now);
+        } else {
+            looks_panel(buf, row, app, b, now.filter(|_| is_live));
+        }
+        y += looks_h;
+    }
     if calc_h > 0 {
         let c = section(
             buf,
@@ -1349,14 +1500,226 @@ fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
         }
         y += calc_h;
     }
-    // 6. what it did: on a wide screen its trades as a table, and its record beside them
-    let rest = Rect { y, height: inner.bottom() - y, ..inner };
-    if railed {
-        let tw = (inner.width / 2).clamp(88, 104);
-        history(buf, Rect { width: tw, ..rest }, app, b, &trips, now);
-        record(buf, Rect { x: rest.x + tw + 3, width: rest.width - tw - 3, ..rest }, app, b);
+    // 7. what it said, the newest lines
+    record(buf, Rect { y, height: inner.bottom() - y, ..inner }, app, b);
+}
+
+/// Seconds after which a bot that looks at the price every few seconds is said to be late.
+const LATE_LOOK_SECS: i64 = 30;
+
+/// Its looks at the price as they come, newest first: what it saw, the price
+/// it measured that against, how far it was, and what came of it. Over them,
+/// a line on how often it looks and when it last did. `now`: the price now,
+/// for one that decides at a close only (what it would do if the bar closed
+/// this second is the first row then).
+fn looks_panel(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, now: Option<f64>) {
+    let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
+    let hint = if b.real && !matches!(b.state, BotState::Ended(_)) {
+        t(zh, "t live / at close", "t 实时/收盘")
     } else {
-        record(buf, rest, app, b);
+        ""
+    };
+    let title = if b.live_trigger {
+        t(zh, "ITS DECISIONS, LIVE", "实时判断")
+    } else {
+        t(zh, "ITS DECISIONS", "它的判断")
+    };
+    let inner = section(buf, area, title, false, hint, th, g);
+    if inner.height == 0 {
+        return;
+    }
+    let now_ms = Ts::now().0 / 1000;
+    let hm = |ms: i64| Ts(ms * 1000).format("%H:%M");
+    let age = b.looks.last().map(|l| (now_ms - l.at).max(0) / 1000);
+    // the line over them: how often, and when last (or when next)
+    let next = b.closes.last().filter(|_| b.bar_ms > 0).map(|l| {
+        let mut at = l.0 + b.bar_ms;
+        while at <= now_ms {
+            at += b.bar_ms;
+        }
+        (at, at - now_ms)
+    });
+    let beat = if now_ms / 1000 % 2 == 0 { g.live } else { g.off };
+    let (mark, mark_st, line, line_st) = match (&b.state, b.live_trigger, age, zh) {
+        (BotState::Stopped, ..) => {
+            (g.off, th.warn(), t(zh, "not running: s starts it", "没在运行：按 s 启动").to_string(), th.warn())
+        }
+        (BotState::Ended(_), ..) => (g.off, th.faint(), t(zh, "ended", "已结束").to_string(), th.faint()),
+        (BotState::Running, true, Some(a), _) if a <= LATE_LOOK_SECS => {
+            let last = Ts(b.looks.last().map_or(0, |l| l.at) * 1000).hms();
+            let line = if zh {
+                format!("每 {} 秒看一次价格 · 上一次 {last}（{a} 秒前）", b.look_secs)
+            } else {
+                format!("looks at the price every {} s · last at {last} ({a} s ago)", b.look_secs)
+            };
+            (beat, Style::new().fg(th.profit), line, th.text())
+        }
+        (BotState::Running, true, Some(a), true) => {
+            (g.off, th.warn(), format!("上一次判断在 {} 前：程序或网络可能卡住了", span(a * 1000, true)), th.warn())
+        }
+        (BotState::Running, true, Some(a), false) => {
+            (g.off, th.warn(), format!("its last look was {} ago: it may be stuck", span(a * 1000, false)), th.warn())
+        }
+        (BotState::Running, true, None, true) => (
+            g.off,
+            th.warn(),
+            "还没有判断记录：刚启动要等十几秒；旧版本启动的不会记，按 x 停止、再按 s 启动".to_string(),
+            th.warn(),
+        ),
+        (BotState::Running, true, None, false) => (
+            g.off,
+            th.warn(),
+            "no look written yet: a few seconds after its start; one started by an older version writes none (x, then s)"
+                .to_string(),
+            th.warn(),
+        ),
+        (_, _, _, true) => {
+            let bar = b.bar_name(true);
+            let when = next.map_or(String::new(), |(at, left)| {
+                format!(" · 下一次 {}（{} 分 {:02} 秒后）", hm(at), left / 60_000, left / 1000 % 60)
+            });
+            (g.off, th.muted(), format!("每根{bar}收盘时判断一次{when}"), th.text())
+        }
+        (_, _, _, false) => {
+            let bar = b.bar_name(false);
+            let when = next.map_or(String::new(), |(at, left)| {
+                format!(" · next at {} (in {} min {:02} s)", hm(at), left / 60_000, left / 1000 % 60)
+            });
+            (g.off, th.muted(), format!("decides when a {bar} closes{when}"), th.text())
+        }
+    };
+    put(buf, inner.x, inner.y, mark, mark_st);
+    text_fit(buf, inner.x + 2, inner.y, &line, inner.width.saturating_sub(2), line_st);
+    if inner.height < 3 {
+        return;
+    }
+    let cols: [(u16, &str); 5] = [
+        (0, t(zh, "TIME", "时间")),
+        (10, t(zh, "PRICE", "价格")),
+        (19, t(zh, "AGAINST", "对照")),
+        (34, t(zh, "GAP", "相差")),
+        (46, t(zh, "SO", "结论")),
+    ];
+    for (x, name) in cols {
+        text(buf, inner.x + x, inner.y + 1, name, inner.width.saturating_sub(x), th.faint());
+    }
+    // one that decides at a close: what it would do if the bar closed this second, worked out by the page
+    let would = now.filter(|_| !b.live_trigger && b.state != BotState::Stopped).map(|p| Look {
+        at: now_ms,
+        price: p,
+        buy: b.levels.buy,
+        sell: b.levels.sell,
+        take: b.levels.take,
+        held: b.sol > 0.0,
+        close: false,
+        did: Did::Nothing,
+    });
+    let rows = would.iter().map(|l| (l, true)).chain(b.looks.iter().rev().map(|l| (l, false)));
+    for (i, ((l, guess), y)) in rows.zip(inner.y + 2..inner.bottom()).enumerate() {
+        let newest = i == 0 && !guess && b.state == BotState::Running;
+        let dim = |st: Style| if newest { st.add_modifier(Modifier::BOLD) } else { st };
+        let when = if guess { t(zh, "now", "此刻").to_string() } else { Ts(l.at * 1000).hms() };
+        text(buf, inner.x, y, &when, 9, if guess { th.accent() } else { th.faint() });
+        text(buf, inner.x + 10, y, &price(l.price, 2), 8, dim(th.text()));
+        // what came of it, when something did: said across the rest of the row
+        let acted: Option<(String, Style)> = match (l.did, zh) {
+            (Did::Nothing, _) => None,
+            (Did::Bought { sol, usd }, true) => {
+                Some((format!("买入成交 {sol:.6} SOL，花了 {usd:.4} USDC"), Style::new().fg(th.profit)))
+            }
+            (Did::Bought { sol, usd }, false) => {
+                Some((format!("bought {sol:.6} SOL for {usd:.4} USDC"), Style::new().fg(th.profit)))
+            }
+            (Did::Sold { usd, net }, true) => {
+                Some((format!("卖出成交 到手 {usd:.4} USDC，这一笔 {net:+.4}"), th.pnl(net)))
+            }
+            (Did::Sold { usd, net }, false) => {
+                Some((format!("sold for {usd:.4} USDC, this trade {net:+.4}"), th.pnl(net)))
+            }
+            (Did::Sent, true) => Some(("已发出，等链上确认".to_string(), th.accent())),
+            (Did::Sent, false) => Some(("sent, not in the wallet yet".to_string(), th.accent())),
+            // (what it wanted is what it could do: buy while it held nothing, sell while it held SOL)
+            (Did::Failed, true) => {
+                let what = if l.held { "想卖出" } else { "想买入" };
+                Some((format!("{what}，没成交，稍后再试（原因见记录）"), th.warn()))
+            }
+            (Did::Failed, false) => {
+                let what = if l.held { "sale" } else { "buy" };
+                Some((format!("{what} not sent, tried again (see record)"), th.warn()))
+            }
+            // (what it has just sold it does not buy back at the same price)
+            (Did::Rests { until, under: Some(u) }, true) => {
+                Some((format!("刚卖出：低于 {} 或 {} 后才再买", price(u, 2), hm(until)), th.muted()))
+            }
+            (Did::Rests { until, under: Some(u) }, false) => {
+                Some((format!("just sold: rebuys under {} or from {}", price(u, 2), hm(until)), th.muted()))
+            }
+            (Did::Rests { until, under: None }, true) => {
+                Some((format!("刚止损卖出：{} 前不买回", hm(until)), th.warn()))
+            }
+            (Did::Rests { until, under: None }, false) => {
+                Some((format!("stopped out: buys nothing until {}", hm(until)), th.warn()))
+            }
+        };
+        if let Some((said, st)) = acted {
+            let st = if matches!(l.did, Did::Bought { .. } | Did::Sold { .. }) {
+                st.add_modifier(Modifier::BOLD)
+            } else {
+                st
+            };
+            text_fit(buf, inner.x + 19, y, &said, inner.width.saturating_sub(19), st);
+            continue;
+        }
+        // nothing to do: the price it was measured against, and how far that was
+        let against = if l.held {
+            // (the nearer of where it sells and where its gain is taken)
+            match (l.sell, l.take) {
+                (Some(s), Some(k)) if k < s => Some((t(zh, "take", "止盈线"), k)),
+                (Some(s), _) => Some((t(zh, "sell", "卖出线"), s)),
+                (None, Some(k)) => Some((t(zh, "take", "止盈线"), k)),
+                (None, None) => None,
+            }
+        } else {
+            l.buy.map(|v| (t(zh, "buy", "买入线"), v))
+        };
+        let Some((name, v)) = against else {
+            text_fit(buf, inner.x + 19, y, t(zh, "nothing to do", "不动"), inner.width.saturating_sub(19), th.muted());
+            continue;
+        };
+        text_fit(buf, inner.x + 19, y, &format!("{name} {}", price(v, 2)), 14, dim(th.muted()));
+        let far = (l.price / v - 1.0) * 100.0;
+        let (gap, gap_st, so) = match (l.held, far >= 0.0, guess, zh) {
+            (false, true, false, true) => (format!("高 {far:.2}%"), th.text(), "不买，继续等"),
+            (false, true, true, true) => (format!("高 {far:.2}%"), th.text(), "现在收盘：不买"),
+            (false, false, _, true) => (format!("低 {:.2}%", -far), Style::new().fg(th.profit), "到买入线了"),
+            (true, false, false, true) => (format!("差 {:.2}%", -far), th.text(), "不卖，继续拿着"),
+            (true, false, true, true) => (format!("差 {:.2}%", -far), th.text(), "现在收盘：不卖"),
+            (true, true, _, true) => (format!("过 {far:.2}%"), th.warn(), "到卖出线了"),
+            (false, true, false, false) => (format!("{far:.2}% over"), th.text(), "no buy"),
+            (false, true, true, false) => (format!("{far:.2}% over"), th.text(), "at a close: no"),
+            (false, false, _, false) => (format!("{:.2}% under", -far), Style::new().fg(th.profit), "at its buy line"),
+            (true, false, false, false) => (format!("{:.2}% to go", -far), th.text(), "holds"),
+            (true, false, true, false) => (format!("{:.2}% to go", -far), th.text(), "at a close: no"),
+            (true, true, _, false) => (format!("{far:.2}% past"), th.warn(), "at its sale line"),
+        };
+        text_fit(buf, inner.x + 34, y, &gap, 11, dim(gap_st));
+        text_fit(buf, inner.x + 46, y, so, inner.width.saturating_sub(46), dim(th.muted()));
+    }
+    // one that decides at a close only: where there is room under its rows, what `t` would change
+    let used = 2 + would.iter().len() + b.looks.len();
+    let free = (inner.height as usize).saturating_sub(used + 1);
+    if !b.live_trigger && b.real && matches!(b.state, BotState::Running | BotState::Stopped) && free >= 1 {
+        let invite = if zh {
+            format!("按 t 改成实时：每 {} 秒看一次价格，到买入线就买，有赚就卖（会先问一次）", b.look_secs)
+        } else {
+            format!(
+                "t has it act on the price itself: a look every {} s, and a gain taken when it is there",
+                b.look_secs
+            )
+        };
+        for (line, y) in wrap_words(&invite, inner.width).iter().zip(inner.y + used as u16 + 1..inner.bottom()) {
+            text(buf, inner.x, y, line, inner.width, th.faint());
+        }
     }
 }
 
@@ -1395,7 +1758,30 @@ fn history(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, trips: &[Trip],
         (n, true) => format!("{n} 笔平仓 · 赚 {} 笔 · 已实现 {:+.4} USD", m.won, m.realized),
         (n, false) => format!("{n} closed · {} won · made {:+.4} USD", m.won, m.realized),
     };
-    let inner = section(buf, area, t(zh, "ITS TRADES", "交易历史"), false, &right, th, g);
+    let inner = section(buf, area, t(zh, "ITS TRADES", "它的成交"), false, &right, th, g);
+    if inner.height == 0 {
+        return;
+    }
+    // a swap that was sent and is not in the wallet yet: said first, until it is accounted for
+    let inner = if b.pending {
+        let line = t(
+            zh,
+            "a swap was sent: waiting for it to show in the wallet…",
+            "有一笔兑换已发出：正在等它在链上确认、到账…",
+        );
+        put(buf, inner.x, inner.y, g.live, th.accent());
+        text_fit(
+            buf,
+            inner.x + 2,
+            inner.y,
+            line,
+            inner.width.saturating_sub(2),
+            th.accent().add_modifier(Modifier::BOLD),
+        );
+        Rect { y: inner.y + 1, height: inner.height - 1, ..inner }
+    } else {
+        inner
+    };
     if inner.height == 0 {
         return;
     }
@@ -1619,6 +2005,13 @@ fn rail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, now: Option<f64>, 
                 th.text(),
             ));
         }
+        if let Some(v) = b.levels.take {
+            rows.push((
+                t(zh, "To its gain", "离止盈线"),
+                format!("{:+.2} %   ({})", pct(v, p), price(v, 2)),
+                Style::new().fg(th.profit),
+            ));
+        }
         if let Some(v) = b.levels.stop {
             rows.push((
                 t(zh, "To its stop", "离止损线"),
@@ -1734,32 +2127,6 @@ fn rail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, now: Option<f64>, 
         ];
         group(buf, t(zh, "MARKET", "行情"), rows);
     }
-
-    // what comes next: it decides once a bar
-    let next = b.closes.last().filter(|_| b.bar_ms > 0).map(|l| {
-        let now_ms = Ts::now().0 / 1000;
-        let mut at = l.0 + b.bar_ms;
-        while at <= now_ms {
-            at += b.bar_ms;
-        }
-        (at, at - now_ms)
-    });
-    let rows = match (&b.state, next, zh) {
-        (BotState::Running, Some((at, left)), true) => vec![(
-            "下一次判断",
-            format!("{}   {} 分 {:02} 秒后", Ts(at * 1000).format("%H:%M"), left / 60_000, left / 1000 % 60),
-            th.text(),
-        )],
-        (BotState::Running, Some((at, left)), false) => vec![(
-            "Decides at",
-            format!("{}   in {} min {:02} s", Ts(at * 1000).format("%H:%M"), left / 60_000, left / 1000 % 60),
-            th.text(),
-        )],
-        (BotState::Stopped, _, true) => vec![("下一次判断", "没在运行：按 s 启动".to_string(), th.warn())],
-        (BotState::Stopped, _, false) => vec![("Decides at", "not running: s starts it".to_string(), th.warn())],
-        _ => Vec::new(),
-    };
-    group(buf, t(zh, "NEXT", "接下来"), rows);
 
     // its worth bar by bar, as a line of blocks: over its budget in the colour of a gain, under it of a loss
     let w = area.width.saturating_sub(1) as usize;
@@ -1994,17 +2361,27 @@ fn worked_out(b: &BotView, zh: bool, now: Option<f64>, w: u16) -> Vec<(String, b
         };
         let stands = if zh {
             format!(
-                "现价 {} 比平均价{} {:.2} 个波动；{then}。只在每根线收盘时判断一次，下一次 {next}。",
+                "现价 {} 比平均价{} {:.2} 个波动；{then}。{}",
                 price(p, 2),
                 if z < 0.0 { "低" } else { "高" },
-                z.abs()
+                z.abs(),
+                if b.live_trigger {
+                    format!("实时判断：每 {} 秒按现价这样算一次，一到线就动手。", b.look_secs)
+                } else {
+                    format!("只在每根线收盘时判断一次，下一次 {next}。")
+                }
             )
         } else {
             format!(
-                "The price now, {}, is {:.2} deviations {} the average; {then}. It decides only when a bar closes: next at {next}.",
+                "The price now, {}, is {:.2} deviations {} the average; {then}. {}",
                 price(p, 2),
                 z.abs(),
-                if z < 0.0 { "under" } else { "over" }
+                if z < 0.0 { "under" } else { "over" },
+                if b.live_trigger {
+                    format!("It works this out at the price every {} s, and acts at once.", b.look_secs)
+                } else {
+                    format!("It decides only when a bar closes: next at {next}.")
+                }
             )
         };
         out.extend(wrap_words(&stands, w).into_iter().map(|l| (l, true)));
@@ -2031,7 +2408,9 @@ pub struct NewBotForm {
     /// Per cent of the budget lost at which everything is sold and the run ends.
     pub total: String,
     pub ack: String,
-    /// 0: kind, 1: name, 2: k, 3: stop, 4: budget, 5: total stop, 6: the words.
+    /// It acts as soon as the price is there (the other way: at each bar's close).
+    pub live: bool,
+    /// 0: kind, 1: name, 2: k, 3: stop, 4: budget, 5: total stop, 6: when it acts, 7: the words.
     pub field: usize,
     /// Why it was not made, when it was not.
     pub error: Option<String>,
@@ -2047,6 +2426,7 @@ impl Default for NewBotForm {
             budget: "2".into(),
             total: "50".into(),
             ack: String::new(),
+            live: true,
             field: 0,
             error: None,
         }
@@ -2064,10 +2444,11 @@ impl NewBotForm {
             }
         };
         match (k.code, self.field) {
-            (KeyCode::Tab | KeyCode::Down, _) => self.field = (self.field + 1) % 7,
-            (KeyCode::BackTab | KeyCode::Up, _) => self.field = (self.field + 6) % 7,
-            (KeyCode::Enter, 6) => return true,
+            (KeyCode::Tab | KeyCode::Down, _) => self.field = (self.field + 1) % 8,
+            (KeyCode::BackTab | KeyCode::Up, _) => self.field = (self.field + 7) % 8,
+            (KeyCode::Enter, 7) => return true,
             (KeyCode::Enter, _) => self.field += 1,
+            (KeyCode::Left | KeyCode::Right | KeyCode::Char(' '), 6) => self.live = !self.live,
             (KeyCode::Left | KeyCode::Right | KeyCode::Char(' '), 0) => {
                 self.kind = (self.kind + 1) % KINDS.len();
                 (self.name, self.k) = (KINDS[self.kind].0.into(), KINDS[self.kind].2.into());
@@ -2081,7 +2462,7 @@ impl NewBotForm {
             (KeyCode::Char(c), 3) => number(&mut self.stop, c),
             (KeyCode::Char(c), 4) => number(&mut self.budget, c),
             (KeyCode::Char(c), 5) => number(&mut self.total, c),
-            (KeyCode::Char(c), 6) if self.ack.len() < 12 && (c.is_ascii_alphabetic() || c == ' ') => self.ack.push(c),
+            (KeyCode::Char(c), 7) if self.ack.len() < 12 && (c.is_ascii_alphabetic() || c == ' ') => self.ack.push(c),
             (KeyCode::Backspace, f) => {
                 let text = match f {
                     1 => &mut self.name,
@@ -2089,7 +2470,7 @@ impl NewBotForm {
                     3 => &mut self.stop,
                     4 => &mut self.budget,
                     5 => &mut self.total,
-                    6 => &mut self.ack,
+                    7 => &mut self.ack,
                     _ => return false,
                 };
                 text.pop();
@@ -2128,6 +2509,7 @@ impl NewBotForm {
             budget,
             total_stop: total / 100.0,
             acknowledge: self.ack.clone(),
+            live: self.live,
         })
     }
 }
@@ -2150,7 +2532,21 @@ pub fn new_bot_overlay(buf: &mut Buffer, area: Rect, app: &App, form: &NewBotFor
     );
     let (does, past) = (wrap_words(does, inner_w), wrap_words(past, inner_w));
     let error = form.error.as_ref().map(|e| wrap_words(e, inner_w)).unwrap_or_default();
-    let h = does.len() + past.len() + error.len() + 14;
+    // what the way it acts means, under its row
+    let way = match (form.live, zh) {
+        (true, true) => {
+            "每 2 秒看一次价格：到买入线就买；持有时能保证赚 0.1% 以上就立刻卖，到卖出线、止损线也立刻卖。更快，也更容易被瞬间的波动触发；这种方式没有回测过。"
+        }
+        (false, true) => "只在每根线收盘时判断一次：线中间价格碰到线不会动手。下面的回测数字是这种方式的。",
+        (true, false) => {
+            "It looks at the price every 2 s: buys at its buy price; holding, sells as soon as a sale is certain to bring 0.1 % more than it paid, and at its sale price and its stop. Faster, and moved by a spike too; this way has not been backtested."
+        }
+        (false, false) => {
+            "It decides once, when a bar closes: a price that only touches a line inside a bar moves nothing. The backtest under this is of this way."
+        }
+    };
+    let way = wrap_words(way, inner_w.saturating_sub(14));
+    let h = does.len() + past.len() + error.len() + way.len() + 16;
     let inner = crate::panels::overlay(buf, area, w, h as u16, t(zh, "A new bot", "新建机器人"), th, &app.glyphs);
     app.hit(Rect { x: inner.x - 2, y: inner.y - 1, width: inner.width + 4, height: inner.height + 2 }, Hit::Overlay);
     let mut y = inner.y;
@@ -2241,13 +2637,36 @@ pub fn new_bot_overlay(buf: &mut Buffer, area: Rect, app: &App, form: &NewBotFor
         );
         y += 1;
     }
+    // when it acts: on the price itself, or at each bar's close
+    text(buf, inner.x, y, t(zh, "Acts", "判断方式"), key_w, name_st(6));
+    let mut x = inner.x + key_w;
+    let ways = [
+        (true, t(zh, "live: at the price, and takes a gain", "实时：到线就买，有赚就卖")),
+        (false, t(zh, "at each bar's close", "每根线收盘时")),
+    ];
+    for (live, label) in ways {
+        let st = if live == form.live {
+            th.text().add_modifier(Modifier::BOLD | Modifier::REVERSED)
+        } else {
+            on(th.faint())
+        };
+        x += text(buf, x, y, &format!(" {label} "), 44, st) + 2;
+    }
+    if form.field == 6 {
+        text(buf, x + 1, y, t(zh, "←→ the other", "←→ 换另一种"), inner.right().saturating_sub(x + 1), on(th.faint()));
+    }
+    y += 1;
+    for line in &way {
+        text(buf, inner.x + key_w, y, line, inner.width.saturating_sub(key_w), on(th.faint()));
+        y += 1;
+    }
     y += 1;
     for line in &past {
         text(buf, inner.x, y, line, inner.width, on(th.warn()));
         y += 1;
     }
     y += 1;
-    text(buf, inner.x, y, t(zh, "Your word", "确认"), key_w, name_st(6));
+    text(buf, inner.x, y, t(zh, "Your word", "确认"), key_w, name_st(7));
     let ask = if zh {
         format!("输入 {ACK} 表示你知道它可能亏钱：")
     } else {
@@ -2255,7 +2674,7 @@ pub fn new_bot_overlay(buf: &mut Buffer, area: Rect, app: &App, form: &NewBotFor
     };
     let ax = inner.x + key_w + text(buf, inner.x + key_w, y, &ask, inner.width - key_w, on(th.text()));
     let st = if form.ack == ACK { Style::new().fg(th.profit) } else { th.accent() };
-    let cursor = if form.field == 6 { "▏" } else { "" };
+    let cursor = if form.field == 7 { "▏" } else { "" };
     text(buf, ax, y, &format!("{}{cursor}", form.ack), 14, on(st.add_modifier(Modifier::BOLD)));
     y += 1;
     for line in &error {
@@ -2486,11 +2905,57 @@ pub fn question(b: &BotView, action: BotAction, zh: bool) -> (String, String) {
         (BotAction::Start, false) => (
             format!("Start {} with real money?", b.name),
             format!(
-                "Budget {:.2} USD. It buys and sells SOL by itself at each bar's close and can lose money. \
+                "Budget {:.2} USD. It buys and sells SOL by itself {} and can lose money. \
                  It runs in the background and goes on when this window is closed; x stops it.",
-                b.budget
+                b.budget,
+                if b.mode_wish.unwrap_or(b.live_trigger) {
+                    "as soon as the price is at its prices (looked at every few seconds)"
+                } else {
+                    "at each bar's close"
+                }
             ),
         ),
+        (BotAction::Mode, _) => {
+            let to_quick = !b.mode_wish.unwrap_or(b.live_trigger);
+            let when = match (b.state == BotState::Running, zh) {
+                (true, true) => "几秒内生效。",
+                (false, true) => "它下次启动时生效。",
+                (true, false) => " It changes within seconds.",
+                (false, false) => " It changes when it is started.",
+            };
+            match (to_quick, zh) {
+                (true, true) => (
+                    format!("把 {} 改成实时判断吗？", b.name),
+                    format!(
+                        "它会每 {} 秒看一次价格，不再等每根线收盘：价格一低于买入线就买；持有时，只要卖出能保证比成本多赚 0.1% 以上就立刻卖（链上最低到手量锁住这个数，达不到就不发单），到卖出线、止损线也立刻卖。刚卖出的不会马上原价买回。\n\
+                         要知道：这样买卖更频繁，每次都有成本；瞬间的波动也会触发；这种方式没有回测过。{when}",
+                        b.look_secs
+                    ),
+                ),
+                (false, true) => (
+                    format!("把 {} 改回每根线收盘时判断吗？", b.name),
+                    format!(
+                        "它只在每根{}收盘时判断一次，线中间价格碰到线不会动手，也不再“有赚就卖”。{when}",
+                        b.bar_name(true)
+                    ),
+                ),
+                (true, false) => (
+                    format!("Have {} act on the price itself?", b.name),
+                    format!(
+                        "It looks at the price every {} s instead of waiting for a bar to close: it buys as soon as the price is under its buy price; holding, it sells as soon as a sale is certain to bring 0.1 % more than it paid (the swap's on-chain minimum holds it to that, or nothing is sent), and at its sale price and its stop. What it has just sold it does not buy back at the same price.\n\
+                         It trades more often, each trade has its cost, a spike moves it too, and this way has not been backtested.{when}",
+                        b.look_secs
+                    ),
+                ),
+                (false, false) => (
+                    format!("Have {} act at each bar's close again?", b.name),
+                    format!(
+                        "It decides once, when a {} closes: a price that only touches one of its prices inside a bar moves nothing, and it takes no gain before its sale price.{when}",
+                        b.bar_name(false)
+                    ),
+                ),
+            }
+        }
         (BotAction::Stop, false) => (
             format!("Stop {}?", b.name),
             "What it holds stays as it is: nothing is sold. While it is stopped it does not buy or sell, \
@@ -2554,8 +3019,13 @@ pub fn question(b: &BotView, action: BotAction, zh: bool) -> (String, String) {
         (BotAction::Start, true) => (
             format!("用真钱启动 {} 吗？", b.name),
             format!(
-                "预算 {:.2} 美元。它会在每根线收盘时自己买卖 SOL，可能亏钱。它在后台运行，关掉这个窗口也会继续；按 x 可以停止。",
-                b.budget
+                "预算 {:.2} 美元。它会{}自己买卖 SOL，可能亏钱。它在后台运行，关掉这个窗口也会继续；按 x 可以停止。",
+                b.budget,
+                if b.mode_wish.unwrap_or(b.live_trigger) {
+                    "实时地（每几秒看一次价格，到线就动手）"
+                } else {
+                    "在每根线收盘时"
+                }
             ),
         ),
         (BotAction::Stop, true) => (
@@ -2592,13 +3062,18 @@ mod tests {
             paid: 0.0,
             worth: Some(2.0),
             trades: Vec::new(),
-            levels: Levels { buy: Some(120.93), sell: Some(121.33), stop: None },
+            levels: Levels { buy: Some(120.93), sell: Some(121.33), stop: None, take: None },
             calc: Some(Calc { window: 96, mean: 121.33, sd: 0.40, k: 1.0, exit_z: 0.0, stop: Some(0.05) }),
             closes: vec![(1_000, 121.6), (901_000, 121.69)],
             fills: Vec::new(),
             journal: Vec::new(),
             file: Some("/home/me/trade.toml".into()),
             wish: None,
+            live_trigger: false,
+            look_secs: 2,
+            take_profit: None,
+            mode_wish: None,
+            looks: Vec::new(),
             opened: None,
             equity: Vec::new(),
         }
@@ -2690,6 +3165,31 @@ mod tests {
         assert_eq!(
             zh("sold 0.016464 SOL for 1.9965 USDC; this trade -0.0035 USD"),
             "卖出 0.016464 SOL，得到 1.9965 USDC；这一笔 -0.0035 美元"
+        );
+        // a gain that is taken, a quote that does not bring it, and how it acts being changed
+        assert_eq!(
+            zh(
+                "a gain to take: 0.016543 SOL bought for 2.0000 USDC sells for about 2.0102 at 121.60; sent only if it brings at least 2.0020"
+            ),
+            "有赚可卖：0.016543 SOL（成本 2.0000 USDC）现在约能卖 2.0102（现价 121.60）；保证到手不少于 2.0020 才发单"
+        );
+        assert_eq!(
+            zh(
+                "not sent: the quote brings 2.0031 USDC and at least 1.9971, under the 2.0020 that makes this sale a gain"
+            ),
+            "没有发出：报价 2.0031 USDC、最少到手 1.9971，低于保证赚钱需要的 2.0020"
+        );
+        assert_eq!(
+            zh(
+                "it now acts on the price itself, looked at every 2 s, taking a gain of 0.1 % as soon as it is certain (it acted at each bar's close)"
+            ),
+            "判断方式改为实时：每 2 秒看一次价格，到线就买，能保证赚 0.1% 以上就立刻卖"
+        );
+        assert_eq!(
+            zh(
+                "it now acts at each bar's close (it acted on the price itself, looked at every 2 s, taking a gain of 0.1 % as soon as it is certain)"
+            ),
+            "判断方式改回：每根线收盘时判断一次"
         );
         assert_eq!(
             zh("the wallet holds 2.0051 USDC: 2.0000 of it is the rule's budget"),

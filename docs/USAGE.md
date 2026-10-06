@@ -112,6 +112,7 @@ Display options: `--glyphs unicode|ascii`, `--color truecolor|ansi256|none`,
 | `T` | thresholds panel: stage · review · apply ([Thresholds](#thresholds)) |
 | `s` / `x` / `c` | Bots page: start the selected bot · stop it · sell what it holds and end it (each asks, `y` does it) |
 | `b` · `[` `]` · `v` | Bots page: change the bot's budget · the bar its chart is looked at in (1s–1D) · candles / line |
+| `t` | Bots page: have the bot act on the price itself (a look every 2 s, a gain taken when it is there) or at each bar's close again; asks first |
 | `n` · `p` | Bots page: make a new bot · show / hide the paper experiments (hidden until asked for) |
 | `s` / `u` · `c` · `r` | Wallet page: send SOL / USDC · copy the address · read the wallet again |
 | `?` | keys, by group (with the logo); the footer shows the ones of the page you are on. In Chinese: what the page you are on is, what each part of it means and what each key does |

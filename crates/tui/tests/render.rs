@@ -681,7 +681,7 @@ fn bots_view() -> BotsView {
         paid: 0.0,
         worth: Some(2.0),
         trades: vec![(t0 + 70 * bar, 2.0, -0.0035)],
-        levels: Levels { buy: Some(120.93), sell: Some(121.33), stop: None },
+        levels: Levels { buy: Some(120.93), sell: Some(121.33), stop: None, take: None },
         calc: Some(Calc { window: 96, mean: 121.33, sd: 0.40, k: 1.0, exit_z: 0.0, stop: Some(0.05) }),
         closes: closes.clone(),
         fills: vec![(t0 + 62 * bar - 1, true), (t0 + 70 * bar - 1, false)],
@@ -692,6 +692,11 @@ fn bots_view() -> BotsView {
         ],
         file: Some("/Users/me/.config/mobius/trade-fast.toml".into()),
         wish: None,
+        live_trigger: false,
+        look_secs: 2,
+        take_profit: None,
+        mode_wish: None,
+        looks: Vec::new(),
         opened: None,
         equity: Vec::new(),
     };
@@ -752,9 +757,11 @@ fn the_bots_page_says_what_a_bot_holds_and_what_it_waits_for() {
         "all sold at 1.00 USD or less",
         "WAITING TO BUY",
         "120.80   under it already",
-        "NEXT",
-        "Decides at",
-        // and its trades as round trips, beside its record: bought and sold when and at what, held how long, what it made
+        // under the chart: its decisions (this one decides at a close: when next), and its trades as round trips
+        // beside them: bought and sold when and at what, held how long, what it made
+        "ITS DECISIONS",
+        "decides when a 15m bar closes · next at",
+        "t live / at close",
         "ITS TRADES",
         "1 closed · 0 won · made -0.0035 USD",
         "121.48",
@@ -764,7 +771,7 @@ fn the_bots_page_says_what_a_bot_holds_and_what_it_waits_for() {
         "-0.18",
         // under the list: all the real bots in one sum
         "ALL REAL BOTS",
-        "MARKET TRADES, LIVE",
+        "THE MARKET'S TRADES",
         // the arithmetic behind the prices
         "HOW ITS PRICES ARE WORKED OUT",
         "From the closes of the last 96 15m bars (1 d): their average 121.33, their deviation 0.40",
@@ -828,12 +835,13 @@ fn the_bots_page_reads_in_chinese_for_an_operator_who_does() {
         "买 2.00 · 卖 2.00 USD",
         "市值跌到 1.00 美元就全部卖出",
         "等待买入",
-        "接下来",
-        "下一次判断",
-        "交易历史",
+        "它的判断",
+        "每根15 分钟线收盘时判断一次 · 下一次",
+        "t 实时/收盘",
+        "它的成交",
         "1 笔平仓 · 赚 0 笔 · 已实现 -0.0035 USD",
         "全部真钱机器人",
-        "实时成交",
+        "市场逐笔成交",
         "这些线是怎么算出来的",
         "取最近 96 根15 分钟线（约 1 天）的收盘价：平均价 121.33，波动幅度（标准差）0.40",
         "买入线 = 平均价 − 1 × 波动 = 120.93",
@@ -1223,6 +1231,109 @@ fn a_wallet_that_cannot_send_says_why_and_opens_no_form() {
 }
 
 #[test]
+fn a_bot_that_acts_on_the_price_shows_each_look_and_each_trade_as_it_comes() {
+    use searcher_tui::bots::{BotAction, Did, Look};
+    use std::sync::Mutex;
+    let vm = populated();
+    let mut view = bots_view();
+    let now = searcher_core::Ts::now().0 / 1000;
+    let look = |ago_s: i64, price: f64, held: bool, did: Did| Look {
+        at: now - ago_s * 1000,
+        price,
+        buy: Some(120.93),
+        sell: Some(121.33),
+        take: held.then_some(121.20),
+        held,
+        close: false,
+        did,
+    };
+    {
+        let b = &mut view.bots[0];
+        (b.live_trigger, b.take_profit) = (true, Some(0.001));
+        // oldest first, as its program writes them: waiting, a buy, holding, its gain taken, not bought back
+        b.looks = vec![
+            look(12, 121.10, false, Did::Nothing),
+            look(10, 120.90, false, Did::Bought { sol: 0.016543, usd: 2.0 }),
+            look(8, 121.00, true, Did::Nothing),
+            look(6, 121.25, true, Did::Sold { usd: 2.0058, net: 0.0058 }),
+            look(4, 121.24, false, Did::Rests { until: now + 600_000, under: Some(120.76) }),
+            look(2, 121.05, false, Did::Failed),
+            look(1, 121.02, false, Did::Nothing),
+        ];
+        b.pending = true;
+    }
+    let asked: std::sync::Arc<Mutex<Vec<BotAction>>> = Default::default();
+    let log = asked.clone();
+    let fixed = view.clone();
+    let port = BotPort {
+        view: std::sync::Arc::new(move || fixed.clone()),
+        act: std::sync::Arc::new(move |_, action| {
+            log.lock().unwrap().push(action);
+            Ok("noted".into())
+        }),
+        create: std::sync::Arc::new(|_| Err("not here".into())),
+    };
+    let mut a = App::new(&TuiOptions { bots: Some(port.clone()), ..TuiOptions::default() });
+    (a.theme, a.glyphs) = (Theme::with_depth(Depth::TrueColor), Glyphs::unicode());
+    a.bots = Some(Bots::start(port));
+    press(&mut a, &vm, KeyCode::Char('9'));
+    let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));
+    show(&out);
+    for needle in [
+        // the sentence is said in the words of one that does not wait for a close
+        "Waiting to buy: as soon as the price is under 120.93",
+        // its looks, newest first, under a line on how often it looks and when it last did
+        "ITS DECISIONS, LIVE",
+        "looks at the price every 2 s · last at",
+        "(1 s ago)",
+        "buy 120.93",
+        "0.07% over",
+        "no buy",
+        "buy not sent, tried again (see record)",
+        "just sold: rebuys under 120.76 or from",
+        "sold for 2.0058 USDC, this trade +0.0058",
+        "take 121.20",
+        "0.17% to go",
+        "holds",
+        "bought 0.016543 SOL for 2.0000 USDC",
+        // a swap that is under way is said over its trades until it is accounted for
+        "a swap was sent: waiting for it to show in the wallet",
+        "It works this out at the price every 2 s, and acts at once.",
+    ] {
+        assert!(out.contains(needle), "missing `{needle}`:\n{out}");
+    }
+    // the same at the size of an ordinary terminal: its looks are there too
+    let small = buffer_text(&snapshot(&mut a, &vm, 120, 40));
+    show(&small);
+    assert!(small.contains("ITS DECISIONS, LIVE") && small.contains("looks at the price every 2 s"), "{small}");
+    // t: asked first, with what changes; only then is its program asked
+    press(&mut a, &vm, KeyCode::Char('t'));
+    let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));
+    show(&out);
+    assert!(out.contains("Have dip-1d act at each bar's close again?"), "{out}");
+    assert!(asked.lock().unwrap().is_empty());
+    press(&mut a, &vm, KeyCode::Char('y'));
+    assert_eq!(*asked.lock().unwrap(), vec![BotAction::Mode]);
+    // one that acts at a close: what the switch to the price means is said in full, in the operator's language
+    let mut b = bots_app(bots_view());
+    b.zh = true;
+    press(&mut b, &vm, KeyCode::Char('9'));
+    press(&mut b, &vm, KeyCode::Char('t'));
+    let out = buffer_text(&snapshot(&mut b, &vm, 200, 58));
+    show(&out);
+    for needle in [
+        "把 dip-1d 改成实时判断吗？",
+        "每 2 秒看一次价格",
+        "多赚 0.1% 以上就立刻卖",
+        "链上最低到手量",
+        "要知道：这样买卖更频繁，每次都有成本",
+        "y 切换判断方式 · 其他键取消",
+    ] {
+        assert!(out.contains(needle), "missing `{needle}`:\n{out}");
+    }
+}
+
+#[test]
 fn the_budget_of_a_bot_is_changed_from_the_page_after_it_says_what_that_does() {
     let vm = populated();
     let mut a = wallet_app(wallet_view(), false);
@@ -1482,8 +1593,12 @@ fn a_new_bot_is_written_on_the_page_and_made_only_with_the_operators_word() {
     }
     press(&mut a, &vm, KeyCode::Backspace);
     press(&mut a, &vm, KeyCode::Char('4'));
-    // ⏎ down to the last field, and on it: without the words it is not made, and it says why
+    // ⏎ down to the last field (past how it acts: on the price itself, unless that is changed), and on it:
+    // without the words it is not made, and it says why
     press(&mut a, &vm, KeyCode::Enter);
+    press(&mut a, &vm, KeyCode::Enter);
+    let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));
+    assert!(out.contains("live: at the price, and takes a gain") && out.contains("has not been backtested"), "{out}");
     press(&mut a, &vm, KeyCode::Enter);
     press(&mut a, &vm, KeyCode::Enter);
     assert!(made.lock().unwrap().is_empty());
@@ -1497,8 +1612,8 @@ fn a_new_bot_is_written_on_the_page_and_made_only_with_the_operators_word() {
     assert!(a.bot_new.is_none() && a.status_text().is_some_and(|s| s.contains("dip-3d is made")));
     let spec = made.lock().unwrap()[0].clone();
     assert_eq!(
-        (spec.name.as_str(), spec.window, spec.k, spec.stop, spec.budget, spec.total_stop),
-        ("dip-3d", 288, 2.0, 0.05, 4.0, 0.5)
+        (spec.name.as_str(), spec.window, spec.k, spec.stop, spec.budget, spec.total_stop, spec.live),
+        ("dip-3d", 288, 2.0, 0.05, 4.0, 0.5, true)
     );
     // a number out of its bounds is said, not made; Esc throws the form away
     press(&mut a, &vm, KeyCode::Char('n'));
@@ -1507,6 +1622,10 @@ fn a_new_bot_is_written_on_the_page_and_made_only_with_the_operators_word() {
     }
     press(&mut a, &vm, KeyCode::Char('9'));
     press(&mut a, &vm, KeyCode::Tab);
+    press(&mut a, &vm, KeyCode::Tab);
+    // (how it acts: the other way, at each bar's close)
+    press(&mut a, &vm, KeyCode::Right);
+    assert!(a.bot_new.as_ref().is_some_and(|f| !f.live));
     press(&mut a, &vm, KeyCode::Tab);
     press(&mut a, &vm, KeyCode::Enter);
     assert!(a.bot_new.as_ref().is_some_and(|f| f.error.as_deref() == Some("the budget (USD) is between 1 and 25")));

@@ -39,11 +39,38 @@ before 1.0 a minor version may change configuration or behaviour.
   Equity and listed under Assets. See
   [docs/TRADE.md](docs/TRADE.md#from-the-terminal-ui).
 
+- **A bot can act on the price itself**, not only when a bar closes:
+  `trigger = "price"` in `[live]`, or `t` on the Bots page for a bot that
+  runs (it changes within seconds; its file is not rewritten). It then looks
+  at the exchange's bid and ask every 2 seconds and decides on the bar that
+  is forming as if it closed there: under its buy price it buys at once,
+  over its sale price or under its stop it sells at once. With
+  `take_profit` (`t` sets a thousandth) a gain that is there is taken: the
+  sale is asked for as soon as it would bring that much more than the buy
+  cost even at the swap's on-chain minimum, and sent only if the quote's
+  minimum output is that much, so a sale sent this way is never one at a
+  loss. What it has just sold it does not buy back at the same price. Not
+  backtested (a backtest acts at closes), and it trades more often. See
+  [docs/TRADE.md](docs/TRADE.md#acting-on-the-price-itself).
+
+- **The Bots page shows each decision and each trade as it comes.** Under
+  the chart, the bot's own looks at the price, newest first, written down by
+  its program: the time, the price it saw, the price it measured that
+  against, how far it was and what came of it (nothing, bought, sold and for
+  how much more than paid, sent and not confirmed yet, tried and not sent,
+  not buying back what it just sold); over them how often it looks and when
+  it last did, in a warning's colour when that is too long ago. For a bot
+  that decides at a close the first row is what it would do if the bar
+  closed this second. Beside them its trades as round trips, with a line
+  over them while a swap is sent and not accounted for yet. Where its gain
+  is taken is a line on the chart and a row of its position.
+
 - **A bot is made on the Bots page** (`n`): its kind (the average of one day
   or of three), the deviations under it at which it buys, the stop of a
   trade, its budget and its total stop, each with what it means, what such
   rules cost on a year of past prices, and the words `ALLOW LOSS`, which
-  the operator types. It writes a rules file like one written by hand into
+  the operator types. It acts on the price itself unless the form says at
+  each bar's close. It writes a rules file like one written by hand into
   the config directory and starts nothing: `s` does.
 
 - **A bot's buys and sales are listed as trades**: first on the Trades page

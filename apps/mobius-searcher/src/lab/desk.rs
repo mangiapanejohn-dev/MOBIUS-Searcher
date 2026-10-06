@@ -11,7 +11,7 @@ use anyhow::{Context, Result, bail};
 use parking_lot::Mutex;
 use searcher_core::config::Config;
 use searcher_storage::ResearchStore;
-use searcher_tui::bots::{BotAction, BotPort, BotState, BotView, BotsView, Calc, Levels, NewBot};
+use searcher_tui::bots::{BotAction, BotPort, BotState, BotView, BotsView, Calc, Did, Levels, Look, NewBot};
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -30,6 +30,9 @@ pub struct Holder {
     /// It reads wishes to change its budget (a version before this one did not).
     #[serde(default)]
     pub wishes: bool,
+    /// It reads wishes to change how it acts, and writes its looks down.
+    #[serde(default)]
+    pub acts: bool,
 }
 
 fn holder_path(data_dir: &Path) -> PathBuf {
@@ -39,8 +42,13 @@ fn holder_path(data_dir: &Path) -> PathBuf {
 /// Said by `--trade` once it holds the lock: which run, from which file.
 pub fn hold(data_dir: &Path, run: &str, file: &Path) -> Result<()> {
     let file = std::fs::canonicalize(file).unwrap_or_else(|_| file.to_path_buf());
-    let holder =
-        Holder { pid: std::process::id(), run: run.to_string(), file: file.display().to_string(), wishes: true };
+    let holder = Holder {
+        pid: std::process::id(),
+        run: run.to_string(),
+        file: file.display().to_string(),
+        wishes: true,
+        acts: true,
+    };
     std::fs::write(holder_path(data_dir), serde_json::to_string(&holder)?)?;
     // the file of a run is remembered after it stopped, to start it again
     std::fs::write(data_dir.join(format!("{run}.path")), holder.file.as_bytes())?;
@@ -55,6 +63,35 @@ pub fn wish_path(data_dir: &Path, run: &str) -> PathBuf {
 /// The wish left at `path`, when one is.
 pub fn wish(path: &Path) -> Option<f64> {
     std::fs::read_to_string(path).ok()?.trim().parse().ok().filter(|v: &f64| v.is_finite())
+}
+
+/// Where a wish to change how a run acts waits for its program.
+pub fn acts_path(data_dir: &Path, run: &str) -> PathBuf {
+    data_dir.join(format!("{run}.acts"))
+}
+
+/// The wish left at `path`, when one is.
+pub fn acts_wish(path: &Path) -> Option<trade::Acts> {
+    serde_json::from_str(&std::fs::read_to_string(path).ok()?).ok()
+}
+
+/// Looks of a run that are kept: at one every two seconds, the last few minutes.
+pub const LOOKS_KEPT: usize = 120;
+
+/// Where a run writes its looks down for the Bots page, oldest first.
+pub fn looks_path(data_dir: &Path, run: &str) -> PathBuf {
+    data_dir.join(format!("{run}.looks"))
+}
+
+pub fn looks(path: &Path) -> Vec<trade::Look> {
+    std::fs::read_to_string(path).ok().and_then(|s| serde_json::from_str(&s).ok()).unwrap_or_default()
+}
+
+/// Written beside and moved into place: the page never reads half of it.
+pub fn write_looks(path: &Path, looks: &std::collections::VecDeque<trade::Look>) -> Result<()> {
+    let beside = path.with_extension("looks.new");
+    std::fs::write(&beside, serde_json::to_string(looks)?)?;
+    Ok(std::fs::rename(&beside, path)?)
 }
 
 /// Whether a `--trade` runs now (its lock is held), and what it said of itself.
@@ -113,6 +150,39 @@ fn bars_of(store: &ResearchStore, plan: &Plan, want: usize) -> Result<Vec<Bar>> 
     Ok(rows.iter().map(|b| Bar { ts: b.0, open: b.1, high: b.2, low: b.3, close: b.4, volume: b.5 }).collect())
 }
 
+/// How a real run acts, where its gain is taken, a wish to change that, and its looks: onto its view.
+fn acts_onto(b: &mut BotView, data_dir: &Path, id: &str, state: &trade::State, live: &trade::Live) {
+    let acts = trade::acts_of(state, live);
+    b.live_trigger = acts.trigger == trade::Trigger::Price;
+    b.take_profit = acts.take_profit;
+    b.levels.take = acts
+        .take_profit
+        .and_then(|t| state.account.lots.first().and_then(|l| trade::take_price(l, t, live.slippage_bps)));
+    b.mode_wish = acts_wish(&acts_path(data_dir, id))
+        .map(|a| a.trigger == trade::Trigger::Price)
+        .filter(|quick| *quick != b.live_trigger && state.ended.is_none());
+    b.looks = looks(&looks_path(data_dir, id))
+        .into_iter()
+        .map(|l| Look {
+            at: l.ts,
+            price: l.price,
+            buy: l.buy,
+            sell: l.sell,
+            take: l.take,
+            held: l.held,
+            close: l.close,
+            did: match l.did {
+                trade::Did::Nothing => Did::Nothing,
+                trade::Did::Rests { until, under } => Did::Rests { until, under },
+                trade::Did::Bought { sol, usd } => Did::Bought { sol, usd },
+                trade::Did::Sold { usd, net } => Did::Sold { usd, net },
+                trade::Did::Sent => Did::Sent,
+                trade::Did::Failed => Did::Failed,
+            },
+        })
+        .collect();
+}
+
 /// What is common to a paper account and a real one.
 fn bot(plan: &Plan, e: &Experiment, acct: &Account, bars: &[Bar], zh: bool) -> BotView {
     let last = bars.last().map(|b| b.close);
@@ -139,13 +209,18 @@ fn bot(plan: &Plan, e: &Experiment, acct: &Account, bars: &[Bar], zh: bool) -> B
         paid: acct.lots.iter().map(|l| l.usd).sum(),
         worth: last.map(|p| acct.cash + acct.sol() * p),
         trades: acct.trades.iter().map(|t| (t.closed, t.usd, t.net)).collect(),
-        levels: Levels { buy, sell, stop },
+        levels: Levels { buy, sell, stop, take: None },
         calc: e.rule.dip(bars).map(|(window, mean, sd, k, exit_z, stop)| Calc { window, mean, sd, k, exit_z, stop }),
         closes: shown.iter().map(|b| (b.ts + plan.bar_ms, b.close)).collect(),
         fills,
         journal: Vec::new(),
         file: None,
         wish: None,
+        live_trigger: false,
+        look_secs: trade::LOOK_SECS,
+        take_profit: None,
+        mode_wish: None,
+        looks: Vec::new(),
         opened: acct.lots.first().map(|l| l.opened),
         equity: Vec::new(),
     }
@@ -200,6 +275,7 @@ impl Desk {
             let budget = trade::budget_of(&state, live);
             (b.budget, b.stop_at) = (budget, Some(budget * (1.0 - live.stop_total_loss)));
             b.wish = wish(&wish_path(&self.data_dir, id)).filter(|_| state.ended.is_none());
+            acts_onto(&mut b, &self.data_dir, id, &state, live);
             b.worth = b.worth.filter(|_| state.funded);
             // its worth bar by bar, the newest stretch of it
             let mut equity: Vec<(i64, f64)> =
@@ -227,6 +303,7 @@ impl Desk {
             let bars = bars_for(&plan, e.rule.warmup().max(BARS_SHOWN))?;
             let mut b = bot(&plan, e, &Account::default(), &bars, self.zh);
             b.wish = wish(&wish_path(&self.data_dir, &id));
+            acts_onto(&mut b, &self.data_dir, &id, &trade::State::default(), live);
             (b.id, b.real, b.funded, b.state) = (id, true, false, BotState::Stopped);
             (b.budget, b.stop_at) = (live.budget_usd, Some(live.budget_usd * (1.0 - live.stop_total_loss)));
             (b.worth, b.file) = (None, Some(file.display().to_string()));
@@ -311,6 +388,91 @@ impl Desk {
                 }
                 .into())
             }
+            BotAction::Mode => {
+                if !id.starts_with("trade-") {
+                    bail!(say("only a real bot acts in real time", "只有真钱机器人可以切换"));
+                }
+                // the run as its records have it, or a rules file that has not run yet
+                let recorded = {
+                    let guard = self.store.lock();
+                    match guard.as_ref() {
+                        Some(store) => store.lab_runs()?.into_iter().find(|r| r.0 == id).map(|r| r.2),
+                        None => None,
+                    }
+                };
+                let text = match recorded {
+                    Some(manifest) => manifest,
+                    None => {
+                        let file = file_of(&self.data_dir, &self.rules_dir, id)
+                            .context(say("its rules file was not found", "找不到它的规则文件"))?;
+                        std::fs::read_to_string(&file).with_context(|| format!("reading {}", file.display()))?
+                    }
+                };
+                let plan = parse(&text)?;
+                let (Some(live), [e]) = (&plan.live, plan.experiments.as_slice()) else {
+                    bail!("the file has no [live] section, or more than one rule");
+                };
+                let state: trade::State = {
+                    let guard = self.store.lock();
+                    match guard.as_ref().map(|s| s.lab_state(id, &e.name)).transpose()?.flatten() {
+                        Some((_, json)) => serde_json::from_str(&json).with_context(|| format!("the state of {id}"))?,
+                        None => trade::State::default(),
+                    }
+                };
+                if state.ended.is_some() {
+                    bail!(say("this run has ended", "这一轮已经结束"));
+                }
+                if this_runs && !holder.as_ref().is_some_and(|h| h.acts) {
+                    bail!(say(
+                        "it was started by a version that acts at a bar's close only: stop it (x) and start it again (s), then switch",
+                        "它是旧版本启动的，还不会实时判断：先停止（x）再启动（s），然后再切换"
+                    ));
+                }
+                let file = acts_path(&self.data_dir, id);
+                // the other way from the one it acts in, or was last asked to
+                let now = acts_wish(&file).unwrap_or(trade::acts_of(&state, live));
+                let to = if now.trigger == trade::Trigger::Price {
+                    trade::Acts { trigger: trade::Trigger::Close, take_profit: None }
+                } else {
+                    if e.model.is_some() {
+                        bail!(say(
+                            "this rule reads another instrument too: it decides at a bar's close only",
+                            "这条规则还要看另一个币的走势，只能在每根线收盘时判断"
+                        ));
+                    }
+                    trade::Acts {
+                        trigger: trade::Trigger::Price,
+                        take_profit: Some(live.take_profit.unwrap_or(trade::TAKE_PROFIT)),
+                    }
+                };
+                std::fs::create_dir_all(&self.data_dir)?;
+                if to == trade::acts_of(&state, live) {
+                    // asked back before it had changed: nothing is left to do
+                    let _ = std::fs::remove_file(&file);
+                } else {
+                    std::fs::write(&file, serde_json::to_string(&to)?)?;
+                }
+                let quick = to.trigger == trade::Trigger::Price;
+                Ok(match (quick, this_runs) {
+                    (true, true) => say(
+                        "noted: within seconds it acts on the price itself, and takes a gain that is there",
+                        "已登记：几秒内改成实时判断（到线就买，有赚就卖）",
+                    ),
+                    (true, false) => say(
+                        "noted: when it is started it acts on the price itself, and takes a gain that is there",
+                        "已登记：它下次启动时改成实时判断（到线就买，有赚就卖）",
+                    ),
+                    (false, true) => say(
+                        "noted: within seconds it acts at each bar's close again",
+                        "已登记：几秒内改回每根线收盘时判断",
+                    ),
+                    (false, false) => say(
+                        "noted: when it is started it acts at each bar's close again",
+                        "已登记：它下次启动时改回每根线收盘时判断",
+                    ),
+                }
+                .into())
+            }
             BotAction::Start | BotAction::Close => {
                 if is_running {
                     bail!(say(
@@ -337,10 +499,7 @@ impl Desk {
                         "正在平仓：卖出它的持仓，然后这一轮结束",
                     )
                 } else {
-                    say(
-                        "started: it acts after ten seconds, then at each bar's close",
-                        "已启动：十秒后开始，之后每根线收盘时判断一次",
-                    )
+                    say("started: it acts after ten seconds", "已启动：十秒后开始判断")
                 }
                 .into())
             }
@@ -450,7 +609,7 @@ fn rules_text(spec: &NewBot) -> String {
          [live]\n\
          budget_usd = {budget:?}\n\
          stop_total_loss = {total:?}\n\
-         acknowledge = \"{ack}\"\n\n\
+         acknowledge = \"{ack}\"\n{trigger}\n\
          [[experiment]]\n\
          name = \"{name}\"\n\
          rule = \"dip\"\n\
@@ -461,6 +620,8 @@ fn rules_text(spec: &NewBot) -> String {
         budget = spec.budget,
         total = spec.total_stop,
         ack = spec.acknowledge.replace(['"', '\\', '\n'], ""),
+        // (on the price itself, taking a gain that is there; a file that does not say acts at each bar's close)
+        trigger = if spec.live { "trigger = \"price\"\ntake_profit = 0.001\n" } else { "" },
         name = spec.name,
         window = spec.window,
         k = spec.k,
@@ -614,18 +775,20 @@ stop = 0.05
 
     /// The Bots page as it would be drawn from this machine's own records
     /// (read only): `cargo test -p mobius-searcher --lib this_machine -- --ignored --nocapture`,
-    /// `SIZE=120x40` for another size.
+    /// `SIZE=120x40` for another size, `DATA=<dir>` for another data directory.
     #[test]
     #[ignore]
     fn the_bots_page_of_this_machine() {
         let size = std::env::var("SIZE").unwrap_or_else(|_| "200x58".into());
         let zh = std::env::var("ZH").is_ok();
         let (w, h) = size.split_once('x').unwrap();
-        let opts = searcher_tui::TuiOptions {
-            bots: Some(port(&Config::default(), None, zh)),
-            zh,
-            ..searcher_tui::TuiOptions::default()
-        };
+        // DATA=<dir>: the records of another data directory (a local test chain's)
+        let mut cfg = Config::default();
+        if let Ok(dir) = std::env::var("DATA") {
+            cfg.general.data_dir = dir;
+        }
+        let opts =
+            searcher_tui::TuiOptions { bots: Some(port(&cfg, None, zh)), zh, ..searcher_tui::TuiOptions::default() };
         let mut app = searcher_tui::App::new(&opts);
         app.glyphs = searcher_tui::theme::Glyphs::unicode();
         app.theme = searcher_tui::theme::Theme::with_depth(searcher_tui::theme::Depth::TrueColor);
@@ -669,6 +832,7 @@ stop = 0.05
             budget: 3.0,
             total_stop: 0.4,
             acknowledge: "ALLOW LOSS".into(),
+            live: false,
         };
         // without the words nothing is written; nor with a name that is no file's
         let err = |s: &NewBot| format!("{:#}", d.create(s).unwrap_err());
@@ -689,6 +853,16 @@ stop = 0.05
         assert_eq!((b.name.as_str(), b.real, &b.state, b.budget), ("dip-test", true, &BotState::Stopped, 3.0));
         assert!((b.stop_at.unwrap() - 1.8).abs() < 1e-9, "sold out at 60 % of its budget");
         assert!(!running(&dir).0);
+        // one that acts on the price says so in its file, and is shown as such
+        let live = NewBot { name: "quick".into(), live: true, ..spec.clone() };
+        d.create(&live).unwrap();
+        let text = std::fs::read_to_string(dir.join("rules/trade-quick.toml")).unwrap();
+        assert!(text.contains("acknowledge = \"ALLOW LOSS\"\ntrigger = \"price\"\ntake_profit = 0.001\n"), "{text}");
+        let quick_live = parse(&text).unwrap().live.unwrap();
+        assert_eq!((quick_live.trigger, quick_live.take_profit), (trade::Trigger::Price, Some(0.001)));
+        let view = d.read().unwrap();
+        let quick = view.bots.iter().find(|b| b.name == "quick").unwrap();
+        assert!(quick.live_trigger && !view.bots.iter().find(|b| b.name == "dip-test").unwrap().live_trigger);
         // the same again is that one, not a new one; and its file is never written over
         assert!(err(&spec).contains("just like it"));
         assert!(err(&NewBot { k: 2.0, ..spec.clone() }).contains("is there already"), "its file is not written over");
@@ -714,6 +888,36 @@ stop = 0.05
         assert_eq!(d.read().unwrap().bots[0].wish, Some(5.0));
         assert!(err(BotAction::Budget { cents: 3000 }).contains("between 1 and 25"));
         assert!(format!("{:#}", d.act("lab-1/dip", BotAction::Budget { cents: 500 }).unwrap_err()).contains("paper"));
+        // how it acts: the other way is a wish too, in the form its program reads; asked back, the wish is gone
+        let b = d.read().unwrap().bots.remove(0);
+        assert!(!b.live_trigger && b.mode_wish.is_none() && b.take_profit.is_none() && b.looks.is_empty());
+        assert!(d.act(&run, BotAction::Mode).unwrap().contains("when it is started it acts on the price itself"));
+        assert_eq!(
+            acts_wish(&acts_path(&dir, &run)),
+            Some(trade::Acts { trigger: trade::Trigger::Price, take_profit: Some(trade::TAKE_PROFIT) })
+        );
+        assert_eq!(d.read().unwrap().bots[0].mode_wish, Some(true));
+        assert!(d.act(&run, BotAction::Mode).unwrap().contains("at each bar's close again"));
+        assert!(!acts_path(&dir, &run).exists() && d.read().unwrap().bots[0].mode_wish.is_none());
+        assert!(format!("{:#}", d.act("lab-1/dip", BotAction::Mode).unwrap_err()).contains("only a real bot"));
+        // its looks, as its program writes them down, are on its view
+        let look = trade::Look {
+            ts: 5_000,
+            bid: 120.0,
+            ask: 120.02,
+            price: 120.01,
+            buy: Some(119.9),
+            sell: Some(120.3),
+            stop: None,
+            take: None,
+            held: false,
+            close: false,
+            did: trade::Did::Bought { sol: 0.0166, usd: 2.0 },
+        };
+        write_looks(&looks_path(&dir, &run), &vec![look].into()).unwrap();
+        let seen = d.read().unwrap().bots.remove(0).looks;
+        assert_eq!(seen.len(), 1);
+        assert_eq!((seen[0].at, seen[0].price, seen[0].did), (5_000, 120.01, Did::Bought { sol: 0.0166, usd: 2.0 }));
 
         // the lock held, as `--trade` holds it, and what it says of itself
         let lock = std::fs::File::create(dir.join("trade.lock")).unwrap();
@@ -722,6 +926,8 @@ stop = 0.05
         assert!(err(BotAction::Stop).contains("older version"));
         assert!(err(BotAction::Budget { cents: 400 }).contains("cannot change its budget while it runs"));
         assert_eq!(wish(&wish_path(&dir, &run)), Some(5.0), "a wish that was refused replaces none");
+        assert!(err(BotAction::Mode).contains("acts at a bar's close only: stop it (x) and start it again (s)"));
+        assert!(!acts_path(&dir, &run).exists());
         let rules = dir.join("rules.toml");
         std::fs::write(&rules, FILE).unwrap();
         hold(&dir, &run, &rules).unwrap();
@@ -731,6 +937,9 @@ stop = 0.05
         // a program that says it reads wishes is left one
         assert!(d.act(&run, BotAction::Budget { cents: 400 }).unwrap().contains("within seconds"));
         assert_eq!(d.read().unwrap().bots[0].wish, Some(4.0));
+        assert!(d.act(&run, BotAction::Mode).unwrap().contains("within seconds it acts on the price itself"));
+        assert_eq!(d.read().unwrap().bots[0].mode_wish, Some(true));
+        std::fs::remove_file(acts_path(&dir, &run)).unwrap();
         assert!(err(BotAction::Start).contains("one at a time"));
         assert!(err(BotAction::Close).contains("one at a time"));
 

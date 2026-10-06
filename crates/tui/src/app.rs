@@ -705,10 +705,13 @@ impl App {
                     Err(why) => self.flash(why),
                 }
             }
-            KeyCode::Char('s') | KeyCode::Char('x') | KeyCode::Char('c') if self.page == Page::Bots => {
+            KeyCode::Char('s') | KeyCode::Char('x') | KeyCode::Char('c') | KeyCode::Char('t')
+                if self.page == Page::Bots =>
+            {
                 let action = match k.code {
                     KeyCode::Char('s') => BotAction::Start,
                     KeyCode::Char('x') => BotAction::Stop,
+                    KeyCode::Char('t') => BotAction::Mode,
                     _ => BotAction::Close,
                 };
                 self.ask_bot(action);

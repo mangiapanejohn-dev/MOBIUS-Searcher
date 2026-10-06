@@ -72,6 +72,31 @@ const TOKEN_ACCOUNT_RENT: u64 = 2_039_280;
 /// aside: the rent of a USDC account it may have to open, and fees.
 const FUND_HEADROOM: u64 = 3_000_000;
 
+/// Seconds between two looks of a rule that acts on the price itself.
+pub const LOOK_SECS: u64 = 2;
+/// The gain a sale is held to when a rule is switched by hand to acting on the price: a thousandth.
+pub const TAKE_PROFIT: f64 = 0.001;
+
+/// When a rule with real money acts.
+#[derive(Clone, Copy, Debug, Default, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "lowercase")]
+pub enum Trigger {
+    /// At the close of each bar, as on paper and in a backtest.
+    #[default]
+    Close,
+    /// As soon as the price is where the rule would act if the bar closed
+    /// now: looked at every [`LOOK_SECS`] seconds.
+    Price,
+}
+
+/// How a run acts: the file's words, or what they were changed to by hand.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+pub struct Acts {
+    pub trigger: Trigger,
+    /// See [`Live::take_profit`].
+    pub take_profit: Option<f64>,
+}
+
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub struct Live {
@@ -88,6 +113,19 @@ pub struct Live {
     /// The only DEXes a swap may route through, by Jupiter's names. Empty: any.
     #[serde(default)]
     pub dexes: Vec<String>,
+    /// `"close"` (the default) or `"price"`: at each bar's close, or as soon as the price is there.
+    #[serde(default, skip_serializing_if = "is_close")]
+    pub trigger: Trigger,
+    /// A gain that is there is taken: what it holds is sold as soon as the
+    /// sale is certain to bring this share more than it paid, every cost
+    /// inside (the swap's own on-chain minimum holds it to that). Besides the
+    /// rule's own sale and its stop. Not set: only those.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub take_profit: Option<f64>,
+}
+
+fn is_close(t: &Trigger) -> bool {
+    *t == Trigger::Close
 }
 
 fn default_slippage() -> u16 {
@@ -109,6 +147,9 @@ impl Live {
         }
         if !(1..=300).contains(&self.slippage_bps) {
             return Err("[live] slippage_bps must be 1 to 300".into());
+        }
+        if self.take_profit.is_some_and(|t| !(t > 0.0 && t <= 0.2)) {
+            return Err("[live] take_profit must be above 0 and at most 0.2 (a share of what was paid)".into());
         }
         Ok(())
     }
@@ -143,7 +184,8 @@ pub trait Chain {
     /// The wallet's lamports and USDC atoms.
     fn balances(&self) -> impl Future<Output = Result<(u64, u64), String>> + Send;
     /// Swap `amount` of the input: lamports when selling SOL, USDC atoms when buying it.
-    fn swap(&self, sell_sol: bool, amount: u64) -> impl Future<Output = Sent> + Send;
+    /// `at_least`: atoms of the output its on-chain minimum must be, or nothing is sent (0: whatever the quote says).
+    fn swap(&self, sell_sol: bool, amount: u64, at_least: u64) -> impl Future<Output = Sent> + Send;
     /// Lamports the wallet must keep for fees.
     fn fee_reserve(&self) -> u64;
 }
@@ -183,11 +225,97 @@ pub struct State {
     /// The budget, once it was changed by hand (the file's until then).
     #[serde(default)]
     pub budget: Option<f64>,
+    /// How it acts, once that was changed by hand (the file's until then).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub acts: Option<Acts>,
 }
 
 /// USD the run may use: the file's, unless it was changed by hand since.
 pub fn budget_of(state: &State, live: &Live) -> f64 {
     state.budget.unwrap_or(live.budget_usd)
+}
+
+/// How the run acts: as the file says, unless it was changed by hand since.
+pub fn acts_of(state: &State, live: &Live) -> Acts {
+    state.acts.unwrap_or(Acts { trigger: live.trigger, take_profit: live.take_profit })
+}
+
+/// The price of a SOL at which the lot's gain is taken: the sale of what is
+/// sold of it (a little is kept back for the sale's fees) then brings its
+/// floor even at the swap's on-chain minimum.
+pub fn take_price(lot: &super::rules::Lot, take_profit: f64, slippage_bps: u16) -> Option<f64> {
+    let sold = ((lot.sol * 1e9).round() as u64).saturating_sub(SELL_HOLDBACK) as f64 / 1e9;
+    let least = 1.0 - f64::from(slippage_bps) / 10_000.0;
+    (sold > 0.0 && least > 0.0).then(|| lot.usd * (1.0 + take_profit) / (sold * least))
+}
+
+/// A rule that acts on the price itself does not buy back at once what it
+/// has just sold. For one bar's length after a sale at a loss it buys
+/// nothing: what its stop sold is not bought again seconds later, still under
+/// its buy price. After a sale at a gain it buys only under a price from
+/// which the price it sold at would be a gain to take again: at the same
+/// price it would only pay the costs of two swaps. `Some`: it does not buy at
+/// `price` now; until when (ms), and under which price it would.
+pub fn rests(state: &State, live: &Live, bar_ms: i64, price: f64, ts: i64) -> Option<(i64, Option<f64>)> {
+    let acct = &state.account;
+    let sale = acct.trades.last().filter(|t| acct.lots.is_empty() && ts < t.closed + bar_ms)?;
+    let until = sale.closed + bar_ms;
+    if sale.net < 0.0 {
+        return Some((until, None));
+    }
+    // (the close at the last trade: the price it sold at)
+    let sold_at = acct.reference?;
+    let take = acts_of(state, live).take_profit.unwrap_or(0.0);
+    let under = sold_at * (1.0 - f64::from(live.slippage_bps) / 10_000.0) / (1.0 + take);
+    (price >= under).then_some((until, Some(under)))
+}
+
+/// What came of one look of a rule.
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "lowercase")]
+pub enum Did {
+    /// Nothing to do at this price.
+    Nothing,
+    /// It has just sold and does not buy at this price: until then (ms), unless
+    /// the price is under `under` before (see [`rests`]).
+    Rests {
+        until: i64,
+        under: Option<f64>,
+    },
+    Bought {
+        sol: f64,
+        usd: f64,
+    },
+    /// Sold for `usd`, which is `net` more than was paid.
+    Sold {
+        usd: f64,
+        net: f64,
+    },
+    /// A swap was sent and does not show in the wallet yet.
+    Sent,
+    /// It wanted to act and nothing was sent, or what was sent did not land: its record says why.
+    Failed,
+}
+
+/// One look of a rule at the price: what it saw, the prices it acts at
+/// there, and what came of it. Written down for the Bots page.
+#[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
+pub struct Look {
+    pub ts: i64,
+    pub bid: f64,
+    pub ask: f64,
+    /// The price it decided on: a bar's close, or between two closes the middle of bid and ask.
+    pub price: f64,
+    pub buy: Option<f64>,
+    pub sell: Option<f64>,
+    pub stop: Option<f64>,
+    /// Where its gain is taken, while it holds SOL and takes gains.
+    pub take: Option<f64>,
+    /// It held SOL when it looked.
+    pub held: bool,
+    /// At the close of a bar (not between two).
+    pub close: bool,
+    pub did: Did,
 }
 
 /// What became of a wish to change the budget.
@@ -292,6 +420,11 @@ impl<C: Chain> Trader<'_, C> {
 
     /// Send one swap and account for it. `true` when the account changed.
     async fn act(&mut self, what: What, amount: u64, ts: i64, close: f64) -> bool {
+        self.act_for(what, amount, 0, ts, close).await
+    }
+
+    /// [`act`](Self::act), the swap held to `at_least` atoms of its output (0: to what its quote says).
+    async fn act_for(&mut self, what: What, amount: u64, at_least: u64, ts: i64, close: f64) -> bool {
         let (lamports, usdc) = match self.chain.balances().await {
             Ok(b) => b,
             Err(e) => {
@@ -308,7 +441,7 @@ impl<C: Chain> Trader<'_, C> {
         let pending = Pending { what, lamports, usdc, ts, close };
         self.state.pending = Some(pending.clone());
         self.write();
-        let changed = match self.chain.swap(sell_sol, amount).await {
+        let changed = match self.chain.swap(sell_sol, amount, at_least).await {
             Sent::NotSent(why) => {
                 self.say(format!("not sent: {why}"));
                 self.state.pending = None;
@@ -549,6 +682,31 @@ impl<C: Chain> Trader<'_, C> {
             }
             return;
         }
+        // a gain that is there is taken: a lot whose sale is certain to bring its floor is sold, the swap held to it
+        if let Some(take) = acts_of(self.state, self.live).take_profit {
+            let sold_before = self.state.account.trades.len();
+            for lot in (0..self.state.account.lots.len()).rev() {
+                if self.state.pending.is_some() {
+                    break; // nothing on top of an open swap
+                }
+                let l = self.state.account.lots[lot].clone();
+                let amount = ((l.sol * 1e9).round() as u64).saturating_sub(SELL_HOLDBACK);
+                let floor = l.usd * (1.0 + take);
+                if take_price(&l, take, self.live.slippage_bps).is_some_and(|at| bid >= at) {
+                    self.say(format!(
+                        "a gain to take: {:.6} SOL bought for {:.4} USDC sells for about {:.4} at {bid:.2}; sent only if it brings at least {floor:.4}",
+                        l.sol,
+                        l.usd,
+                        amount as f64 / 1e9 * bid
+                    ));
+                    self.act_for(What::Sell { lot }, amount, (floor * 1e6).ceil() as u64, ts, bar.close).await;
+                }
+            }
+            // nothing on top of an open swap; and what was just sold at a gain is not bought back in the same breath
+            if self.state.pending.is_some() || self.state.account.trades.len() > sold_before {
+                return;
+            }
+        }
         let ctx = Ctx { model: e.model.as_deref(), other };
         // the total stop is the one above; a daily pause of the file applies as on paper
         let stops = Stops { daily_loss: plan.stops.daily_loss, total_loss: None };
@@ -568,6 +726,71 @@ impl<C: Chain> Trader<'_, C> {
             let atoms = (usd.min(self.state.account.cash) * 1e6).floor() as u64;
             self.act(What::Buy, atoms, ts, bar.close).await;
         }
+    }
+
+    /// One look of the rule, and what came of it: [`on_bar`](Self::on_bar) on
+    /// `bars`, whose last is a bar that closed (`at_close`) or the one that is
+    /// forming, counted at the price now.
+    pub async fn look(
+        &mut self,
+        plan: &Plan,
+        e: &Experiment,
+        (bars, other): (&[Bar], &[f64]),
+        (bid, ask): (f64, f64),
+        at_close: bool,
+        ts: i64,
+    ) -> Look {
+        let acts = acts_of(self.state, self.live);
+        let acct = &self.state.account;
+        let (buy, sell, stop) = e.rule.levels(bars, acct);
+        let take =
+            acts.take_profit.and_then(|t| acct.lots.first().and_then(|l| take_price(l, t, self.live.slippage_bps)));
+        let before = (acct.lots.len(), acct.trades.len(), self.state.funded, self.said.len());
+        let price = bars.last().map_or((bid + ask) / 2.0, |b| b.close);
+        let mut look =
+            Look { ts, bid, ask, price, buy, sell, stop, take, held: before.0 > 0, close: at_close, did: Did::Nothing };
+        if acts.trigger == Trigger::Price
+            && self.state.pending.is_none()
+            && let Some((until, under)) = rests(self.state, self.live, plan.bar_ms, price, ts)
+        {
+            look.did = Did::Rests { until, under };
+            return look;
+        }
+        self.on_bar(plan, e, bars, other, bid, ts).await;
+        let acct = &self.state.account;
+        look.did = match (acct.trades.last(), acct.lots.last()) {
+            (Some(t), _) if acct.trades.len() > before.1 => Did::Sold { usd: t.usd + t.net, net: t.net },
+            (_, Some(l)) if acct.lots.len() > before.0 => Did::Bought { sol: l.sol, usd: l.usd },
+            _ if self.state.pending.is_some() => Did::Sent,
+            // (setting the budget aside is said too, and is no decision of the rule)
+            _ if self.said.len() > before.3 && self.state.funded == before.2 => Did::Failed,
+            _ => Did::Nothing,
+        };
+        look
+    }
+
+    /// Change by hand how the run acts. `one_price`: its rule reads one
+    /// instrument's price (another kind cannot act between two closes).
+    pub fn change_acts(&mut self, to: Acts, one_price: bool) {
+        let from = acts_of(self.state, self.live);
+        if to == from || self.state.ended.is_some() {
+            return;
+        }
+        if to.trigger == Trigger::Price && !one_price {
+            return self.say("how it acts is not changed: this rule decides at a bar's close only".into());
+        }
+        let words = |a: Acts| match (a.trigger, a.take_profit) {
+            (Trigger::Close, None) => "at each bar's close".to_string(),
+            (Trigger::Close, Some(t)) => format!("at each bar's close, taking a gain of {} %", percent(t)),
+            (Trigger::Price, None) => format!("on the price itself, looked at every {LOOK_SECS} s"),
+            (Trigger::Price, Some(t)) => format!(
+                "on the price itself, looked at every {LOOK_SECS} s, taking a gain of {} % as soon as it is certain",
+                percent(t)
+            ),
+        };
+        self.say(format!("it now acts {} (it acted {})", words(to), words(from)));
+        self.state.acts = Some(to);
+        self.write();
     }
 }
 
@@ -795,7 +1018,7 @@ impl Mainnet {
         self.held_elsewhere = lamports;
     }
 
-    async fn try_swap(&self, sell_sol: bool, amount: u64, without: &[String]) -> Result<Sent, No> {
+    async fn try_swap(&self, sell_sol: bool, amount: u64, at_least: u64, without: &[String]) -> Result<Sent, No> {
         let (sol, usdc) = (mint(well_known::WSOL_MINT), mint(well_known::USDC_MINT));
         let req = BuildRequest {
             input_mint: if sell_sol { sol } else { usdc },
@@ -814,6 +1037,16 @@ impl Mainnet {
         };
         let built = self.jupiter.build(&req, 0).await.map_err(|e| format!("Jupiter: {e}"))?;
         let leg = &built.leg;
+        // a sale that is to take a gain is held to it by its own minimum: under it the swap fails on chain, so it is not sent
+        if leg.min_out < at_least {
+            // (only a sale is held to a least output: USDC, six decimals)
+            return Ok(Sent::NotSent(format!(
+                "the quote brings {:.4} USDC and at least {:.4}, under the {:.4} that makes this sale a gain",
+                leg.out_amount as f64 / 1e6,
+                leg.min_out as f64 / 1e6,
+                at_least as f64 / 1e6
+            )));
+        }
         // the least Jito forwards, or the going rate, never above the ceiling
         let floor = self.jito.tip_floor().await.map(|f| f.p50).unwrap_or(1_000);
         let tip = floor.clamp(1_000, self.max_tip.clamp(1_000, MAX_TIP));
@@ -1062,7 +1295,7 @@ impl Chain for Mainnet {
         Ok((lamports, usdc))
     }
 
-    async fn swap(&self, sell_sol: bool, amount: u64) -> Sent {
+    async fn swap(&self, sell_sol: bool, amount: u64, at_least: u64) -> Sent {
         let (mut without, mut failed): (Vec<String>, Vec<String>) = (Vec::new(), Vec::new());
         for _ in 0..QUOTES {
             // said in the journal: which routes did not hold
@@ -1073,7 +1306,7 @@ impl Chain for Mainnet {
                     format!("{note}; before it, failed in simulation: {}", failed.join("; "))
                 }
             };
-            match self.try_swap(sell_sol, amount, &without).await {
+            match self.try_swap(sell_sol, amount, at_least, &without).await {
                 Ok(Sent::NotSent(why)) | Err(No::Other(why)) => return Sent::NotSent(also(why)),
                 Ok(Sent::Simulated { out, lamports_after, note }) => {
                     return Sent::Simulated { out, lamports_after, note: also(note) };
@@ -1129,9 +1362,13 @@ mod tests {
         async fn balances(&self) -> Result<(u64, u64), String> {
             Ok(*self.wallet.lock())
         }
-        async fn swap(&self, sell_sol: bool, amount: u64) -> Sent {
+        async fn swap(&self, sell_sol: bool, amount: u64, at_least: u64) -> Sent {
             if let Some(s) = self.script.lock().pop() {
                 return s;
+            }
+            // (a venue whose on-chain minimum is what it fills at)
+            if sell_sol && ((amount as f64 / 1e9 * *self.price.lock() * 1e6) as u64) < at_least {
+                return Sent::NotSent("under the least this swap is held to".into());
             }
             self.sends.lock().push((sell_sol, amount));
             if *self.lost.lock() {
@@ -1207,6 +1444,146 @@ stop = 0.05
         );
         let plan = parse(FILE).unwrap();
         assert_eq!((plan.capital, plan.live.unwrap().slippage_bps), (2.0, 30), "the budget is the rule's capital");
+    }
+
+    /// A rule that acts on the price and takes a gain of a thousandth: the same one otherwise.
+    fn quick() -> String {
+        FILE.replace(
+            "acknowledge = \"ALLOW LOSS\"",
+            "acknowledge = \"ALLOW LOSS\"\ntrigger = \"price\"\ntake_profit = 0.001",
+        )
+    }
+
+    /// One look between two closes: four bars closed at 100, the one that is forming at `price`,
+    /// the exchange's bid there too and the venue filling at `fills_at`.
+    async fn look_at(
+        mock: &Mock,
+        state: &mut State,
+        file: &str,
+        (price, fills_at): (f64, f64),
+        ts: i64,
+    ) -> (Look, Vec<String>) {
+        let plan = parse(file).unwrap();
+        let live = plan.live.clone().unwrap();
+        let mut b = bars(&[100.0, 100.0, 100.0, 100.0]);
+        b.push(Bar { ts: 4 * 900_000, open: price, high: price, low: price, close: price, volume: 0.0 });
+        *mock.price.lock() = fills_at;
+        let mut t =
+            Trader { chain: mock, live: &live, state, said: Vec::new(), settle_wait: Duration::ZERO, save: None };
+        let look = t.look(&plan, &plan.experiments[0], (&b, &[]), (price, price), false, ts).await;
+        (look, t.said)
+    }
+
+    #[tokio::test]
+    async fn on_the_price_it_buys_under_its_line_and_takes_a_gain_only_when_the_sale_is_held_to_it() {
+        let file = quick();
+        let live = parse(&file).unwrap().live.unwrap();
+        assert_eq!(acts_of(&State::default(), &live), Acts { trigger: Trigger::Price, take_profit: Some(0.001) });
+        assert!(parse(&file.replace("take_profit = 0.001", "take_profit = 0.5")).is_err());
+        // a file without the words is the plan it was before they existed
+        assert!(!serde_json::to_string(&parse(FILE).unwrap().live.unwrap()).unwrap().contains("take_profit"));
+        let mock = Mock::new(0.5, 2.0, 100.0);
+        let mut st = State::default();
+        // at the average: its budget is taken as set aside, and nothing is done
+        let (look, _) = look_at(&mock, &mut st, &file, (100.0, 100.0), 1_000).await;
+        assert!(st.funded && look.did == Did::Nothing && !look.held && !look.close, "{look:?}");
+        assert!(look.buy == Some(100.0) && look.take.is_none(), "flat bars: under their average is under 100");
+        // far under its line, this second: bought, without waiting for the bar to close
+        let (look, said) = look_at(&mock, &mut st, &file, (97.0, 97.0), 3_000).await;
+        let Did::Bought { sol, usd } = look.did else { panic!("{look:?} {said:?}") };
+        assert!((usd - 2.0).abs() < 1e-9 && (sol - 2.0 / 97.0).abs() < 1e-4);
+        // held: where its gain is taken is a little over what it paid (the swap's tolerance and its fees are in it)
+        let (look, said) = look_at(&mock, &mut st, &file, (97.2, 97.2), 5_000).await;
+        let take = look.take.unwrap();
+        assert!(look.held && look.did == Did::Nothing && said.is_empty(), "{look:?} {said:?}");
+        assert!(take > 97.0 * 1.003 && take < 97.0 * 1.006, "{take}");
+        // the exchange's price is over it, but the venue would not bring the floor: nothing is sent, it holds on
+        let sends = mock.sends.lock().len();
+        let (look, said) = look_at(&mock, &mut st, &file, (take + 0.01, 97.0), 7_000).await;
+        assert_eq!((look.did, st.account.lots.len(), mock.sends.lock().len()), (Did::Failed, 1, sends), "{said:?}");
+        assert!(said.iter().any(|l| l.starts_with("not sent: ")), "{said:?}");
+        // and where it does: sold at once, in the same bar it was bought in, for more than it paid
+        let (look, said) = look_at(&mock, &mut st, &file, (take + 0.01, take + 0.01), 9_000).await;
+        let Did::Sold { usd, net } = look.did else { panic!("{look:?} {said:?}") };
+        assert!(net >= 2.0 * 0.001 && (usd - 2.0 - net).abs() < 1e-9, "{net}");
+        assert!(st.account.lots.is_empty() && st.account.cash > 2.0);
+        // at the price it sold at it is still under its buy price: it does not buy back what it has just sold
+        let sends = mock.sends.lock().len();
+        let (look, said) = look_at(&mock, &mut st, &file, (take, take), 11_000).await;
+        let Did::Rests { until, under: Some(under) } = look.did else { panic!("{look:?} {said:?}") };
+        assert_eq!((until, mock.sends.lock().len()), (9_000 + 900_000, sends));
+        assert!(under < take && under > take * 0.995, "from under {under} the price it sold at is a gain again");
+        // under that it does, at once; and a bar's length on its buy price alone decides
+        assert_eq!(rests(&st, &live, 900_000, take, 9_000 + 900_000), None);
+        let (look, _) = look_at(&mock, &mut st, &file, (under - 0.01, under - 0.01), 13_000).await;
+        assert!(matches!(look.did, Did::Bought { .. }), "{look:?}");
+    }
+
+    #[tokio::test]
+    async fn what_its_stop_sold_is_not_bought_back_seconds_later() {
+        let file = quick();
+        let mock = Mock::new(0.5, 2.0, 100.0);
+        let mut st = State::default();
+        look_at(&mock, &mut st, &file, (97.0, 97.0), 1_000).await;
+        assert_eq!(st.account.lots.len(), 1);
+        // five per cent under what it paid: sold at a loss, this second
+        let (look, _) = look_at(&mock, &mut st, &file, (92.0, 92.0), 3_000).await;
+        assert!(matches!(look.did, Did::Sold { net, .. } if net < 0.0), "{look:?}");
+        // still far under its buy price: for one bar's length it buys nothing
+        let sends = mock.sends.lock().len();
+        let (look, said) = look_at(&mock, &mut st, &file, (91.0, 91.0), 5_000).await;
+        assert_eq!(look.did, Did::Rests { until: 3_000 + 900_000, under: None });
+        assert!(said.is_empty() && mock.sends.lock().len() == sends);
+        // then it does
+        let (look, _) = look_at(&mock, &mut st, &file, (91.0, 91.0), 3_000 + 900_000).await;
+        assert!(matches!(look.did, Did::Bought { .. }), "{look:?}");
+        // a rule that acts at the close does not rest (it is one bar on anyway), and takes no gain it was not told to
+        let mut st = State::default();
+        look_at(&mock, &mut st, FILE, (97.0, 97.0), 1_000).await;
+        let (look, _) = look_at(&mock, &mut st, FILE, (97.6, 97.6), 2_000).await;
+        assert!(look.take.is_none() && look.did == Did::Nothing, "{look:?}");
+        look_at(&mock, &mut st, FILE, (92.0, 92.0), 3_000).await;
+        let (look, _) = look_at(&mock, &mut st, FILE, (91.0, 91.0), 5_000).await;
+        assert!(matches!(look.did, Did::Bought { .. }), "{look:?}");
+    }
+
+    #[tokio::test]
+    async fn how_it_acts_is_changed_by_hand_and_kept() {
+        let plan = parse(FILE).unwrap();
+        let live = plan.live.clone().unwrap();
+        let mock = Mock::new(0.5, 2.0, 100.0);
+        let mut st = State::default();
+        let quick = Acts { trigger: Trigger::Price, take_profit: Some(TAKE_PROFIT) };
+        let change = |st: &mut State, to: Acts, one_price: bool| {
+            let mut t = Trader {
+                chain: &mock,
+                live: &live,
+                state: st,
+                said: Vec::new(),
+                settle_wait: Duration::ZERO,
+                save: None,
+            };
+            t.change_acts(to, one_price);
+            t.said
+        };
+        // a rule that reads another instrument too decides at a close only
+        assert!(change(&mut st, quick, false)[0].contains("not changed"));
+        assert_eq!(acts_of(&st, &live).trigger, Trigger::Close);
+        let said = change(&mut st, quick, true);
+        assert!(said[0].contains("on the price itself, looked at every 2 s, taking a gain of 0.1 %"), "{said:?}");
+        assert_eq!(acts_of(&st, &live), quick);
+        // the same again says nothing; and the state that is saved says it
+        assert!(change(&mut st, quick, true).is_empty());
+        let back: State = serde_json::from_str(&serde_json::to_string(&st).unwrap()).unwrap();
+        assert_eq!(acts_of(&back, &live), quick);
+        // a state saved before the word existed reads as the file's
+        let old: State = serde_json::from_str(r#"{"account":{"cash":2.0,"lots":[],"reference":null,"trades":[],"costs_paid":0.0,"turnover":0.0,"day":null,"frozen":false},"funded":true,"ended":null,"pending":null}"#).unwrap();
+        assert_eq!(acts_of(&old, &live), Acts { trigger: Trigger::Close, take_profit: None });
+        // with it, the same file acts between two closes
+        let (look, _) = look_at(&mock, &mut st, FILE, (97.0, 97.0), 1_000).await;
+        assert!(matches!(look.did, Did::Bought { .. }), "{look:?}");
+        let (look, _) = look_at(&mock, &mut st, FILE, (97.2, 97.2), 2_000).await;
+        assert!(look.take.is_some());
     }
 
     /// One wish on the state, with what was said about it.
@@ -1502,7 +1879,7 @@ stop = 0.05
         let chain = Mainnet::new(&cfg, &live, true).unwrap();
         let (lamports, usdc) = chain.balances().await.unwrap();
         assert!(usdc >= 2_000_000, "the wallet this simulates as holds {usdc} USDC atoms: pick another");
-        match chain.swap(false, 2_000_000).await {
+        match chain.swap(false, 2_000_000, 0).await {
             Sent::Simulated { out, lamports_after, note } => {
                 let arrived = lamports_after as i64 - lamports as i64;
                 println!("{note}\nquoted {out} lamports, arrived {arrived}");
@@ -1511,13 +1888,13 @@ stop = 0.05
             other => panic!("{other:?}"),
         }
         // the quote asked for after a route failed in simulation: without that route's DEXes
-        let first = match chain.try_swap(false, 2_000_000, &[]).await {
+        let first = match chain.try_swap(false, 2_000_000, 0, &[]).await {
             Ok(Sent::Simulated { note, .. }) => note,
             _ => panic!("the first quote"),
         };
         let via: Vec<String> =
             first.split(" via ").nth(1).unwrap().split(',').next().unwrap().split(" + ").map(String::from).collect();
-        match chain.try_swap(false, 2_000_000, &via).await {
+        match chain.try_swap(false, 2_000_000, 0, &via).await {
             Ok(Sent::Simulated { note, .. }) => {
                 println!("first {first}\nwithout {via:?}: {note}");
                 assert!(via.iter().all(|d| !note.contains(d.as_str())), "{note}");

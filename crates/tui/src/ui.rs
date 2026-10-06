@@ -121,7 +121,11 @@ pub fn render(buf: &mut Buffer, area: Rect, app: &mut App, vm: &ViewModel) {
     {
         let (title, body) = crate::bots::question(&b, *action, app.zh);
         let w = 76.min(area.width.saturating_sub(2));
-        let lines = wrap_words(&body, w.saturating_sub(4));
+        // (a line break in what is asked is a new paragraph)
+        let lines: Vec<String> = body
+            .split('\n')
+            .flat_map(|part| if part.is_empty() { vec![String::new()] } else { wrap_words(part, w.saturating_sub(4)) })
+            .collect();
         let inner = overlay(buf, area, w, lines.len() as u16 + 4, &title, &th, &app.glyphs);
         for (line, y) in lines.iter().zip(inner.y + 1..inner.bottom()) {
             text(buf, inner.x, y, line, inner.width, th.text().bg(th.select_bg));
@@ -301,6 +305,7 @@ fn page_keys(app: &App, vm: &ViewModel) -> Vec<&'static str> {
                 "s 启动",
                 "x 停止",
                 "b 调预算",
+                "t 实时/收盘",
                 "n 新建",
                 "c 卖出并结束",
                 "[ ] 周期",
@@ -315,6 +320,7 @@ fn page_keys(app: &App, vm: &ViewModel) -> Vec<&'static str> {
                 "s start",
                 "x stop",
                 "b budget",
+                "t live/at close",
                 "n new",
                 "c close & sell",
                 "[ ] bar",
@@ -1124,7 +1130,7 @@ const HELP: [(&str, &[(&str, &str)]); 6] = [
         "Navigate",
         &[
             ("1-8", "Overview Markets Opportunities Graphs Trades Risk System Logs"),
-            ("9", "Bots: buy low, sell high  s start  x stop  b budget  c close"),
+            ("9", "Bots  s start  x stop  b budget  t live/at close  c close"),
             ("0", "Wallet: balances, receive   s/u send SOL/USDC   c copy address"),
             ("tab", "cycle focus: opportunities · graphs · inspector · stream"),
             ("j/k ↑/↓", "select / scroll     ⏎ inspect / detail     Esc back to live"),

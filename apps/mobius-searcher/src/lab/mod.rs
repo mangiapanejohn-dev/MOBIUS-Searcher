@@ -547,6 +547,14 @@ pub async fn run(cfg: &Config, file: &Path, duration: Option<u64>) -> Result<()>
 /// `--trade FILE`: the file's one rule with real money (see [`trade`]).
 /// `dry_run`: build and simulate the first swap, sign and send nothing.
 /// `close`: sell what the run holds and end it.
+/// The closed bars and, after them, the one that is forming as if it closed at `price`:
+/// what a rule that acts on the price itself decides on between two closes.
+fn forming_bar(bars: &[Bar], start: i64, price: f64) -> Vec<Bar> {
+    let mut with = bars.to_vec();
+    with.push(Bar { ts: start, open: price, high: price, low: price, close: price, volume: 0.0 });
+    with
+}
+
 /// Lamports of SOL that the wallet's other real runs hold (bought, not sold yet, the run not ended).
 fn held_by_others(store: &ResearchStore, run: &str) -> Result<u64> {
     let mut lamports = 0u64;
@@ -740,6 +748,29 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
     // Tried when it is new and again after each bar, until it is over.
     let wish_file = desk::wish_path(&cfg.data_dir(), &run);
     let mut tried: Option<(u64, i64)> = None;
+    // a rule that acts on the price itself looks between the closes too; after a try that sent
+    // nothing, or with a swap under way, the next look waits a little
+    let one_price = other_of(&plan).is_none();
+    if live.trigger == trade::Trigger::Price && !one_price {
+        bail!("{}: trigger = \"price\" is for rules that read one instrument's price (not the model)", file.display());
+    }
+    let mut next_look = std::time::Instant::now();
+    // a wish to change how it acts, left by the Bots page; and its looks, written down for that page
+    let acts_file = desk::acts_path(&cfg.data_dir(), &run);
+    let looks_file = desk::looks_path(&cfg.data_dir(), &run);
+    let mut looks: std::collections::VecDeque<trade::Look> = desk::looks(&looks_file).into();
+    let mut note = |look: trade::Look| {
+        looks.push_back(look);
+        while looks.len() > desk::LOOKS_KEPT {
+            looks.pop_front();
+        }
+        if let Err(err) = desk::write_looks(&looks_file, &looks) {
+            eprintln!("its looks could not be written: {err:#}");
+        }
+    };
+    // what a try that sent nothing said is said once, not again every few seconds; nor that a swap is still under way
+    let mut failed_at: Option<std::time::Instant> = None;
+    let mut under_way = false;
     // the budget is set aside before the first bar (a wish left while it was stopped comes first: it may be the budget)
     {
         let mut t = Trader {
@@ -751,6 +782,10 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
             save: Some(&write),
         };
         t.reconcile(now_ms()).await;
+        if let Some(to) = desk::acts_wish(&acts_file) {
+            t.change_acts(to, one_price);
+            let _ = std::fs::remove_file(&acts_file);
+        }
         if let Some(to) = desk::wish(&wish_file) {
             tried = Some((to.to_bits(), seen.get()));
             if t.rebudget(to, bid, now_ms()).await == trade::Wish::Done {
@@ -767,13 +802,37 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
     let started = std::time::Instant::now();
     let stop = tokio::signal::ctrl_c();
     tokio::pin!(stop);
+    // (when the last round began: a rule that acts on the price looks every so many seconds, its requests included)
+    let mut round = std::time::Instant::now();
     while state.ended.is_none() {
+        let by_price = trade::acts_of(&state, &live).trigger == trade::Trigger::Price;
+        let nap = if by_price {
+            Duration::from_secs(trade::LOOK_SECS).saturating_sub(round.elapsed())
+        } else {
+            Duration::from_secs(5)
+        };
         tokio::select! {
             _ = &mut stop => break,
-            _ = tokio::time::sleep(Duration::from_secs(5)) => {}
+            _ = tokio::time::sleep(nap) => {}
         }
+        round = std::time::Instant::now();
         if duration.is_some_and(|d| started.elapsed().as_secs() >= d) {
             break;
+        }
+        if let Some(to) = desk::acts_wish(&acts_file) {
+            let mut t = Trader {
+                chain: &chain,
+                live: &live,
+                state: &mut state,
+                said: Vec::new(),
+                settle_wait: Duration::from_secs(2),
+                save: Some(&write),
+            };
+            t.change_acts(to, one_price);
+            let said = std::mem::take(&mut t.said);
+            journal(said)?;
+            let _ = std::fs::remove_file(&acts_file);
+            continue;
         }
         if let Some(to) = desk::wish(&wish_file).filter(|to| tried != Some((to.to_bits(), seen.get())))
             && let Ok((bid, _)) = book(&http, &plan).await
@@ -795,14 +854,68 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
             save(&state, seen.get())?;
         }
         let newest = bars.last().map_or(0, |b| b.ts);
-        let fresh = match history(&http, &plan, &plan.instrument, now_ms(), newest + 1).await {
-            Ok(f) => f,
-            Err(err) => {
-                eprintln!("{}  candles: {err:#}", now());
-                continue;
+        // (between two looks at the price no bar can have closed before the forming one ends: not asked for)
+        let fresh = if by_price && now_ms() < newest + 2 * plan.bar_ms {
+            Vec::new()
+        } else {
+            match history(&http, &plan, &plan.instrument, now_ms(), newest + 1).await {
+                Ok(f) => f,
+                Err(err) => {
+                    eprintln!("{}  candles: {err:#}", now());
+                    continue;
+                }
             }
         };
         if fresh.is_empty() {
+            // no bar has closed: a look at the one that is forming, as if it closed at the price now
+            let forming = newest + plan.bar_ms;
+            let due = by_price && now_ms() < forming + plan.bar_ms && std::time::Instant::now() >= next_look;
+            if due && let Ok((bid, ask)) = book(&http, &plan).await {
+                let with = forming_bar(&bars, forming, (bid + ask) / 2.0);
+                let mut t = Trader {
+                    chain: &chain,
+                    live: &live,
+                    state: &mut state,
+                    said: Vec::new(),
+                    settle_wait: Duration::from_secs(2),
+                    save: Some(&write),
+                };
+                let look = t.look(&plan, e, (&with, &[]), (bid, ask), false, now_ms()).await;
+                let mut said = std::mem::take(&mut t.said);
+                // said once, not again every few seconds: that a try sent nothing, and that a swap is still under way
+                let wait = match look.did {
+                    // (the quote that was not good enough is asked for again, not at once: the key allows one a second)
+                    trade::Did::Failed => {
+                        if failed_at.is_some_and(|at| at.elapsed() < Duration::from_secs(300)) {
+                            said.retain(|l| {
+                                !["not sent: ", "a gain to take: ", "the wallet could not be read"]
+                                    .iter()
+                                    .any(|w| l.starts_with(w))
+                            });
+                        } else {
+                            failed_at = Some(std::time::Instant::now());
+                        }
+                        10
+                    }
+                    trade::Did::Sent => {
+                        if under_way {
+                            said.retain(|l| !l.starts_with("a swap sent less than two minutes ago"));
+                        }
+                        15
+                    }
+                    _ => 0,
+                };
+                under_way = look.did == trade::Did::Sent;
+                if !matches!(look.did, trade::Did::Nothing | trade::Did::Rests { .. } | trade::Did::Failed) {
+                    failed_at = None;
+                }
+                next_look = std::time::Instant::now() + Duration::from_secs(wait);
+                if !said.is_empty() || !matches!(look.did, trade::Did::Nothing | trade::Did::Rests { .. }) {
+                    journal(said)?;
+                    save(&state, seen.get())?;
+                }
+                note(look);
+            }
             continue;
         }
         if let Some(inst) = other_of(&plan) {
@@ -819,7 +932,7 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
         let late = now_ms() - (last.ts + plan.bar_ms);
         let on_time = (late as f64) <= plan.bar_ms as f64 * LATE;
         let quote = if on_time { book(&http, &plan).await.ok() } else { None };
-        let Some((bid, _)) = quote else {
+        let Some((bid, ask)) = quote else {
             println!(
                 "{}  bar closed at {:.2}, seen {} s late or without a book: nothing done",
                 now(),
@@ -838,9 +951,10 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
             settle_wait: Duration::from_secs(2),
             save: Some(&write),
         };
-        t.on_bar(&plan, e, &bars, &other, bid, now_ms()).await;
+        let look = t.look(&plan, e, (&bars, &other), (bid, ask), true, now_ms()).await;
         let said = std::mem::take(&mut t.said);
         journal(said)?;
+        note(look);
         if state.funded {
             let equity = state.account.cash + state.account.sol() * bid;
             let row = (last.ts, last.open, last.high, last.low, last.close, last.volume);
@@ -1001,6 +1115,32 @@ rule = "grid"
 step = 0.01
 lots = 4
 "#;
+
+    #[test]
+    fn a_rule_that_acts_on_the_price_decides_on_the_bar_that_is_forming() {
+        use rules::Account;
+        // a dip rule over four bars: flat at 100, then the price now far under them
+        let text = "[live]\nbudget_usd = 2.0\nstop_total_loss = 0.5\nacknowledge = \"ALLOW LOSS\"\ntrigger = \"price\"\n\n\
+                    [[experiment]]\nname = \"dip\"\nrule = \"dip\"\nwindow = 4\nk = 1.0\n";
+        let plan = parse(text).unwrap();
+        assert_eq!(plan.live.as_ref().unwrap().trigger, trade::Trigger::Price);
+        // a file that does not say acts at the close, and its plan is the one it was before the word existed
+        let closes = parse(&text.replace("trigger = \"price\"\n", "")).unwrap();
+        assert_eq!(closes.live.as_ref().unwrap().trigger, trade::Trigger::Close);
+        assert!(!closes.manifest.contains("trigger"), "{}", closes.manifest);
+        assert!(parse(&text.replace("\"price\"", "\"often\"")).is_err());
+        let bars: Vec<Bar> = (0..4)
+            .map(|i| Bar { ts: i * 900_000, open: 100.0, high: 100.0, low: 100.0, close: 100.0, volume: 1.0 })
+            .collect();
+        let acct = Account::new(2.0);
+        let rule = &plan.experiments[0].rule;
+        // at the last close nothing; with the forming bar at 97 it buys, at 99.9 it does not
+        assert!(rule.decide(&bars, &acct, 2.0, true).is_empty());
+        let with = forming_bar(&bars, 4 * 900_000, 97.0);
+        assert_eq!((with.len(), with[4].ts, with[4].close), (5, 3_600_000, 97.0));
+        assert_eq!(rule.decide(&with, &acct, 2.0, true).len(), 1, "a buy, this second");
+        assert!(rule.decide(&forming_bar(&bars, 4 * 900_000, 100.0), &acct, 2.0, true).is_empty());
+    }
 
     #[test]
     fn sol_that_another_bot_of_the_wallet_holds_is_not_this_ones_to_sell() {
