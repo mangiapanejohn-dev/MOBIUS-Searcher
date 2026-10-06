@@ -117,7 +117,8 @@ fn bars_of(store: &ResearchStore, plan: &Plan, want: usize) -> Result<Vec<Bar>> 
 fn bot(plan: &Plan, e: &Experiment, acct: &Account, bars: &[Bar], zh: bool) -> BotView {
     let last = bars.last().map(|b| b.close);
     let (buy, sell, stop) = e.rule.levels(bars, acct);
-    let shown = &bars[bars.len().saturating_sub(BARS_SHOWN)..];
+    // (all that was read: the page works the rule's sums out again at the price now, over its whole window)
+    let shown = bars;
     let mut fills: Vec<(i64, bool)> = acct.lots.iter().map(|l| (l.opened, true)).collect();
     fills.extend(acct.trades.iter().flat_map(|t| [(t.opened, true), (t.closed, false)]));
     BotView {
@@ -164,6 +165,7 @@ impl Desk {
         let mut runs = store.map_or(Ok(Vec::new()), |s| s.lab_runs())?;
         runs.reverse(); // newest first
         let (mut bots, mut ended) = (Vec::new(), 0);
+        let mut older: Option<(usize, f64, usize)> = None;
         // a run started by a version that did not say which it is: the newest that has not ended
         let mut unnamed = is_running && holder.is_none();
         for (id, _, manifest) in runs.iter().filter(|r| r.0.starts_with("trade-")) {
@@ -177,6 +179,10 @@ impl Desk {
             if state.ended.is_some() {
                 ended += 1;
                 if ended > ENDED_SHOWN {
+                    // no longer listed, but what it made is part of what the bots made in all
+                    let made: f64 = state.account.trades.iter().map(|t| t.net).sum();
+                    let (runs, sum, trades) = older.unwrap_or((0, 0.0, 0));
+                    older = Some((runs + 1, sum + made, trades + state.account.trades.len()));
                     continue;
                 }
             }
@@ -249,7 +255,7 @@ impl Desk {
                 bots.push(b);
             }
         }
-        Ok(BotsView { bots, error: None })
+        Ok(BotsView { bots, older, error: None })
     }
 
     fn act(&self, id: &str, action: BotAction) -> Result<String> {

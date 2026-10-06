@@ -220,7 +220,8 @@ fn draw_header(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, compact:
     let zh = app.zh;
     let name = |en: &'static str, cn: &'static str| if zh { cn } else { en };
     kpi(buf, &mut x, name("Equity", "总资产"), &eq.map(|e| e.to_string()).unwrap_or_else(|| "—".into()), th.text());
-    if let Some((word, running)) = bots.as_ref().and_then(|v| crate::bots::chip(v, app.zh)) {
+    let price = |inst: &str| crate::bots::price_now(app, inst);
+    if let Some((word, running)) = bots.as_ref().and_then(|v| crate::bots::chip_at(v, app.zh, &price)) {
         // the whole of it when there is room, else up to its comma
         let word =
             if area.width >= 170 { word } else { word.split([',', '，']).next().unwrap_or_default().to_string() };

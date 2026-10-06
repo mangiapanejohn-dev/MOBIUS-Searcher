@@ -715,7 +715,7 @@ fn bots_view() -> BotsView {
         file: None,
         ..real.clone()
     };
-    BotsView { bots: vec![real, paper], error: None }
+    BotsView { bots: vec![real, paper], ..Default::default() }
 }
 
 fn bots_app(view: BotsView) -> App {
@@ -741,20 +741,30 @@ fn the_bots_page_says_what_a_bot_holds_and_what_it_waits_for() {
         "sells above 121.33",
         "now 120.80  under its buy price",
         // beside the chart on a screen this wide: the account, what it waits for, what it did so far, what is next
-        "ACCOUNT",
-        "2.0000 USD   +0.00 %",
+        // the money: what it was given and is worth, where it is, what it made
+        "MONEY",
+        "2.00 → 2.0000 USD   +0.00 %",
+        "Idle, USDC",
+        "Made, closed",
+        "-0.0035 USD",
+        "bought 2.00 · sold 2.00 USD",
+        "1 · 0 won · 0 %",
         "all sold at 1.00 USD or less",
         "WAITING TO BUY",
         "120.80   under it already",
-        "SO FAR",
-        "1, 0 of them won",
-        "-0.0035 USD",
         "NEXT",
         "Decides at",
-        // and its trades as a table, beside its record
+        // and its trades as round trips, beside its record: bought and sold when and at what, held how long, what it made
         "ITS TRADES",
-        "0.016464    2.0000     121.48",
-        "0.016464    1.9965     121.26     -0.0035 USD",
+        "1 closed · 0 won · made -0.0035 USD",
+        "121.48",
+        "121.26",
+        "2 h 0 min",
+        "-0.0035 USD",
+        "-0.18",
+        // under the list: all the real bots in one sum
+        "ALL REAL BOTS",
+        "MARKET TRADES, LIVE",
         // the arithmetic behind the prices
         "HOW ITS PRICES ARE WORKED OUT",
         "From the closes of the last 96 15m bars (1 d): their average 121.33, their deviation 0.40",
@@ -810,18 +820,24 @@ fn the_bots_page_reads_in_chinese_for_an_operator_who_does() {
         "卖出线 121.33",
         "已在买入线下方",
         "市值",
-        "账户",
+        "资金与盈亏",
+        "预算 → 现值",
+        "已实现盈亏",
+        "浮动盈亏",
+        "合计盈亏",
+        "买 2.00 · 卖 2.00 USD",
         "市值跌到 1.00 美元就全部卖出",
         "等待买入",
-        "战绩",
-        "1 笔，其中赚 0 笔",
         "接下来",
         "下一次判断",
-        "成交记录",
+        "交易历史",
+        "1 笔平仓 · 赚 0 笔 · 已实现 -0.0035 USD",
+        "全部真钱机器人",
+        "实时成交",
         "这些线是怎么算出来的",
         "取最近 96 根15 分钟线（约 1 天）的收盘价：平均价 121.33，波动幅度（标准差）0.40",
         "买入线 = 平均价 − 1 × 波动 = 120.93",
-        "卖出 0.016464 SOL，得到 1.9965 USDC；这一笔 -0.0035 美元",
+        "卖出 0.016464 SOL，得到 1.9965 USDC",
         "x 停止",
         "运行中",
     ] {
@@ -1009,7 +1025,18 @@ fn the_wallet_page_says_what_it_holds_where_it_receives_and_what_moved() {
         "0.171412 SOL",
         "2.005052 USDC",
         // what the bot holds is part of it, and is not offered for sending
-        "Of that, 2.0000 USDC is what the bot dip-1d holds",
+        // where the money is, as a table: what the bot holds is part of it, and is not offered for sending
+        "WHERE THE MONEY IS",
+        "bot dip-1d (running)",
+        "kept for fees",
+        "free to send",
+        // what the money made: each real bot and all of them, and the arbitrage of this session
+        "WHAT THE MONEY MADE",
+        "All the bots",
+        "-0.0035",
+        "Arbitrage (this session)",
+        // what the transactions listed come to
+        "these 2 in all: in 0.2000 SOL + 0.00 USDC",
         "Free to send    SOL 0.151412 (0.02 kept for fees)  ·  USDC 0.005052",
         // receiving: the address whole, in two halves under its code
         "RECEIVE",
@@ -1058,7 +1085,14 @@ fn the_wallet_page_reads_in_chinese_for_an_operator_who_does() {
     for needle in [
         "钱包",
         "3 秒前读取",
-        "其中机器人 dip-1d 持有 2.0000 USDC",
+        "钱都在哪",
+        "机器人 dip-1d（运行中）",
+        "留作手续费",
+        "空闲（可以转出）",
+        "盈亏（累计）",
+        "机器人合计",
+        "套利（本次运行）",
+        "这 2 笔合计：收到 0.2000 SOL",
         "可以转出    SOL 0.151412（已留 0.02 付手续费）  ·  USDC 0.005052",
         "收款",
         "你的地址（Solana 网络）",
@@ -1365,11 +1399,10 @@ fn for_who_reads_chinese_the_frame_is_in_it_and_the_help_explains_the_page() {
     for needle in [
         "说明 · 机器人",
         "一个机器人就是一条规则加一笔预算",
-        "清仓线",
-        "调预算：给它加钱或减钱（1 到 25 美元）",
-        // its names and its keys as tables
+        // its parts by name as a table, each with what it means
         "│ 名称",
-        "│ 按键",
+        "资金与盈亏",
+        "实时运算",
         "Esc 关闭",
     ] {
         assert!(out.contains(needle), "missing `{needle}`:\n{out}");
@@ -1381,13 +1414,19 @@ fn for_who_reads_chinese_the_frame_is_in_it_and_the_help_explains_the_page() {
     }
     let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));
     assert!(out.contains("每一页都能用的键") && out.contains("机器人可能亏钱，没有任何保证"), "{out}");
+    assert!(out.contains("│ 按键"), "its keys as a table too:\n{out}");
     press(&mut a, &vm, KeyCode::Esc);
     press(&mut a, &vm, KeyCode::Char('0'));
     press(&mut a, &vm, KeyCode::Char('?'));
     let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));
-    for needle in ["说明 · 钱包", "转出的步骤", "输入收款地址的最后 4 位"] {
+    for needle in ["说明 · 钱包", "钱都在哪", "盈亏（累计）"] {
         assert!(out.contains(needle), "missing `{needle}`:\n{out}");
     }
+    for _ in 0..4 {
+        press(&mut a, &vm, KeyCode::PageDown);
+    }
+    let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));
+    assert!(out.contains("转出的步骤") && out.contains("输入收款地址的最后 4 位"), "{out}");
     // a small window scrolls too
     let out = buffer_text(&snapshot(&mut a, &vm, 100, 30));
     assert!(out.contains("说明 · 钱包") && out.contains("↑↓ 滚动"), "{out}");

@@ -57,6 +57,29 @@ before 1.0 a minor version may change configuration or behaviour.
   acts at that is far from the candles (a stop five per cent under) is named
   at the chart's edge instead of pressing the candles into a corner.
 
+- **The Bots page works its sums out again every second** at the price
+  now, with the bar that is forming counted at it: the average, the
+  deviation, how many deviations the price is from the average, where that
+  stands on a scale between the rule's two thresholds, and whether it would
+  act if the bar closed this second. The chart's lines, the ruler, the
+  sentence and the header's word use the same live numbers (a stopped bot's
+  are those of its last closed bar). Beside the chart: the money (budget and
+  what it is worth, what is in SOL and what is idle, made on closed trades,
+  up or down on what it holds, both together, what it bought and sold in
+  all, how many trades and how many won, the best and the worst). Under it:
+  its trades as round trips (bought and sold when and at what, held how
+  long, made in USD and per cent; one that is held stands first, at the
+  price now). Under the list: all the real bots in one sum, and the
+  exchange's own trades as they come.
+
+- **The Wallet page says where the money is and what it made**: a table of
+  what each real bot holds, what is kept for fees and what is free to send
+  (SOL, USDC, about how many USD, its share); a table of what the money
+  made, a row a bot (budget, worth, made on closed trades, up or down now,
+  in all, trades closed) with their sum, the runs that ended long ago in one
+  row, and the arbitrage of the session; and what the listed transactions
+  come to (received, sent, fees).
+
 - **A detail is drawn as a document with tables**, in a larger overlay
   that scrolls. A bot's record (`⏎` on the Bots page) is a framed table a
   day: time, what it did, and the parts of that as named rows (a swap that

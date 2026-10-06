@@ -164,6 +164,90 @@ pub fn bot_fills(app: &App) -> Vec<(String, Fill)> {
     all
 }
 
+/// The bot as it stands at the price now: the prices it acts at worked out
+/// again with the bar that is forming counted at that price (what it will do
+/// if the bar closed this second), and what it holds valued at it. `None`
+/// when its rule has no such sums, or its bars are not the newest (it is not
+/// running): then what its last closed bar gave stands.
+pub fn at_price(b: &BotView, p: f64) -> Option<BotView> {
+    let c = b.calc.as_ref()?;
+    let (last, now_ms) = (b.closes.last()?, Ts::now().0 / 1000);
+    let fresh = b.bar_ms > 0 && now_ms - last.0 < 2 * b.bar_ms;
+    if !fresh || c.window < 2 || b.closes.len() + 1 < c.window || p <= 0.0 {
+        return None;
+    }
+    let window: Vec<f64> =
+        b.closes[b.closes.len() + 1 - c.window..].iter().map(|x| x.1).chain(std::iter::once(p)).collect();
+    let mean = window.iter().sum::<f64>() / window.len() as f64;
+    let sd = (window.iter().map(|x| (x - mean).powi(2)).sum::<f64>() / window.len() as f64).sqrt();
+    let calc = Calc { mean, sd, ..c.clone() };
+    let levels = Levels { buy: Some(mean - c.k * sd), sell: Some(mean + c.exit_z * sd), stop: b.levels.stop };
+    let worth = b.worth.map(|_| b.cash + b.sol * p);
+    Some(BotView { calc: Some(calc), levels, worth, ..b.clone() })
+}
+
+/// The price now of a bot's instrument, when the exchange's ticker is that one.
+pub fn price_now(app: &App, inst: &str) -> Option<f64> {
+    app.cex.as_ref().and_then(|c| c.state.read().ticker.as_ref().filter(|x| x.inst == inst).map(|x| x.last))
+}
+
+/// What a bot has used and made.
+#[derive(Clone, Debug, Default, PartialEq)]
+pub struct Money {
+    /// USDC it paid for SOL and got for SOL, over all its trades.
+    pub bought: f64,
+    pub sold: f64,
+    /// What its closed trades made, and what the SOL it holds is up or down at the price now.
+    pub realized: f64,
+    pub floating: f64,
+    pub closed: usize,
+    pub won: usize,
+    pub best: Option<f64>,
+    pub worst: Option<f64>,
+}
+
+impl Money {
+    pub fn total(&self) -> f64 {
+        self.realized + self.floating
+    }
+}
+
+pub fn money_of(b: &BotView, now: Option<f64>) -> Money {
+    let fills = fills_of(b);
+    let sum = |buy: bool| fills.iter().filter(|f| f.buy == buy).map(|f| f.usdc).sum::<f64>() + 0.0;
+    let nets = || b.trades.iter().map(|x| x.2);
+    Money {
+        bought: sum(true),
+        sold: sum(false),
+        realized: b.result(),
+        floating: now.filter(|_| b.sol > 0.0).map_or(0.0, |p| b.sol * p - b.paid),
+        closed: b.trades.len(),
+        won: nets().filter(|n| *n > 0.0).count(),
+        best: nets().reduce(f64::max),
+        worst: nets().reduce(f64::min),
+    }
+}
+
+/// A buy and the sale that closed it (none yet while it is held).
+#[derive(Clone, Debug, PartialEq)]
+pub struct Trip {
+    pub bought: Fill,
+    pub sold: Option<Fill>,
+}
+
+/// Its trades as round trips, oldest first: each sale closes the oldest buy that is open.
+pub fn trips_of(b: &BotView) -> Vec<Trip> {
+    let mut trips: Vec<Trip> = Vec::new();
+    for f in fills_of(b) {
+        if f.buy {
+            trips.push(Trip { bought: f, sold: None });
+        } else if let Some(open) = trips.iter_mut().find(|x| x.sold.is_none()) {
+            open.sold = Some(f);
+        }
+    }
+    trips
+}
+
 /// A length of time in the words it is said in: `6 h 13 min`, `6 小时 13 分`.
 fn span(ms: i64, zh: bool) -> String {
     let m = (ms / 60_000).max(0);
@@ -180,6 +264,9 @@ fn span(ms: i64, zh: bool) -> String {
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct BotsView {
     pub bots: Vec<BotView>,
+    /// Real runs that ended and are no longer listed: how many, what their
+    /// closed trades made in all (USD), and how many trades that was.
+    pub older: Option<(usize, f64, usize)>,
     /// Why the view could not be read, when it could not.
     pub error: Option<String>,
 }
@@ -590,7 +677,8 @@ fn ended(zh: bool, why: &str) -> String {
 impl BotView {
     /// USD its closed trades made, net of everything.
     pub fn result(&self) -> f64 {
-        self.trades.iter().map(|t| t.2).sum()
+        // (an empty sum is -0.0, which would be printed with its sign)
+        self.trades.iter().map(|t| t.2).sum::<f64>() + 0.0
     }
 
     /// Instrument and bar, as one name.
@@ -803,8 +891,15 @@ fn state_mark(b: &BotView, app: &App) -> (&'static str, Style, &'static str) {
 
 /// The header's word on the bots: the real one that runs, else the newest real one.
 pub fn chip(view: &BotsView, zh: bool) -> Option<(String, bool)> {
+    chip_at(view, zh, &|_| None)
+}
+
+/// [`chip`], with the prices it names worked out at the price now where there is one (as the Bots page shows them).
+pub fn chip_at(view: &BotsView, zh: bool, price: &dyn Fn(&str) -> Option<f64>) -> Option<(String, bool)> {
     let real = || view.bots.iter().filter(|b| b.real && !matches!(b.state, BotState::Ended(_)));
     let b = real().find(|b| b.state == BotState::Running).or_else(|| real().next())?;
+    let live = price(&b.inst).and_then(|p| at_price(b, p));
+    let b = live.as_ref().unwrap_or(b);
     Some((format!("{} · {}", b.name, b.brief(zh)), b.state == BotState::Running))
 }
 
@@ -924,14 +1019,21 @@ pub fn page_bots(buf: &mut Buffer, body: Rect, app: &App) {
         let lh = (n as u16 * 2 + 1).min(body.height / 4).max(3);
         (Rect { height: lh, ..body }, Rect { y: body.y + lh, height: body.height - lh, ..body })
     };
-    bot_list(buf, list, app, &view, sel);
+    let under = bot_list(buf, list, app, &view, sel);
+    // under the list, where the screen is tall: all the real bots in one sum, and the market's own trades as they come
+    if wide && list.bottom().saturating_sub(under) >= 14 {
+        let rest = Rect { y: under + 1, height: list.bottom() - under - 1, ..list };
+        let used = totals(buf, rest, app, &view);
+        tape(buf, Rect { y: used + 1, height: rest.bottom().saturating_sub(used + 1), ..rest }, app, &view.bots[sel]);
+    }
     bot_detail(buf, detail, app, &view.bots[sel]);
     if let Some(e) = &view.error {
         text_fit(buf, list.x, list.bottom().saturating_sub(1), e, list.width, th.warn());
     }
 }
 
-fn bot_list(buf: &mut Buffer, area: Rect, app: &App, view: &BotsView, sel: usize) {
+/// The list of bots. Returns the row after its last one.
+fn bot_list(buf: &mut Buffer, area: Rect, app: &App, view: &BotsView, sel: usize) -> u16 {
     let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
     let n = shown(app, view);
     let paper = view.bots.iter().filter(|b| !b.real).count();
@@ -950,6 +1052,9 @@ fn bot_list(buf: &mut Buffer, area: Rect, app: &App, view: &BotsView, sel: usize
         if y + 1 >= inner.bottom() {
             break;
         }
+        // (the prices it names are the ones its own page shows: worked out at the price now)
+        let live = price_now(app, &b.inst).and_then(|p| at_price(b, p));
+        let b = live.as_ref().unwrap_or(b);
         let rows = Rect { x: inner.x, y, width: inner.width, height: 2 };
         app.hit(rows, Hit::Bot(i));
         if i == sel {
@@ -985,6 +1090,85 @@ fn bot_list(buf: &mut Buffer, area: Rect, app: &App, view: &BotsView, sel: usize
         text_fit(buf, inner.x + 3, y + 1, &holds, inner.width.saturating_sub(4), bg(th.faint()));
         y += 3;
     }
+    y.min(inner.bottom())
+}
+
+/// All the real bots in one sum: what they were given, what that is worth, what they made. Returns the row after it.
+fn totals(buf: &mut Buffer, area: Rect, app: &App, view: &BotsView) -> u16 {
+    let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
+    let real: Vec<&BotView> = view.bots.iter().filter(|b| b.real).collect();
+    let live = |b: &BotView| price_now(app, &b.inst).or(b.last_close());
+    let open = || real.iter().filter(|b| b.funded && !matches!(b.state, BotState::Ended(_)));
+    let budget = open().map(|b| b.budget).sum::<f64>() + 0.0;
+    let worth = open().map(|b| live(b).map_or(b.cash + b.paid, |p| b.cash + b.sol * p)).sum::<f64>() + 0.0;
+    let money: Vec<Money> = real.iter().map(|b| money_of(b, live(b))).collect();
+    let older = view.older.map_or(0.0, |o| o.1);
+    let realized = money.iter().map(|m| m.realized).sum::<f64>() + older + 0.0;
+    let floating = money.iter().map(|m| m.floating).sum::<f64>() + 0.0;
+    let closed = money.iter().map(|m| m.closed).sum::<usize>() + view.older.map_or(0, |o| o.2);
+    let rows = [
+        (t(zh, "Given", "投入预算"), format!("{budget:.2} USD"), th.text()),
+        (t(zh, "Worth now", "现在值"), format!("{worth:.4} USD"), th.text()),
+        (
+            t(zh, "Made, closed", "已实现盈亏"),
+            if zh { format!("{realized:+.4} USD（{closed} 笔）") } else { format!("{realized:+.4} USD ({closed})") },
+            th.pnl(realized),
+        ),
+        (t(zh, "Open, now", "浮动盈亏"), format!("{floating:+.4} USD"), th.pnl(floating)),
+        (
+            t(zh, "In all", "合计盈亏"),
+            format!("{:+.4} USD", realized + floating),
+            th.pnl(realized + floating).add_modifier(Modifier::BOLD),
+        ),
+    ];
+    let h = (rows.len() as u16 + 1).min(area.height);
+    let inner = section(buf, Rect { height: h, ..area }, t(zh, "ALL REAL BOTS", "全部真钱机器人"), false, "", th, g);
+    for ((k, v, st), y) in rows.iter().zip(inner.y..inner.bottom()) {
+        text(buf, inner.x + 1, y, k, 12, th.muted());
+        text_fit(buf, inner.x + 13, y, v, inner.width.saturating_sub(13), *st);
+    }
+    area.y + h
+}
+
+/// The market's own trades as they come, newest first: when, at what price, how much, bought or sold.
+fn tape(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
+    let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
+    if area.height < 4 {
+        return;
+    }
+    let pair = shown_stream(app, b).map(|s| s.0);
+    let trades = app.cex.as_ref().map(|c| c.state.read()).filter(|s| pair.is_some() && s.trades_for == pair);
+    let right = format!("OKX {}", b.inst);
+    let inner = section(buf, area, t(zh, "MARKET TRADES, LIVE", "实时成交"), false, &right, th, g);
+    let Some(state) = trades.filter(|s| !s.trades.is_empty()) else {
+        text_fit(
+            buf,
+            inner.x + 1,
+            inner.y,
+            t(zh, "waiting for the exchange…", "等待交易所的数据…"),
+            inner.width,
+            th.faint(),
+        );
+        return;
+    };
+    let cols: [(u16, &str); 4] =
+        [(1, t(zh, "TIME", "时间")), (11, t(zh, "PRICE", "价格")), (22, "SOL"), (33, t(zh, "SIDE", "方向"))];
+    for (x, name) in cols {
+        text(buf, inner.x + x, inner.y, name, inner.width.saturating_sub(x), th.faint());
+    }
+    for (x, y) in state.trades.iter().zip(inner.y + 1..inner.bottom()) {
+        let st = Style::new().fg(if x.buy { th.profit } else { th.loss });
+        text(buf, inner.x + 1, y, &x.ts.hms(), 9, th.faint());
+        text(buf, inner.x + 11, y, &price(x.px, 2), 10, st);
+        text(buf, inner.x + 22, y, &format!("{:.3}", x.sz), 10, th.text());
+        let side = match (x.buy, zh) {
+            (true, true) => "买",
+            (false, true) => "卖",
+            (true, false) => "buy",
+            (false, false) => "sell",
+        };
+        text(buf, inner.x + 33, y, side, inner.width.saturating_sub(33), st);
+    }
 }
 
 fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
@@ -1008,6 +1192,9 @@ fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
         return;
     }
     let (candles, live, from_exchange) = candles_of(app, b);
+    // every number of the page is of this second: the prices it acts at are worked out again at the price now
+    let at_now = live.and_then(|p| at_price(b, p));
+    let (b, is_live) = (at_now.as_ref().unwrap_or(b), at_now.is_some());
     let now = live.or(b.last_close());
     let mut y = inner.y;
 
@@ -1067,8 +1254,8 @@ fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
     }
     let calc_lines = worked_out(b, zh, now, inner.width.saturating_sub(2));
     let calc_h = if calc_lines.is_empty() || left < 18 { 0 } else { calc_lines.len() as u16 + 2 };
-    let fills = fills_of(b);
-    let records = if railed { b.journal.len().max(fills.len() + 1) } else { b.journal.len() };
+    let trips = trips_of(b);
+    let records = if railed { b.journal.len().max(trips.len() + 1).max(3) } else { b.journal.len() };
     let journal_h = (records as u16 + 1).clamp(2, ((left - calc_h) / 4).max(2));
     let chart_h = left - calc_h - journal_h;
     let rail_w = 50;
@@ -1084,7 +1271,7 @@ fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
         let chart_w = if railed { inner.width - rail_w - 3 } else { inner.width };
         if railed {
             let beside = Rect { x: inner.right() - rail_w, y, width: rail_w, height: chart_h.saturating_sub(1) };
-            rail(buf, beside, app, b, now);
+            rail(buf, beside, app, b, now, is_live);
         }
         let c = section(buf, Rect { y, width: chart_w, height: chart_h, ..inner }, name, false, &source, th, g);
         // the bars to look at it in, as on any chart: the rule's own is marked, and goes on deciding whatever is shown
@@ -1164,9 +1351,9 @@ fn bot_detail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
     }
     // 6. what it did: on a wide screen its trades as a table, and its record beside them
     let rest = Rect { y, height: inner.bottom() - y, ..inner };
-    if railed && !fills.is_empty() {
-        let tw = (inner.width * 2 / 5).clamp(70, 96);
-        trades_table(buf, Rect { width: tw, ..rest }, app, &fills);
+    if railed {
+        let tw = (inner.width / 2).clamp(88, 104);
+        history(buf, Rect { width: tw, ..rest }, app, b, &trips, now);
         record(buf, Rect { x: rest.x + tw + 3, width: rest.width - tw - 3, ..rest }, app, b);
     } else {
         record(buf, rest, app, b);
@@ -1197,44 +1384,73 @@ fn record(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
     }
 }
 
-/// Its buys and sales, newest first: when, which, how much for how much, at what price, and what a sale made.
-fn trades_table(buf: &mut Buffer, area: Rect, app: &App, fills: &[Fill]) {
+/// Its trades as round trips, newest first: bought when and at what, sold
+/// when and at what, how long it was held, and what it made in USD and per
+/// cent. One that is still held stands first, valued at the price now.
+fn history(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, trips: &[Trip], now: Option<f64>) {
     let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
-    let count = if zh { format!("{} 笔", fills.len()) } else { format!("{}", fills.len()) };
-    let inner = section(buf, area, t(zh, "ITS TRADES", "成交记录"), false, &count, th, g);
+    let m = money_of(b, now);
+    let right = match (m.closed, zh) {
+        (0, _) => String::new(),
+        (n, true) => format!("{n} 笔平仓 · 赚 {} 笔 · 已实现 {:+.4} USD", m.won, m.realized),
+        (n, false) => format!("{n} closed · {} won · made {:+.4} USD", m.won, m.realized),
+    };
+    let inner = section(buf, area, t(zh, "ITS TRADES", "交易历史"), false, &right, th, g);
     if inner.height == 0 {
         return;
     }
-    let cols: [(u16, &str); 6] = [
-        (0, t(zh, "WHEN", "时间")),
-        (13, t(zh, "SIDE", "买/卖")),
-        (20, "SOL"),
-        (32, "USDC"),
-        (43, t(zh, "PRICE", "成交价")),
-        (54, t(zh, "MADE", "这笔盈亏")),
+    if trips.is_empty() {
+        let none = t(
+            zh,
+            "none yet: a buy is a row here, and its sale completes it with what it made",
+            "还没有交易：它买入后这里出现一行，卖出后补上卖出价和这一笔的盈亏",
+        );
+        text_fit(buf, inner.x, inner.y, none, inner.width, th.faint());
+        return;
+    }
+    let cols: [(u16, &str); 8] = [
+        (0, t(zh, "BOUGHT", "买入时间")),
+        (13, t(zh, "AT", "买入价")),
+        (22, t(zh, "SOLD", "卖出时间")),
+        (35, t(zh, "AT", "卖出价")),
+        (44, "SOL"),
+        (54, t(zh, "HELD", "持有")),
+        (68, t(zh, "MADE", "盈亏")),
+        (81, "%"),
     ];
     for (x, name) in cols {
         text(buf, inner.x + x, inner.y, name, inner.width.saturating_sub(x), th.faint());
     }
-    for (f, y) in fills.iter().rev().zip(inner.y + 1..inner.bottom()) {
-        let side = match (f.buy, zh) {
-            (true, true) => "买入",
-            (false, true) => "卖出",
-            (true, false) => "buy",
-            (false, false) => "sell",
+    for (trip, y) in trips.iter().rev().zip(inner.y + 1..inner.bottom()) {
+        let bought = &trip.bought;
+        // held: valued at the price now, and said to be so
+        let (end, at, made, st) = match (&trip.sold, now) {
+            (Some(sold), _) => {
+                let made = sold.net.unwrap_or(sold.usdc - bought.usdc);
+                (Ts(sold.at * 1000).format("%m-%d %H:%M"), Some(sold.price), Some((made, sold.at)), th.text())
+            }
+            (None, Some(p)) => {
+                let held = t(zh, "held", "持仓中").to_string();
+                (held, Some(p), Some((bought.sol * p - bought.usdc, Ts::now().0 / 1000)), th.muted())
+            }
+            (None, None) => (t(zh, "held", "持仓中").to_string(), None, None, th.muted()),
         };
-        let side_st = Style::new().fg(if f.buy { th.profit } else { th.loss });
-        let made = f.net.map_or(String::new(), |n| format!("{n:+.4} USD"));
         let cells = [
-            (Ts(f.at * 1000).format("%m-%d %H:%M"), th.faint()),
-            (side.to_string(), side_st),
-            (format!("{:.6}", f.sol), th.text()),
-            (format!("{:.4}", f.usdc), th.text()),
-            (price(f.price, 2), th.text()),
-            (made, th.pnl(f.net.unwrap_or(0.0))),
+            (Ts(bought.at * 1000).format("%m-%d %H:%M"), th.faint()),
+            (price(bought.price, 2), th.text()),
+            (end, if trip.sold.is_some() { th.faint() } else { th.accent() }),
+            (at.map_or(String::new(), |p| price(p, 2)), st),
+            (format!("{:.6}", bought.sol), th.text()),
+            (made.map_or(String::new(), |(_, until)| span(until - bought.at, zh)), th.muted()),
+            (made.map_or(String::new(), |(v, _)| format!("{v:+.4} USD")), th.pnl(made.map_or(0.0, |v| v.0))),
+            (
+                made.filter(|_| bought.usdc > 0.0)
+                    .map_or(String::new(), |(v, _)| format!("{:+.2}", v / bought.usdc * 100.0)),
+                th.pnl(made.map_or(0.0, |v| v.0)),
+            ),
         ];
         for ((x, _), (v, st)) in cols.iter().zip(cells) {
-            text(buf, inner.x + x, y, &v, inner.width.saturating_sub(*x), st);
+            text_fit(buf, inner.x + x, y, &v, inner.width.saturating_sub(*x), st);
         }
     }
 }
@@ -1298,7 +1514,7 @@ pub fn fills_section(buf: &mut Buffer, area: Rect, app: &App, fills: &[(String, 
 /// Beside the chart on a wide screen: the account, the position (or what it
 /// waits for), what it has done so far, the market and what comes next, each
 /// under a word of its own with room around it.
-fn rail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, now: Option<f64>) {
+fn rail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, now: Option<f64>, is_live: bool) {
     let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
     let key_w = 13;
     let mut y = area.y;
@@ -1317,23 +1533,62 @@ fn rail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, now: Option<f64>) 
     let pct = |a: f64, of: f64| (a / of - 1.0) * 100.0;
     let bold = th.text().add_modifier(Modifier::BOLD);
 
-    // the account
+    // the money: what it was given, what that is now, where it is, and what it made
+    let m = money_of(b, now);
     let worth = b.worth.filter(|_| b.funded && b.budget > 0.0);
-    let holds = match (b.funded, b.sol > 0.0, b.cash > 0.00005) {
-        (false, ..) => t(zh, "nothing yet", "还没划拨").to_string(),
-        (true, true, true) => format!("{:.6} SOL + {:.4} USDC", b.sol, b.cash),
-        (true, true, false) => format!("{:.6} SOL", b.sol),
-        (true, false, _) => format!("{:.4} USDC", b.cash),
-    };
     let mut rows = vec![
         (
-            t(zh, "Worth", "市值"),
-            worth.map_or("—".to_string(), |w| format!("{w:.4} USD   {:+.2} %", pct(w, b.budget))),
-            worth.map_or(th.muted(), |w| th.pnl(w - b.budget).add_modifier(Modifier::BOLD)),
+            t(zh, "Budget → now", "预算 → 现值"),
+            worth.map_or(format!("{:.2} USD", b.budget), |w| {
+                format!("{:.2} → {w:.4} USD   {:+.2} %", b.budget, pct(w, b.budget))
+            }),
+            worth.map_or(th.text(), |w| th.pnl(w - b.budget).add_modifier(Modifier::BOLD)),
         ),
-        (t(zh, "Budget", "预算"), format!("{:.2} USD", b.budget), th.text()),
-        (t(zh, "Holds", "持有"), holds, th.text()),
+        (
+            t(zh, "In SOL", "买成 SOL 的"),
+            match (b.sol > 0.0, zh) {
+                (true, true) => format!("{:.4} USD（{:.6} SOL）", b.paid, b.sol),
+                (true, false) => format!("{:.4} USD ({:.6} SOL)", b.paid, b.sol),
+                (false, true) => "没有".to_string(),
+                (false, false) => "none".to_string(),
+            },
+            th.text(),
+        ),
+        (
+            t(zh, "Idle, USDC", "闲着的 USDC"),
+            if b.funded {
+                format!("{:.4} USD", b.cash)
+            } else {
+                t(zh, "not set aside yet", "还没划拨").to_string()
+            },
+            th.text(),
+        ),
+        (t(zh, "Made, closed", "已实现盈亏"), format!("{:+.4} USD", m.realized), th.pnl(m.realized)),
+        (t(zh, "Open, now", "浮动盈亏"), format!("{:+.4} USD", m.floating), th.pnl(m.floating)),
+        (t(zh, "In all", "合计盈亏"), format!("{:+.4} USD", m.total()), th.pnl(m.total()).add_modifier(Modifier::BOLD)),
+        (
+            t(zh, "Traded", "累计成交"),
+            if zh {
+                format!("买 {:.2} · 卖 {:.2} USD", m.bought, m.sold)
+            } else {
+                format!("bought {:.2} · sold {:.2} USD", m.bought, m.sold)
+            },
+            th.text(),
+        ),
+        (
+            t(zh, "Closed", "平仓 / 胜率"),
+            match (m.closed, zh) {
+                (0, true) => "还没有平仓的".to_string(),
+                (0, false) => "none closed yet".to_string(),
+                (n, true) => format!("{n} 笔 · 赚 {} 笔 · {:.0} %", m.won, m.won as f64 / n as f64 * 100.0),
+                (n, false) => format!("{n} · {} won · {:.0} %", m.won, m.won as f64 / n as f64 * 100.0),
+            },
+            th.text(),
+        ),
     ];
+    if let (Some(best), Some(worst)) = (m.best, m.worst) {
+        rows.push((t(zh, "Best / worst", "最好 / 最差"), format!("{best:+.4} / {worst:+.4} USD"), th.text()));
+    }
     if let Some(s) = b.stop_at {
         let v = if zh {
             format!("市值跌到 {s:.2} 美元就全部卖出")
@@ -1342,7 +1597,7 @@ fn rail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, now: Option<f64>) 
         };
         rows.push((t(zh, "Sold out at", "清仓线"), v, th.text()));
     }
-    group(buf, t(zh, "ACCOUNT", "账户"), rows);
+    group(buf, t(zh, "MONEY", "资金与盈亏"), rows);
 
     // the position it holds, or what it waits for
     let mut rows = Vec::new();
@@ -1388,27 +1643,84 @@ fn rail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, now: Option<f64>) 
         group(buf, t(zh, "WAITING TO BUY", "等待买入"), rows);
     }
 
-    // what it has done so far
-    let (n, won, made) = (b.trades.len(), b.trades.iter().filter(|x| x.2 > 0.0).count(), b.result());
-    let mut rows = vec![(
-        t(zh, "Closed", "已平仓"),
-        match (n, zh) {
-            (0, true) => "还没有".to_string(),
-            (0, false) => "none yet".to_string(),
-            (_, true) => format!("{n} 笔，其中赚 {won} 笔"),
-            (_, false) => format!("{n}, {won} of them won"),
-        },
-        th.text(),
-    )];
-    if let Some(last) = b.trades.last() {
-        rows.push((t(zh, "Made", "已实现盈亏"), format!("{made:+.4} USD"), th.pnl(made)));
-        rows.push((
-            t(zh, "Last one", "最近一笔"),
-            format!("{:+.4} USD  ·  {}", last.2, Ts(last.0 * 1000).format("%m-%d %H:%M")),
-            th.pnl(last.2),
-        ));
+    // its sums, this second: the same ones it will do when the bar closes, with the bar that is forming at the price now
+    if let (true, Some(c), Some(p)) = (is_live, &b.calc, now) {
+        let z = if c.sd > 0.0 { (p - c.mean) / c.sd } else { 0.0 };
+        // where the price stands among its two thresholds, from three deviations under the average to three over
+        let cells = 31usize;
+        let at = |v: f64| (((v + 3.0) / 6.0).clamp(0.0, 1.0) * (cells - 1) as f64).round() as usize;
+        let (buy_at, sell_at, z_at) = (at(-c.k), at(c.exit_z), at(z));
+        let gauge: String = (0..cells)
+            .map(|i| match i {
+                i if i == z_at => {
+                    if g.unicode {
+                        '●'
+                    } else {
+                        'O'
+                    }
+                }
+                i if i == buy_at || i == sell_at => {
+                    if g.unicode {
+                        '┃'
+                    } else {
+                        '|'
+                    }
+                }
+                _ => {
+                    if g.unicode {
+                        '─'
+                    } else {
+                        '-'
+                    }
+                }
+            })
+            .collect();
+        let holding = b.sol > 0.0;
+        let verdict = match (holding, z < -c.k, z > c.exit_z, zh) {
+            (false, true, _, true) => "会买入".to_string(),
+            (false, false, _, true) => format!("不买：要低到 {:+.2}", -c.k),
+            (true, _, true, true) => "会卖出".to_string(),
+            (true, _, false, true) => format!("不卖：要高过 {:+.2}", c.exit_z),
+            (false, true, _, false) => "it buys".to_string(),
+            (false, false, _, false) => format!("no buy: it takes {:+.2}", -c.k),
+            (true, _, true, false) => "it sells".to_string(),
+            (true, _, false, false) => format!("no sale: it takes over {:+.2}", c.exit_z),
+        };
+        let acts = if verdict.starts_with("会") || verdict.starts_with("it ") { th.accent_bold() } else { th.text() };
+        let rows = vec![
+            (
+                t(zh, "Average", "平均价"),
+                if zh {
+                    format!("{}（最近 {} 根，含这一根）", price(c.mean, 2), c.window)
+                } else {
+                    format!("{} (last {} bars, this one in)", price(c.mean, 2), c.window)
+                },
+                th.text(),
+            ),
+            (t(zh, "Deviation", "波动"), price(c.sd, 2), th.text()),
+            (
+                t(zh, "Price is", "现价偏离"),
+                if zh {
+                    format!("{z:+.2} 个波动（{}）", price(p, 2))
+                } else {
+                    format!("{z:+.2} deviations ({})", price(p, 2))
+                },
+                bold,
+            ),
+            (t(zh, "On the scale", "所在位置"), gauge, th.text()),
+            (
+                "",
+                if zh {
+                    format!("┃ 买入 {:+.1} · ┃ 卖出 {:+.1} · ● 现在", -c.k, c.exit_z)
+                } else {
+                    format!("| buys {:+.1} · | sells {:+.1} · O now", -c.k, c.exit_z)
+                },
+                th.faint(),
+            ),
+            (t(zh, "If it closed now", "若现在收盘"), verdict, acts),
+        ];
+        group(buf, t(zh, "ITS SUMS, LIVE", "实时运算（每秒按现价重算）"), rows);
     }
-    group(buf, t(zh, "SO FAR", "战绩"), rows);
 
     // the market of its instrument, when the exchange's ticker is this one
     let ticker = app.cex.as_ref().and_then(|c| c.state.read().ticker.clone()).filter(|x| x.inst == b.inst);
@@ -2434,6 +2746,57 @@ mod tests {
             "{en}"
         );
         assert!(en.contains("|  |  | Outcome | confirmed on the chain |"), "{en}");
+    }
+
+    #[test]
+    fn its_prices_are_worked_out_again_at_the_price_now() {
+        let mut b = bot();
+        let now_ms = Ts::now().0 / 1000;
+        // four closed bars, the newest just closed; a window of four counts three of them and the price now
+        b.calc = Some(Calc { window: 4, mean: 0.0, sd: 0.0, k: 1.0, exit_z: 0.0, stop: None });
+        b.closes = (0..4).map(|i| (now_ms - (3 - i) * b.bar_ms, 100.0 + i as f64)).collect();
+        let live = at_price(&b, 98.0).expect("its bars are the newest");
+        let c = live.calc.clone().unwrap();
+        // 101, 102, 103 and 98: their average 101, their deviation the root of 3.5
+        assert!((c.mean - 101.0).abs() < 1e-9 && (c.sd - 3.5f64.sqrt()).abs() < 1e-9, "{c:?}");
+        assert!((live.levels.buy.unwrap() - (101.0 - 3.5f64.sqrt())).abs() < 1e-9);
+        assert_eq!(live.levels.sell, Some(101.0));
+        // what it holds is valued at that price too
+        (b.sol, b.paid, b.cash, b.worth) = (0.02, 2.0, 0.0, Some(2.0));
+        assert!((at_price(&b, 98.0).unwrap().worth.unwrap() - 1.96).abs() < 1e-9);
+        // bars that are not the newest (it is not running), or fewer than its window: what the last close gave stands
+        let mut stale = b.clone();
+        stale.closes.iter_mut().for_each(|c| c.0 -= 10 * b.bar_ms);
+        assert!(at_price(&stale, 98.0).is_none());
+        b.closes.truncate(2);
+        assert!(at_price(&b, 98.0).is_none());
+    }
+
+    #[test]
+    fn what_it_used_and_made_is_summed_from_its_trades() {
+        let mut b = bot();
+        b.journal = vec![
+            (1_000, "bought 0.016000 SOL for 2.0000 USDC (125.00 a SOL, every cost inside)".into()),
+            (2_000, "sold 0.016000 SOL for 2.0500 USDC; this trade +0.0500 USD".into()),
+            (3_000, "bought 0.017000 SOL for 2.0500 USDC (120.59 a SOL, every cost inside)".into()),
+            (4_000, "sold 0.017000 SOL for 2.0300 USDC; this trade -0.0200 USD".into()),
+            (5_000, "bought 0.016500 SOL for 2.0300 USDC (123.03 a SOL, every cost inside)".into()),
+        ];
+        b.trades = vec![(2_000, 2.0, 0.05), (4_000, 2.05, -0.02)];
+        (b.sol, b.paid, b.cash) = (0.0165, 2.03, 0.0);
+        let m = money_of(&b, Some(124.0));
+        assert!((m.bought - 6.08).abs() < 1e-9 && (m.sold - 4.08).abs() < 1e-9, "{m:?}");
+        assert!((m.realized - 0.03).abs() < 1e-9 && (m.floating - (0.0165 * 124.0 - 2.03)).abs() < 1e-9, "{m:?}");
+        assert_eq!((m.closed, m.won, m.best, m.worst), (2, 1, Some(0.05), Some(-0.02)));
+        // round trips: two closed, one held
+        let trips = trips_of(&b);
+        assert_eq!(trips.len(), 3);
+        assert_eq!(trips[0].sold.as_ref().map(|s| s.at), Some(2_000));
+        assert_eq!(trips[1].sold.as_ref().and_then(|s| s.net), Some(-0.02));
+        assert!(trips[2].sold.is_none());
+        // one that has done nothing: zeros without a sign
+        let none = money_of(&bot(), None);
+        assert_eq!(format!("{:+.4} {:.2}", none.realized, none.bought), "+0.0000 0.00");
     }
 
     #[test]

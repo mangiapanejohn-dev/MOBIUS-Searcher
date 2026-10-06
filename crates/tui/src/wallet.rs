@@ -478,7 +478,16 @@ pub fn page_wallet(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
     // (kept close to it on a wide screen: what belongs together is read together)
     let rw = (view.qr.first().map_or(0, Vec::len) as u16 + 4).max(42);
     let left = if beside { Rect { width: (body.width - rw - 3).min(118), ..body } } else { body };
-    let mut y = holdings(buf, left, app, view, address, price) + 1;
+    // on a tall screen, where the money is stands as a table of its own under what there is
+    let tabled = body.height >= 50 && view.sol.is_some();
+    let mut y = holdings(buf, left, app, view, address, price, tabled) + 1;
+    if tabled {
+        y = whereabouts(buf, Rect { y, height: left.bottom().saturating_sub(y), ..left }, app, view, price);
+    }
+    // what the money made: each bot and all of them, where there is a real bot and room to say it
+    if left.bottom().saturating_sub(y) >= 26 {
+        y = earnings(buf, Rect { y, height: left.bottom() - y, ..left }, app, vm);
+    }
     if beside {
         receive(buf, Rect { x: left.right() + 3, width: rw, ..body }, app, view, address);
     } else {
@@ -526,7 +535,15 @@ pub fn page_wallet(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
 }
 
 /// What it holds and what that is worth. Returns the row after it.
-fn holdings(buf: &mut Buffer, area: Rect, app: &App, view: &WalletView, address: &str, price: Option<f64>) -> u16 {
+fn holdings(
+    buf: &mut Buffer,
+    area: Rect,
+    app: &App,
+    view: &WalletView,
+    address: &str,
+    price: Option<f64>,
+    tabled: bool,
+) -> u16 {
     let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
     let age = view.read_at.map(|at| ((Ts::now().0 / 1000 - at) / 1000).max(0));
     let read = match (age, zh) {
@@ -587,7 +604,7 @@ fn holdings(buf: &mut Buffer, area: Rect, app: &App, view: &WalletView, address:
     }
     y += 1;
     // what the bots hold is in those numbers: said, so that it is not sent away by mistake
-    if let Some((names, sol, usdc)) = bots_hold(app).filter(|_| row(y)) {
+    if let Some((names, sol, usdc)) = bots_hold(app).filter(|_| row(y) && !tabled) {
         let held = match (sol > 0.0, usdc > 0.0) {
             (true, true) => format!("{sol:.6} SOL + {usdc:.4} USDC"),
             (true, false) => format!("{sol:.6} SOL"),
@@ -622,6 +639,211 @@ fn holdings(buf: &mut Buffer, area: Rect, app: &App, view: &WalletView, address:
         y += 1;
     }
     y
+}
+
+/// Where the wallet's money is: what each real bot holds, what is kept for
+/// fees, and what is free to send, each in SOL, in USDC and as its share of
+/// the whole. Returns the row after it.
+fn whereabouts(buf: &mut Buffer, area: Rect, app: &App, view: &WalletView, price: Option<f64>) -> u16 {
+    let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
+    let (sol, usdc) = (view.sol.unwrap_or(0.0), view.usdc.unwrap_or(0.0));
+    let mut rows: Vec<(String, f64, f64, Style)> = Vec::new();
+    if let Some(bots) = &app.bots {
+        let v = bots.read();
+        for b in v.bots.iter().filter(|b| b.real && b.funded && !matches!(b.state, BotState::Ended(_))) {
+            if b.sol > 0.0 || b.cash > 0.0 {
+                let state = match (&b.state, zh) {
+                    (BotState::Running, true) => "运行中",
+                    (BotState::Running, false) => "running",
+                    (_, true) => "已停止",
+                    (_, false) => "stopped",
+                };
+                let name =
+                    if zh { format!("机器人 {}（{state}）", b.name) } else { format!("bot {} ({state})", b.name) };
+                rows.push((name, b.sol, b.cash, th.text()));
+            }
+        }
+    }
+    let (bot_sol, bot_usdc) = rows.iter().fold((0.0, 0.0), |a, r| (a.0 + r.1, a.1 + r.2));
+    let kept = view.reserve.min((sol - bot_sol).max(0.0));
+    rows.push((t(zh, "kept for fees", "留作手续费").to_string(), kept, 0.0, th.muted()));
+    let free = ((sol - bot_sol - kept).max(0.0), (usdc - bot_usdc).max(0.0));
+    rows.push((t(zh, "free to send", "空闲（可以转出）").to_string(), free.0, free.1, Style::new().fg(th.profit)));
+    let usd = |s: f64, u: f64| price.map(|p| s * p + u);
+    let all = usd(sol, usdc).filter(|a| *a > 0.0);
+    let h = (rows.len() as u16 + 4).min(area.height);
+    let inner = section(buf, Rect { height: h, ..area }, t(zh, "WHERE THE MONEY IS", "钱都在哪"), false, "", th, g);
+    let cols: [(u16, &str); 5] = [
+        (1, t(zh, "WHERE", "去向")),
+        (34, "SOL"),
+        (48, "USDC"),
+        (62, t(zh, "ABOUT, USD", "约合 USD")),
+        (76, t(zh, "SHARE", "占比")),
+    ];
+    for (x, name) in cols {
+        text(buf, inner.x + x, inner.y, name, inner.width.saturating_sub(x), th.faint());
+    }
+    let amount = |v: f64, d: usize| if v > 0.0 { format!("{v:.d$}") } else { "—".to_string() };
+    let mut y = inner.y + 1;
+    let total = (t(zh, "in all", "合计").to_string(), sol, usdc, th.text().add_modifier(Modifier::BOLD));
+    for (i, (name, s, u, st)) in rows.iter().chain(std::iter::once(&total)).enumerate() {
+        if y >= inner.bottom() {
+            break;
+        }
+        if i == rows.len() {
+            for x in inner.x + 1..inner.x + inner.width.min(84) {
+                put(buf, x, y, g.h, th.rule());
+            }
+            y += 1;
+        }
+        let worth = usd(*s, *u);
+        let cells = [
+            name.clone(),
+            amount(*s, 6),
+            amount(*u, 4),
+            worth.map_or("—".to_string(), |w| format!("{w:.2}")),
+            worth.zip(all).map_or(String::new(), |(w, a)| format!("{:.0} %", w / a * 100.0)),
+        ];
+        for ((x, _), v) in cols.iter().zip(cells) {
+            text_fit(buf, inner.x + x, y, &v, inner.width.saturating_sub(*x), *st);
+        }
+        y += 1;
+    }
+    area.y + h + 1
+}
+
+/// What the money made, in all: a row a real bot (what it was given, what
+/// that is worth, what its closed trades made, what it is up or down on what
+/// it holds), the runs that ended long ago in one row, their sum, and the
+/// arbitrage of this session. Returns the row after it (`area.y` when there
+/// is no real bot to speak of).
+fn earnings(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel) -> u16 {
+    use crate::bots::{money_of, price_now};
+    let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
+    let Some(bots) = &app.bots else { return area.y };
+    let view = bots.read();
+    let real: Vec<_> = view.bots.iter().filter(|b| b.real).collect();
+    if real.is_empty() && view.older.is_none() {
+        return area.y;
+    }
+    let cols: [(u16, &str); 8] = [
+        (1, t(zh, "BOT", "机器人")),
+        (19, t(zh, "STATE", "状态")),
+        (30, t(zh, "BUDGET", "预算")),
+        (40, t(zh, "WORTH", "现值")),
+        (52, t(zh, "MADE, CLOSED", "已实现")),
+        (66, t(zh, "OPEN, NOW", "浮动")),
+        (80, t(zh, "IN ALL", "合计")),
+        (94, t(zh, "CLOSED", "平仓")),
+    ];
+    let usd = |v: f64| format!("{v:+.4}");
+    // a row: its cells and the colour of its last three numbers
+    let mut rows: Vec<([String; 8], [f64; 3], bool)> = Vec::new();
+    let (mut budget, mut worth, mut realized, mut floating, mut closed) = (0.0, 0.0, 0.0, 0.0, 0usize);
+    for b in &real {
+        let now = price_now(app, &b.inst).or(b.closes.last().map(|c| c.1));
+        let m = money_of(b, now);
+        let over = matches!(b.state, BotState::Ended(_));
+        let state = match (&b.state, zh) {
+            (BotState::Running, true) => "运行中",
+            (BotState::Stopped, true) => "已停止",
+            (BotState::Ended(_), true) => "已结束",
+            (BotState::Running, false) => "running",
+            (BotState::Stopped, false) => "stopped",
+            (BotState::Ended(_), false) => "ended",
+            (BotState::Paper, _) => "paper",
+        };
+        let held = now.filter(|_| b.funded && !over).map(|p| b.cash + b.sol * p);
+        rows.push((
+            [
+                b.name.clone(),
+                state.to_string(),
+                format!("{:.2}", b.budget),
+                held.map_or("—".to_string(), |w| format!("{w:.4}")),
+                usd(m.realized),
+                if over { "—".to_string() } else { usd(m.floating) },
+                usd(m.total()),
+                m.closed.to_string(),
+            ],
+            [m.realized, m.floating, m.total()],
+            over,
+        ));
+        if !over && b.funded {
+            budget += b.budget;
+            worth += held.unwrap_or(b.cash + b.paid);
+        }
+        realized += m.realized;
+        floating += m.floating;
+        closed += m.closed;
+    }
+    if let Some((runs, made, trades)) = view.older {
+        let name = if zh { format!("更早结束的 {runs} 轮") } else { format!("{runs} older runs, ended") };
+        rows.push((
+            [name, String::new(), String::new(), "—".into(), usd(made), "—".into(), usd(made), trades.to_string()],
+            [made, 0.0, made],
+            true,
+        ));
+        realized += made;
+        closed += trades;
+    }
+    // (sums that began at nothing keep no sign)
+    let (realized, floating) = (realized + 0.0, floating + 0.0);
+    let total = realized + floating;
+    let h = (rows.len() as u16 + 6).min(area.height);
+    let hint = t(zh, "USD · page 9 has each bot's trades", "单位 USD · 每个机器人的交易在 9");
+    let inner =
+        section(buf, Rect { height: h, ..area }, t(zh, "WHAT THE MONEY MADE", "盈亏（累计）"), false, hint, th, g);
+    for (x, name) in cols {
+        text(buf, inner.x + x, inner.y, name, inner.width.saturating_sub(x), th.faint());
+    }
+    let mut y = inner.y + 1;
+    let draw = |buf: &mut Buffer, y: u16, cells: &[String; 8], pnl: &[f64; 3], dim: bool, bold: bool| {
+        for (i, ((x, _), v)) in cols.iter().zip(cells).enumerate() {
+            let st = match i {
+                4..=6 => th.pnl(pnl[i - 4]),
+                0 if !dim => th.text(),
+                _ if dim => th.muted(),
+                _ => th.text(),
+            };
+            let st = if bold { st.add_modifier(Modifier::BOLD) } else { st };
+            text_fit(buf, inner.x + x, y, v, inner.width.saturating_sub(*x), st);
+        }
+    };
+    for (cells, pnl, dim) in &rows {
+        if y >= inner.bottom() {
+            return area.y + h;
+        }
+        draw(buf, y, cells, pnl, *dim, false);
+        y += 1;
+    }
+    if y + 1 < inner.bottom() {
+        for x in inner.x + 1..inner.x + inner.width.min(102) {
+            put(buf, x, y, g.h, th.rule());
+        }
+        let sum = [
+            t(zh, "All the bots", "机器人合计").to_string(),
+            String::new(),
+            format!("{budget:.2}"),
+            format!("{worth:.4}"),
+            usd(realized),
+            usd(floating),
+            usd(total),
+            closed.to_string(),
+        ];
+        draw(buf, y + 1, &sum, &[realized, floating, total], false, true);
+        y += 2;
+    }
+    // the arbitrage's own, of this session: it has no account of its own to sum over the days
+    if y < inner.bottom() {
+        let made = vm.realized.0 as f64 / 1e6;
+        let line = if zh {
+            format!("套利（本次运行）   已实现 {made:+.4} USD · 成交 {} 笔", vm.executed)
+        } else {
+            format!("Arbitrage (this session)   made {made:+.4} USD · {} executed", vm.executed)
+        };
+        text_fit(buf, inner.x + 1, y, &line, inner.width.saturating_sub(1), th.muted());
+    }
+    area.y + h + 1
 }
 
 fn receive_note(zh: bool) -> &'static str {
@@ -697,6 +919,29 @@ fn activity(buf: &mut Buffer, area: Rect, app: &App, view: &WalletView) {
     if area.height < 2 {
         return;
     }
+    // what the transactions listed come to: received and sent (a swap is neither), and the fees this wallet paid
+    let (mut got, mut gave, mut fees) = ((0.0, 0.0), (0.0, 0.0), 0.0);
+    for m in view.moved.iter().filter(|m| !m.failed) {
+        fees += m.fee;
+        let moved = (m.sol + m.fee, m.usdc);
+        match m.kind(false) {
+            "received" => got = (got.0 + moved.0.max(0.0), got.1 + moved.1.max(0.0)),
+            "sent" => gave = (gave.0 - moved.0.min(0.0), gave.1 - moved.1.min(0.0)),
+            _ => {}
+        }
+    }
+    let n = view.moved.len();
+    let sums = if zh {
+        format!(
+            "这 {n} 笔合计：收到 {:.4} SOL + {:.2} USDC · 转出 {:.4} SOL + {:.2} USDC · 网络费 {fees:.6} SOL",
+            got.0, got.1, gave.0, gave.1
+        )
+    } else {
+        format!(
+            "these {n} in all: in {:.4} SOL + {:.2} USDC · out {:.4} SOL + {:.2} USDC · fees {fees:.6} SOL",
+            got.0, got.1, gave.0, gave.1
+        )
+    };
     let keys =
         if view.moved.is_empty() { "" } else { t(zh, "j/k select · ⏎ all of it", "j/k 选择 · ⏎ 详情") };
     let inner = section(buf, area, t(zh, "IN AND OUT", "最近进出"), false, keys, th, g);
@@ -741,6 +986,11 @@ fn activity(buf: &mut Buffer, area: Rect, app: &App, view: &WalletView) {
         }
         x += 19;
         text_fit(buf, x, y, &short(&m.signature), inner.right().saturating_sub(x), bg(th.faint()));
+    }
+    // under the last of them, where there is a row left: what they come to
+    let under = inner.y + (view.moved.len() - first).min(rows) as u16 + 1;
+    if under < inner.bottom() {
+        text_fit(buf, inner.x + 1, under, &sums, inner.width.saturating_sub(1), th.muted());
     }
 }
 
