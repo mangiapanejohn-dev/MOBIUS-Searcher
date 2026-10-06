@@ -1027,7 +1027,7 @@ fn the_wallet_page_says_what_it_holds_where_it_receives_and_what_moved() {
         // what the bot holds is part of it, and is not offered for sending
         // where the money is, as a table: what the bot holds is part of it, and is not offered for sending
         "WHERE THE MONEY IS",
-        "bot dip-1d (running)",
+        "bot dip-1d (running; not bought: holds USDC to buy with)",
         "kept for fees",
         "free to send",
         // what the money made: each real bot and all of them, and the arbitrage of this session
@@ -1086,7 +1086,7 @@ fn the_wallet_page_reads_in_chinese_for_an_operator_who_does() {
         "钱包",
         "3 秒前读取",
         "钱都在哪",
-        "机器人 dip-1d（运行中）",
+        "机器人 dip-1d（运行中 · 还没买，拿着 USDC 等买入）",
         "留作手续费",
         "空闲（可以转出）",
         "盈亏（累计）",

@@ -658,8 +658,18 @@ fn whereabouts(buf: &mut Buffer, area: Rect, app: &App, view: &WalletView, price
                     (_, true) => "已停止",
                     (_, false) => "stopped",
                 };
-                let name =
-                    if zh { format!("机器人 {}（{state}）", b.name) } else { format!("bot {} ({state})", b.name) };
+                // which of the two its money is in says what it waits for: USDC to buy with, or SOL to sell
+                let doing = match (b.sol > 0.0, zh) {
+                    (true, true) => "已买入，拿着 SOL 等卖出",
+                    (false, true) => "还没买，拿着 USDC 等买入",
+                    (true, false) => "bought: holds SOL to sell",
+                    (false, false) => "not bought: holds USDC to buy with",
+                };
+                let name = if zh {
+                    format!("机器人 {}（{state} · {doing}）", b.name)
+                } else {
+                    format!("bot {} ({state}; {doing})", b.name)
+                };
                 rows.push((name, b.sol, b.cash, th.text()));
             }
         }
@@ -675,15 +685,16 @@ fn whereabouts(buf: &mut Buffer, area: Rect, app: &App, view: &WalletView, price
     let inner = section(buf, Rect { height: h, ..area }, t(zh, "WHERE THE MONEY IS", "钱都在哪"), false, "", th, g);
     let cols: [(u16, &str); 5] = [
         (1, t(zh, "WHERE", "去向")),
-        (34, "SOL"),
-        (48, "USDC"),
-        (62, t(zh, "ABOUT, USD", "约合 USD")),
-        (76, t(zh, "SHARE", "占比")),
+        (58, "SOL"),
+        (71, "USDC"),
+        (83, t(zh, "ABOUT, USD", "约合 USD")),
+        (96, t(zh, "SHARE", "占比")),
     ];
     for (x, name) in cols {
         text(buf, inner.x + x, inner.y, name, inner.width.saturating_sub(x), th.faint());
     }
-    let amount = |v: f64, d: usize| if v > 0.0 { format!("{v:.d$}") } else { "—".to_string() };
+    // (none of it is a nought: a dash was read as "it cannot")
+    let amount = |v: f64, d: usize| if v > 0.0 { format!("{v:.d$}") } else { "0".to_string() };
     let mut y = inner.y + 1;
     let total = (t(zh, "in all", "合计").to_string(), sol, usdc, th.text().add_modifier(Modifier::BOLD));
     for (i, (name, s, u, st)) in rows.iter().chain(std::iter::once(&total)).enumerate() {
@@ -691,7 +702,7 @@ fn whereabouts(buf: &mut Buffer, area: Rect, app: &App, view: &WalletView, price
             break;
         }
         if i == rows.len() {
-            for x in inner.x + 1..inner.x + inner.width.min(84) {
+            for x in inner.x + 1..inner.x + inner.width.min(104) {
                 put(buf, x, y, g.h, th.rule());
             }
             y += 1;
