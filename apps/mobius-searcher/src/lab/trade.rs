@@ -585,6 +585,8 @@ pub struct Mainnet {
     max_tip: u64,
     max_priority_fee: u64,
     fee_reserve: u64,
+    /// Lamports of SOL that other bots of this wallet hold: not this one's to sell.
+    held_elsewhere: u64,
     dexes: Vec<String>,
 }
 
@@ -777,12 +779,20 @@ impl Mainnet {
             max_tip: cfg.risk.max_jito_tip_lamports,
             max_priority_fee: cfg.risk.max_priority_fee_lamports.min(MAX_PRIORITY_FEE),
             fee_reserve: cfg.risk.min_wallet_sol_for_fees_lamports,
+            held_elsewhere: 0,
             dexes,
         })
     }
 
     pub fn taker(&self) -> Address {
         self.taker
+    }
+
+    /// SOL in the wallet that is another bot's (it bought it and has not sold
+    /// it yet): kept, like the fee reserve, when this one's budget is set
+    /// aside or raised by selling SOL.
+    pub fn keep_also(&mut self, lamports: u64) {
+        self.held_elsewhere = lamports;
     }
 
     async fn try_swap(&self, sell_sol: bool, amount: u64, without: &[String]) -> Result<Sent, No> {
@@ -1078,8 +1088,9 @@ impl Chain for Mainnet {
         Sent::NotSent(format!("{QUOTES} quotes failed in simulation: {}", failed.join("; ")))
     }
 
+    /// What the wallet must keep when SOL is sold for a budget: the fee reserve, and what other bots hold.
     fn fee_reserve(&self) -> u64 {
-        self.fee_reserve
+        self.fee_reserve + self.held_elsewhere
     }
 }
 

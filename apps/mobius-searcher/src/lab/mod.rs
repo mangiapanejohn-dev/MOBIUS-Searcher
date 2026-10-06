@@ -547,6 +547,24 @@ pub async fn run(cfg: &Config, file: &Path, duration: Option<u64>) -> Result<()>
 /// `--trade FILE`: the file's one rule with real money (see [`trade`]).
 /// `dry_run`: build and simulate the first swap, sign and send nothing.
 /// `close`: sell what the run holds and end it.
+/// Lamports of SOL that the wallet's other real runs hold (bought, not sold yet, the run not ended).
+fn held_by_others(store: &ResearchStore, run: &str) -> Result<u64> {
+    let mut lamports = 0u64;
+    for (id, _, manifest) in store.lab_runs()? {
+        if !id.starts_with("trade-") || id == run {
+            continue;
+        }
+        let Ok(plan) = parse(&manifest) else { continue };
+        let [e] = plan.experiments.as_slice() else { continue };
+        let Some((_, json)) = store.lab_state(&id, &e.name)? else { continue };
+        let Ok(state) = serde_json::from_str::<trade::State>(&json) else { continue };
+        if state.ended.is_none() {
+            lamports += (state.account.sol() * 1e9).round() as u64;
+        }
+    }
+    Ok(lamports)
+}
+
 pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, duration: Option<u64>) -> Result<()> {
     use trade::{Chain, Mainnet, State, Trader};
     let plan = load(file)?;
@@ -591,11 +609,17 @@ pub async fn trade(cfg: &Config, file: &Path, dry_run: bool, close: bool, durati
         });
         Some(lock)
     };
-    let chain = Mainnet::new(cfg, &live, dry_run)?;
+    let mut chain = Mainnet::new(cfg, &live, dry_run)?;
     let http = http()?;
     let db = cfg.data_dir().join("research.sqlite");
     let store = ResearchStore::open(&db).with_context(|| format!("opening {}", db.display()))?;
     let run = format!("trade-{}", plan.id);
+    // the wallet is one, the bots may be several: what another holds in SOL is not this one's to sell for its budget
+    let others = held_by_others(&store, &run)?;
+    chain.keep_also(others);
+    if others > 0 {
+        println!("another bot of this wallet holds {:.6} SOL: it is left alone", others as f64 / 1e9);
+    }
     let now = || searcher_core::Ts::now().hms();
     println!(
         "{} · {} · rule `{}` on {} {} · wallet {}\n\
@@ -977,6 +1001,41 @@ rule = "grid"
 step = 0.01
 lots = 4
 "#;
+
+    #[test]
+    fn sol_that_another_bot_of_the_wallet_holds_is_not_this_ones_to_sell() {
+        let live = |name: &str| {
+            format!(
+                "[live]\nbudget_usd = 2.0\nstop_total_loss = 0.5\nacknowledge = \"ALLOW LOSS\"\n\n\
+                 [[experiment]]\nname = \"{name}\"\nrule = \"dip\"\nwindow = 4\nk = 1.0\n"
+            )
+        };
+        let dir = std::env::temp_dir().join(format!("mobius-others-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(&dir).unwrap();
+        let store = ResearchStore::open(&dir.join("research.sqlite")).unwrap();
+        // three real runs: one holds SOL, one holds SOL but has ended, one is this one; and a paper run
+        let mut ids = Vec::new();
+        for (name, sol, ended) in [("held", 0.016542, false), ("over", 0.5, true), ("mine", 0.02, false)] {
+            let plan = parse(&live(name)).unwrap();
+            let id = format!("trade-{}", plan.id);
+            store.begin_lab_run(&id, 1, "test", &plan.manifest).unwrap();
+            let mut state = trade::State { funded: true, ..Default::default() };
+            state.account.bought(2.0, sol, 0, 120.0);
+            state.ended = ended.then(|| "closed by hand".to_string());
+            store.set_lab_state(&id, name, 0, &serde_json::to_string(&state).unwrap()).unwrap();
+            ids.push(id);
+        }
+        let paper = parse(FILE).unwrap();
+        store.begin_lab_run(&paper.id, 1, "test", &paper.manifest).unwrap();
+        // for the third: only what the first holds (the ended one holds nothing any more, its own is its own)
+        assert_eq!(held_by_others(&store, &ids[2]).unwrap(), 16_542_000);
+        // for the first: what the third holds
+        assert_eq!(held_by_others(&store, &ids[0]).unwrap(), 20_000_000);
+        assert_eq!(held_by_others(&store, "trade-new").unwrap(), 36_542_000);
+        drop(store);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
 
     #[test]
     fn a_rules_file_gives_a_plan_named_after_its_content() {
