@@ -65,6 +65,12 @@ before 1.0 a minor version may change configuration or behaviour.
   over them while a swap is sent and not accounted for yet. Where its gain
   is taken is a line on the chart and a row of its position.
 
+- **What a bot was worth is a curve**, not a row of blocks: under the list
+  of bots, with its values on an axis, the hours under it and its high and
+  low marked, drawn like the other charts. It starts at the last change of
+  the bot's budget: money given to it or taken back is not made or lost by
+  it, and drawn together that one step flattened everything else.
+
 - **A bot is made on the Bots page** (`n`): its kind (the average of one day
   or of three), the deviations under it at which it buys, the stop of a
   trade, its budget and its total stop, each with what it means, what such

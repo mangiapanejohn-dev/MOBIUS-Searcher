@@ -489,6 +489,7 @@ pub fn graph_workspace(buf: &mut Buffer, area: Rect, app: &App, vm: &ViewModel, 
             y_label_w: 9,
             candle_min_samples: 3,
             empty_note: "",
+            zh: app.zh,
         };
         let info = render_chart(r, buf, &inp, th, g);
         app.hit(r, Hit::Graph { index: Some(*i), metric: Some(e.metric), plot: info.plot, t0, t1 });
@@ -680,6 +681,7 @@ fn page_trades(buf: &mut Buffer, body: Rect, app: &App, vm: &ViewModel) {
         y_label_w: 9,
         candle_min_samples: 3,
         empty_note: "no trades yet — PnL stays $0.00 until one passes simulation + risk",
+        zh: app.zh,
     };
     let info = render_chart(chart, buf, &inp, th, g);
     app.hit(chart, Hit::Graph { index: None, metric: Some(MetricId::Pnl), plot: info.plot, t0, t1 });

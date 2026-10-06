@@ -37,6 +37,8 @@ pub struct ChartInput<'a> {
     pub candle_min_samples: u32,
     /// Shown in an empty plot.
     pub empty_note: &'a str,
+    /// The reader's language is Chinese: the header's words are in it.
+    pub zh: bool,
 }
 
 /// What was drawn (for tests and the inspector).
@@ -213,7 +215,8 @@ pub fn render_chart(area: Rect, buf: &mut Buffer, inp: &ChartInput<'_>, th: &The
         parts.push(format!("▸ {approx}{} @ {}", inp.unit.format(v), c.hms()));
     }
     if !visible.is_empty() {
-        parts.push(format!("min {}  max {}", inp.unit.format(lo_v), inp.unit.format(hi_v)));
+        let (low, high) = if inp.zh { ("最低", "最高") } else { ("min", "max") };
+        parts.push(format!("{low} {}  {high} {}", inp.unit.format(lo_v), inp.unit.format(hi_v)));
     }
     let title_end = area.x + width(inp.title) + 2;
     let mut readout_x = area.right();
@@ -585,6 +588,7 @@ mod tests {
             y_label_w: 9,
             candle_min_samples: 3,
             empty_note: "",
+            zh: false,
         }
     }
 

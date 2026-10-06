@@ -1334,6 +1334,46 @@ fn a_bot_that_acts_on_the_price_shows_each_look_and_each_trade_as_it_comes() {
 }
 
 #[test]
+fn what_a_bot_was_worth_is_a_curve_under_the_list() {
+    let vm = populated();
+    let mut view = bots_view();
+    // a day of bars: down a little, then up over where it began
+    let t0 = 1_791_180_000_000i64;
+    view.bots[0].equity =
+        (0..96).map(|i| (t0 + i * 900_000, 2.0 + ((i as f64 / 15.0).sin() * 0.03) + i as f64 * 0.0004)).collect();
+    let mut a = bots_app(view.clone());
+    press(&mut a, &vm, KeyCode::Char('9'));
+    let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));
+    show(&out);
+    let rows: Vec<&str> = out.lines().collect();
+    let at = rows.iter().position(|l| l.contains("WORTH")).expect("its heading");
+    // its heading with the low and the high, a curve of dots under it, its values on an axis and the hours below
+    assert!(rows[at].contains("min 1.9") && rows[at].contains("max 2.0"), "{}", rows[at]);
+    let plot = &rows[at + 1..at + 7];
+    let left = |l: &str| l.chars().take(46).collect::<String>();
+    assert!(
+        plot.iter().filter(|l| left(l).chars().any(|c| ('\u{2801}'..='\u{28ff}').contains(&c))).count() >= 3,
+        "{plot:?}"
+    );
+    assert!(plot.iter().any(|l| left(l).contains("2.0")), "values on its axis: {plot:?}");
+    assert!(rows[at + 8].contains(":00"), "the hours: {}", rows[at + 8]);
+    // it stands between the sum of all the bots and the market's trades, and is not in the rail any more
+    let (sum, tape) = (
+        rows.iter().position(|l| l.contains("ALL REAL BOTS")).unwrap(),
+        rows.iter().position(|l| l.contains("THE MARKET'S TRADES")).unwrap(),
+    );
+    assert!(sum < at && at < tape && !out.contains("WORTH, BAR BY BAR"), "{out}");
+    // in Chinese; and one with a single bar yet has no curve (the trades come right under the sums)
+    a.zh = true;
+    let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));
+    assert!(out.contains("市值走势") && out.contains("最低 1.9") && out.contains("最高 2.0"), "{out}");
+    view.bots[0].equity.truncate(1);
+    let mut b = bots_app(view);
+    press(&mut b, &vm, KeyCode::Char('9'));
+    assert!(!buffer_text(&snapshot(&mut b, &vm, 200, 58)).contains("WORTH"));
+}
+
+#[test]
 fn the_budget_of_a_bot_is_changed_from_the_page_after_it_says_what_that_does() {
     let vm = populated();
     let mut a = wallet_app(wallet_view(), false);
@@ -1520,7 +1560,7 @@ fn for_who_reads_chinese_the_frame_is_in_it_and_the_help_explains_the_page() {
     }
     // longer than the window: it scrolls, down to what to know and the keys of every page
     assert!(out.contains("↑↓ 滚动"), "{out}");
-    for _ in 0..4 {
+    for _ in 0..8 {
         press(&mut a, &vm, KeyCode::PageDown);
     }
     let out = buffer_text(&snapshot(&mut a, &vm, 200, 58));

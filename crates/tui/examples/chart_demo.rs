@@ -43,6 +43,7 @@ fn main() {
             y_label_w: 9,
             candle_min_samples: 3,
             empty_note: "",
+            zh: false,
         };
         render_chart(area, &mut buf, &inp, &Theme::with_depth(Depth::None), &g);
         for y in 0..area.height {

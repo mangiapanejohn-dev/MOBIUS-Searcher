@@ -161,6 +161,7 @@ pub struct BotView {
     /// When the SOL it holds was bought (ms), while it holds some.
     pub opened: Option<i64>,
     /// What it was worth at each bar's close, oldest first: when (ms) and USD.
+    /// From the last change of its budget on (what is given to it is not made by it).
     pub equity: Vec<(i64, f64)>,
 }
 
@@ -1135,10 +1136,15 @@ pub fn page_bots(buf: &mut Buffer, body: Rect, app: &App) {
         (Rect { height: lh, ..body }, Rect { y: body.y + lh, height: body.height - lh, ..body })
     };
     let under = bot_list(buf, list, app, &view, sel);
-    // under the list, where the screen is tall: all the real bots in one sum, and the market's own trades as they come
+    // under the list, where the screen is tall: all the real bots in one sum, what the selected one
+    // was worth bar by bar as a curve, and the market's own trades as they come
     if wide && list.bottom().saturating_sub(under) >= 14 {
         let rest = Rect { y: under + 1, height: list.bottom() - under - 1, ..list };
-        let used = totals(buf, rest, app, &view);
+        let mut used = totals(buf, rest, app, &view);
+        let curve = Rect { y: used + 1, height: WORTH_ROWS, ..rest };
+        if curve.bottom() <= rest.bottom() && worth_curve(buf, curve, app, &view.bots[sel]) {
+            used = curve.bottom();
+        }
         tape(buf, Rect { y: used + 1, height: rest.bottom().saturating_sub(used + 1), ..rest }, app, &view.bots[sel]);
     }
     bot_detail(buf, detail, app, &view.bots[sel]);
@@ -1246,6 +1252,46 @@ fn totals(buf: &mut Buffer, area: Rect, app: &App, view: &BotsView) -> u16 {
 }
 
 /// The market's own trades as they come, newest first: when, at what price, how much, bought or sold.
+/// Rows of the curve of a bot's worth: its heading, the plot, and the hours under it.
+const WORTH_ROWS: u16 = 9;
+
+/// What the bot was worth at each bar's close, as a curve over the time it
+/// has records of, with its values on an axis and the hours under it.
+/// `false`: nothing to draw yet (it takes two bars).
+fn worth_curve(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) -> bool {
+    let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
+    let (Some(first), Some(last)) = (b.equity.first(), b.equity.last()) else { return false };
+    if b.equity.len() < 2 || last.0 <= first.0 {
+        return false;
+    }
+    let mut series = searcher_core::series::TimeSeries::with_capacity(b.equity.len());
+    for (ms, usd) in &b.equity {
+        series.push(Ts(ms * 1000), *usd);
+    }
+    let inp = crate::chart::ChartInput {
+        title: t(zh, "WORTH", "市值走势"),
+        subtitle: "",
+        series: Some(&series),
+        unit: searcher_core::metrics::Unit::Usd,
+        t0: Ts(first.0 * 1000),
+        t1: Ts(last.0 * 1000),
+        style: crate::workspace::ChartStyle::Line,
+        // (the finer of the two lines: the plot is a few rows high)
+        line: crate::workspace::LineStyle::Braille,
+        cursor: None,
+        a: None,
+        b: None,
+        markers: &[],
+        active: false,
+        y_label_w: 7,
+        candle_min_samples: 3,
+        empty_note: "",
+        zh,
+    };
+    crate::chart::render_chart(area, buf, &inp, th, g);
+    true
+}
+
 fn tape(buf: &mut Buffer, area: Rect, app: &App, b: &BotView) {
     let (th, g, zh) = (&app.theme, &app.glyphs, app.zh);
     if area.height < 4 {
@@ -2126,22 +2172,6 @@ fn rail(buf: &mut Buffer, area: Rect, app: &App, b: &BotView, now: Option<f64>, 
             (t(zh, "24 h low", "24 小时最低"), price(x.low24h, 2), th.text()),
         ];
         group(buf, t(zh, "MARKET", "行情"), rows);
-    }
-
-    // its worth bar by bar, as a line of blocks: over its budget in the colour of a gain, under it of a loss
-    let w = area.width.saturating_sub(1) as usize;
-    if b.equity.len() >= 2 && y + 3 <= area.bottom() {
-        let shown = &b.equity[b.equity.len().saturating_sub(w)..];
-        let (lo, hi) = shown.iter().fold((f64::MAX, f64::MIN), |(a, z), e| (a.min(e.1), z.max(e.1)));
-        let range =
-            if zh { format!("最低 {lo:.4} · 最高 {hi:.4}") } else { format!("low {lo:.4} · high {hi:.4}") };
-        let inner =
-            section(buf, Rect { y, height: 3, ..area }, t(zh, "WORTH, BAR BY BAR", "市值走势"), false, &range, th, g);
-        for (i, (_, v)) in shown.iter().enumerate() {
-            let level = if hi > lo { ((v - lo) / (hi - lo) * 7.0).round() as usize } else { 3 };
-            let st = Style::new().fg(if *v >= b.budget { th.profit } else { th.loss });
-            put(buf, inner.x + i as u16, inner.y, g.spark[level.min(7)], st);
-        }
     }
 }
 

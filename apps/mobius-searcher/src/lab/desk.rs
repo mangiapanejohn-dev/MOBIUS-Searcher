@@ -20,6 +20,24 @@ use std::sync::Arc;
 const ENDED_SHOWN: usize = 2;
 /// Bars read for the picture when the rule's own window is shorter.
 const BARS_SHOWN: usize = 200;
+/// Bars of a run's worth that are kept for its curve (ten days of 15-minute bars).
+const WORTH_SHOWN: usize = 1000;
+
+/// What a run was worth at each bar's close, from the last change of its
+/// budget on, the newest [`WORTH_SHOWN`] of them. A budget raised or lowered
+/// is money given or taken back, not made: drawn with what came before it,
+/// that one step would flatten every rise and fall of the run's own.
+fn worth_since_budget(mut worth: Vec<(i64, f64)>, journal: &[(i64, String)]) -> Vec<(i64, f64)> {
+    let changed = |line: &str| {
+        ["budget raised from ", "budget lowered from ", "budget changed from "].iter().any(|w| line.starts_with(w))
+    };
+    if let Some((at, _)) = journal.iter().rev().find(|(_, line)| changed(line)) {
+        worth.retain(|(closed, _)| closed > at);
+    }
+    let keep = worth.len().saturating_sub(WORTH_SHOWN);
+    worth.drain(..keep);
+    worth
+}
 
 /// Who holds the lock of `--trade`, written beside it.
 #[derive(Clone, Debug, Deserialize, Serialize, PartialEq)]
@@ -277,13 +295,11 @@ impl Desk {
             b.wish = wish(&wish_path(&self.data_dir, id)).filter(|_| state.ended.is_none());
             acts_onto(&mut b, &self.data_dir, id, &state, live);
             b.worth = b.worth.filter(|_| state.funded);
-            // its worth bar by bar, the newest stretch of it
-            let mut equity: Vec<(i64, f64)> =
-                store.lab_equity(id, &e.name)?.into_iter().map(|(ts, _, worth, _)| (ts + plan.bar_ms, worth)).collect();
-            let keep = equity.len().saturating_sub(BARS_SHOWN);
-            equity.drain(..keep);
-            b.equity = equity;
             b.journal = store.lab_journal(id)?;
+            // its worth bar by bar (when each bar closed), since its budget last changed
+            let worth: Vec<(i64, f64)> =
+                store.lab_equity(id, &e.name)?.into_iter().map(|(ts, _, worth, _)| (ts + plan.bar_ms, worth)).collect();
+            b.equity = worth_since_budget(worth, &b.journal);
             let keep = b.journal.len().saturating_sub(400);
             b.journal.drain(..keep);
             b.file = match &holder {
@@ -818,6 +834,37 @@ stop = 0.05
             std::fs::write(to, searcher_tui::buffer_html(&buf, "bots")).unwrap();
         }
         println!("{}", searcher_tui::buffer_text(&buf));
+    }
+
+    #[test]
+    fn its_worth_is_drawn_from_the_last_change_of_its_budget_on() {
+        let bar = 900_000;
+        let worth: Vec<(i64, f64)> = [2.0, 2.01, 1.99, 17.29, 17.31, 17.28]
+            .iter()
+            .enumerate()
+            .map(|(i, w)| ((i as i64 + 1) * bar, *w))
+            .collect();
+        let line = |at: i64, said: &str| (at, said.to_string());
+        // no change of the budget: all of it
+        let journal = vec![line(10, "the wallet holds 2.0051 USDC: 2.0000 of it is the rule's budget")];
+        assert_eq!(worth_since_budget(worth.clone(), &journal), worth);
+        // raised between the third close and the fourth: the three bars that closed after it
+        let mut raised = journal.clone();
+        raised.push(line(
+            3 * bar + 400_000,
+            "raising the budget from 2.00 to 17.29 USD: selling 0.127428 SOL for about 15.29 USDC",
+        ));
+        raised.push(line(
+            3 * bar + 410_000,
+            "budget raised from 2.00 to 17.29 USD: 0.127436 SOL became 15.3339 USDC; 15.2900 more USD is the rule's",
+        ));
+        assert_eq!(worth_since_budget(worth.clone(), &raised), worth[3..].to_vec());
+        // lowered after that: from there on; and only the newest stretch of a long run is kept
+        raised.push(line(5 * bar + 1, "budget lowered from 17.29 to 5.00 USD: 12.29 USDC is the wallet's again"));
+        assert_eq!(worth_since_budget(worth.clone(), &raised), worth[5..].to_vec());
+        let long: Vec<(i64, f64)> = (0..WORTH_SHOWN as i64 + 50).map(|i| (i * bar, 2.0)).collect();
+        let kept = worth_since_budget(long, &journal);
+        assert_eq!((kept.len(), kept[0].0), (WORTH_SHOWN, 50 * bar));
     }
 
     #[test]
